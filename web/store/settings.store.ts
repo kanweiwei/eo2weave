@@ -84,7 +84,18 @@ interface SettingsState {
   customBaseUrl: string
   // Persisted custom provider configs — used to re-register on app load
   customProviders: CustomProviderConfig[]
+  /**
+   * Sampling temperature forwarded into every main-loop LLM request
+   * (Settings → Advanced). Note: pi-ai strips temperature from the request
+   * on the Anthropic thinking path, which is expected behavior.
+   */
   temperature: number
+  /**
+   * @deprecated UI display only. The effective output cap is determined by the
+   * model (pi-ai catalog maxTokens / 64K fallback); this persisted value is no
+   * longer consumed by the agent loop. Kept (with its setter removed) so old
+   * persisted states rehydrate without migration.
+   */
   maxTokens: number
   maxIterations: number
   enableThinking: boolean
@@ -157,7 +168,6 @@ interface SettingsState {
   removeCustomProviderModel: (providerId: string, model: string) => void
   setCustomProviderApiMode: (providerId: string, apiMode: import('@/store/settings.store').CustomApiMode) => void
   setTemperature: (temp: number) => void
-  setMaxTokens: (tokens: number) => void
   setMaxIterations: (iterations: number) => void
   setEnableThinking: (v: boolean) => void
   setThinkingLevel: (v: ExtendedThinkingLevel) => void
@@ -556,7 +566,6 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       setTemperature: (temperature) => set({ temperature }),
-      setMaxTokens: (maxTokens) => set({ maxTokens }),
       setMaxIterations: (maxIterations) =>
         set({
           maxIterations:

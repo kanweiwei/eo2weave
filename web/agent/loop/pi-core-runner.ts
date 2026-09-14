@@ -120,6 +120,30 @@ export interface ExecutePiCoreLoopResult {
   lastSummaryConvertCall: number
 }
 
+/**
+ * OpenAI reasoning models (o-series, gpt-5 series) reject `temperature` outright
+ * (400 "Unsupported parameter"), so the user's temperature setting must never be
+ * sent to them. Non-reasoning OpenAI models (gpt-4o, gpt-4.1, …) honor it.
+ *
+ * Gate by ENDPOINT rather than by pi-ai api handler: custom providers resolve to
+ * 'cw-openai-fetch' (or 'openai-responses'), so an api-type guard would miss
+ * custom providers pointed at api.openai.com — while an unconditional strip
+ * would wrongly drop temperature for proxy endpoints (openrouter.ai,
+ * llm-gateway, …) where it is a valid param.
+ *
+ * Exported for tests: this guard protects a wiring change against a 400
+ * regression on a valid pre-change configuration.
+ */
+export function shouldStripTemperatureForModel(model: {
+  id: string
+  provider: string
+  baseUrl?: string
+}): boolean {
+  const isOpenAiEndpoint =
+    model.provider === 'openai' || /api\.openai\.com/i.test(model.baseUrl || '')
+  return isOpenAiEndpoint && /^(o[134](-|$)|gpt-5)/.test(model.id)
+}
+
 export async function executePiCoreLoop(
   input: ExecutePiCoreLoopInput
 ): Promise<ExecutePiCoreLoopResult> {
@@ -207,6 +231,14 @@ export async function executePiCoreLoop(
           delete payload.max_output_tokens
           delete payload.temperature
         }
+        // OpenAI reasoning models (o-series, gpt-5 series) reject `temperature`
+        // outright (400 "Unsupported parameter"). Before the user temperature
+        // setting was wired through, these models simply omitted the field;
+        // strip it again here so wiring the setting doesn't break them.
+        // Non-reasoning OpenAI models (gpt-4o, gpt-4.1, …) still honor it.
+        if (shouldStripTemperatureForModel(model)) {
+          delete payload.temperature
+        }
         // Codex (ChatGPT Responses API): set prompt_cache_key for server-side
         // prompt caching. The key is the conversation's sessionId (workspaceId),
         // which is stable across all turns in the same conversation. This tells
@@ -257,6 +289,10 @@ export async function executePiCoreLoop(
       model,
       getApiKey: () => apiKey,
       maxTokens: model.maxTokens,
+      // Forward the user's Temperature setting (Settings → Advanced) into the
+      // LLM request. pi-ai's handlers only set payload.temperature when this is
+      // defined, so leaving it undefined means providers apply their own default.
+      temperature: settingsState.temperature,
       reasoning,
       convertToLlm: async (agentMessages) => {
         const contextConfig = input.contextManager.getConfig()

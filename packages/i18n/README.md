@@ -106,7 +106,7 @@ function Component() {
 | llmProvider | LLM 服务商 | LLM Provider |
 | apiKey | API Key | API Key |
 | modelName | 模型名称 | Model Name |
-| maxTokens | 最大输出 Tokens | Max Tokens |
+| maxTokens | 输出 Tokens 上限（模型决定） | Output Token Cap (model-defined) |
 
 ### 欢迎页 (`welcome`)
 

@@ -13,7 +13,7 @@ export const settings = {
     apiKeyNote: "密钥使用 AES-256 加密存储在本地浏览器中",
     modelName: "模型名称",
     temperature: "Temperature",
-    maxTokens: "最大输出 Tokens",
+    maxTokens: "输出 Tokens 上限（模型决定）",
 
     // Tabs
     general: "通用",

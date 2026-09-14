@@ -189,3 +189,31 @@ export function resolvePiAIModel(
   const resolvedModelName = MODEL_ALIASES[providerType]?.[modelName] || modelName
   return createOpenAICompatibleFallback(providerType, resolvedModelName, baseUrl, apiMode)
 }
+
+/**
+ * Resolve the effective output token cap for a model without constructing a
+ * full Model object. Mirrors resolvePiAIModel: native pi-ai catalog models use
+ * their catalog maxTokens, everything else gets DEFAULT_MAX_TOKENS.
+ *
+ * Used by the settings UI to display the (read-only) output cap — the value is
+ * determined by the model, not user-configurable.
+ */
+export function resolveModelOutputCap(
+  providerType: LLMProviderType,
+  modelName: string
+): number {
+  const provider = PROVIDER_MAP[providerType]
+  if (!provider) return DEFAULT_MAX_TOKENS
+
+  const alias = MODEL_ALIASES[providerType]?.[modelName]
+  const candidates = alias && alias !== modelName ? [modelName, alias] : [modelName]
+  for (const candidate of candidates) {
+    try {
+      const model = getModel(provider, candidate as never) as Model<Api>
+      if (model?.maxTokens) return model.maxTokens
+    } catch {
+      // try next candidate
+    }
+  }
+  return DEFAULT_MAX_TOKENS
+}

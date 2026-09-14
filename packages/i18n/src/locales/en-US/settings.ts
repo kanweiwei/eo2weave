@@ -12,7 +12,7 @@ export const settings = {
     apiKeyNote: "Key is encrypted with AES-256 and stored locally",
     modelName: "Model Name",
     temperature: "Temperature",
-    maxTokens: "Max Tokens",
+    maxTokens: "Output Token Cap (model-defined)",
 
     // Tabs
     general: "General",

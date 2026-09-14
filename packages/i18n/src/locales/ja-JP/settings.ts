@@ -13,7 +13,7 @@ export const settings = {
     apiKeyNote: "キーは AES-256 暗号化してローカルブラウザに保存されます",
     modelName: "モデル名",
     temperature: "Temperature",
-    maxTokens: "最大出力トークン数",
+    maxTokens: "出力トークン上限（モデル依存）",
 
     // Tabs
     general: "一般",

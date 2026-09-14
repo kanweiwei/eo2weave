@@ -8,7 +8,7 @@
  * 高级参数和 Token 统计保留在此组件中
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Code,
   PenTool,
@@ -23,7 +23,7 @@ import { useSettingsStore } from '@/store/settings.store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import type { LLMProviderType, ModelCapability } from '@/agent/providers/types'
 import { useT } from '@/i18n'
-import { BrandInput } from '@creatorweave/ui'
+import { resolveModelOutputCap } from '@/agent/llm/pi-ai-model-resolver'
 import { BrandSlider } from '@creatorweave/ui'
 import { BrandSwitch } from '@creatorweave/ui'
 import {
@@ -178,12 +178,10 @@ export function ModelSettings({ open }: ModelSettingsProps) {
     providerType,
     modelName,
     temperature,
-    maxTokens,
     maxIterations,
     enableThinking,
     thinkingLevel,
     setTemperature,
-    setMaxTokens,
     setMaxIterations,
     setEnableThinking,
     setThinkingLevel,
@@ -238,6 +236,13 @@ export function ModelSettings({ open }: ModelSettingsProps) {
 
   // Convert temperature (0-1) to slider value (0-100)
   const temperatureValue = Math.round(temperature * 100)
+
+  // Effective output cap is determined by the model (pi-ai catalog value or the
+  // 64K fallback), not by user settings — shown read-only below.
+  const maxTokensDisplay = useMemo(
+    () => resolveModelOutputCap(providerType, modelName),
+    [providerType, modelName]
+  )
   const handleTemperatureChange = useCallback(
     (value: number[]) => {
       setTemperature(value[0] / 100)
@@ -329,18 +334,18 @@ export function ModelSettings({ open }: ModelSettingsProps) {
               </div>
             </div>
 
-            {/* Max Tokens */}
+            {/* Output Token Cap (read-only display)
+                Not configurable: pi-agent-core carves the thinking budget out of
+                this cap, so a small user value (e.g. 4096) would silently truncate
+                long replies on thinking models. The cap always follows the model's
+                catalog value (fallback 64K). */}
             <div className="space-y-2">
-              <label className="text-sm font-medium text-secondary">{t('settings.maxTokens')}</label>
-              <BrandInput
-                type="number"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(parseInt(e.target.value) || 4096)}
-                min={256}
-                max={32768}
-                step={256}
-                className="h-10"
-              />
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-secondary">{t('settings.maxTokens')}</label>
+                <span className="text-sm text-tertiary tabular-nums">
+                  {maxTokensDisplay.toLocaleString()}
+                </span>
+              </div>
             </div>
 
             {/* Max Iterations */}

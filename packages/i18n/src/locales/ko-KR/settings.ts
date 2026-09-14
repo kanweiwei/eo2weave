@@ -13,7 +13,7 @@ export const settings = {
     apiKeyNote: "키는 AES-256 암호화되어 로컬 브라우저에 저장됩니다",
     modelName: "모델 이름",
     temperature: "Temperature",
-    maxTokens: "최대 출력 토큰 수",
+    maxTokens: "출력 토큰 상한(모델별)",
 
     // Tabs
     general: "일반",

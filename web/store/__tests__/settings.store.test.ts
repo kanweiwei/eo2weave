@@ -115,28 +115,9 @@ describe('useSettingsStore', () => {
     })
   })
 
-  describe('setMaxTokens', () => {
-    it('should update max tokens', () => {
-      const { setMaxTokens } = useSettingsStore.getState()
-
-      setMaxTokens(8192)
-
-      expect(useSettingsStore.getState().maxTokens).toBe(8192)
-    })
-
-    it('should allow various token limits', () => {
-      const { setMaxTokens } = useSettingsStore.getState()
-
-      setMaxTokens(2048)
-      expect(useSettingsStore.getState().maxTokens).toBe(2048)
-
-      setMaxTokens(16384)
-      expect(useSettingsStore.getState().maxTokens).toBe(16384)
-
-      setMaxTokens(128000)
-      expect(useSettingsStore.getState().maxTokens).toBe(128000)
-    })
-  })
+  // setMaxTokens removed — maxTokens is deprecated (model-determined output
+  // cap, read-only in the UI). The field is kept in state for persistence
+  // compatibility; there is no setter to test.
 
   describe('setMaxIterations', () => {
     it('should update max iterations', () => {
