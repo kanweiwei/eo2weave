@@ -104,6 +104,8 @@ export const conversation = {
       reached: "Max iterations reached ({count})",
       continue: "Continue",
       hint: "Task may be incomplete. Send a message to let the agent keep working",
+      decrease: "Decrease by 5",
+      increase: "Increase by 5",
     },
     // Image generation (legacy /image command was removed — images are now
     // generated via the agent's generate_image tool)

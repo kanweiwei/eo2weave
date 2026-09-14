@@ -91,6 +91,8 @@ export const conversation = {
       reached: "最大反復回数に達しました（{count} 回）",
       continue: "続行",
       hint: "タスクが未完了の可能性があります。メッセージを送信してエージェントの作業を継続できます",
+      decrease: "5つ減らす",
+      increase: "5つ増やす",
     },
     // 画像生成（旧 /image コマンドは削除されました —— 画像生成は Agent の generate_image ツールで行います）
     imageGen: {

@@ -104,6 +104,8 @@ export const conversation = {
       reached: "已达到最大迭代次数（{count} 次）",
       continue: "继续",
       hint: "任务可能尚未完成，发送消息可让助手继续工作",
+      decrease: "减少 5",
+      increase: "增加 5",
     },
     // 图片生成（旧 /image 命令已移除 —— 图片生成改由 Agent 的 generate_image 工具完成）
     imageGen: {

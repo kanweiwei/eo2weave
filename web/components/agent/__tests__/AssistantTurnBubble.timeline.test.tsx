@@ -7,6 +7,16 @@ vi.mock('@/i18n', () => ({
   useT: () => (key: string) => key,
 }))
 
+vi.mock('@/store/settings.store', () => ({
+  useSettingsStore: (selector?: (state: unknown) => unknown) => {
+    const state = {
+      maxIterations: 20,
+      setMaxIterations: vi.fn(),
+    }
+    return selector ? selector(state) : state
+  },
+}))
+
 // The bubble navigates (branch conversation) via next/navigation; there is
 // no App Router in unit tests — provide a minimal mock.
 vi.mock('next/navigation', () => ({

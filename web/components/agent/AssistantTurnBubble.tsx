@@ -27,7 +27,7 @@
 import { Fragment, memo, type ReactNode, useContext, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { projectWorkspacePath } from '@/lib/route-paths'
-import { Bot, Database, Split, AlertTriangle, Download } from 'lucide-react'
+import { Bot, Database, Split, AlertTriangle, Download, Minus, Plus } from 'lucide-react'
 import type { Turn } from './group-messages'
 import type {
   DraftAssistantStep,
@@ -46,6 +46,7 @@ import { TextSelectionToolbar } from './TextSelectionToolbar'
 import { AssetCompactList } from './AssetCard'
 import { useT } from '@/i18n'
 import { useConversationStore } from '@/store/conversation.store'
+import { useSettingsStore } from '@/store/settings.store'
 import { ConversationActionContext } from './ConversationActionContext'
 import { downloadImage } from './image-utils'
 import { Lightbox } from './Lightbox'
@@ -320,6 +321,120 @@ function buildSuppressedIds(
 // ─── Stable empty set for suppressed IDs (avoids new Set() per render) ──
 const EMPTY_STRING_SET: Set<string> = new Set()
 
+// ─── Iteration limit stepper ──────────────────────────────────
+
+/** Min/max for the inline stepper — must stay in sync with settings.store `setMaxIterations` clamp */
+const ITERATION_LIMIT_MIN = 1
+const ITERATION_LIMIT_MAX = 100
+/** Step size for the −/+ buttons */
+const ITERATION_LIMIT_STEP = 5
+/** Finite value restored when toggling back from unlimited (matches Settings page default) */
+const ITERATION_LIMIT_DEFAULT = 20
+
+/**
+ * Inline `[−] [20] [+]` editor for the max-iterations limit, shown in the
+ * iteration-limit hint bar so the user can raise the limit and continue
+ * without leaving the conversation. Writes through the same settings store
+ * setter the Settings page uses; the next "continue" picks up the new value.
+ *
+ * Rendered as `∞` when the limit is 0 (unlimited). The editor is only
+ * reachable for finite limits in practice (the hint bar hides when the
+ * run never stops), but it still handles a mid-session switch gracefully.
+ * The `∞` button mirrors the Settings page "unlimited" switch (0 = unlimited)
+ * and restores the last finite value when toggled back off.
+ */
+const IterationLimitStepper = memo(function IterationLimitStepper() {
+  const t = useT()
+  const maxIterations = useSettingsStore((s) => s.maxIterations)
+  const setMaxIterations = useSettingsStore((s) => s.setMaxIterations)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [lastFinite, setLastFinite] = useState(() =>
+    maxIterations === 0 ? ITERATION_LIMIT_DEFAULT : maxIterations,
+  )
+
+  /** Write through the store; remember the last finite value for the ∞ toggle */
+  const applyValue = (value: number) => {
+    setMaxIterations(value)
+    if (value !== 0) setLastFinite(value)
+  }
+
+  const commitDraft = () => {
+    if (draft === null) return
+    const parsed = Number.parseInt(draft, 10)
+    // Garbage/empty input just discards the draft (clamping lives in the store setter)
+    if (!Number.isNaN(parsed)) applyValue(parsed)
+    setDraft(null)
+  }
+
+  const display = maxIterations === 0 ? '∞' : String(maxIterations)
+
+  return (
+    <div
+      className="flex shrink-0 items-center gap-0.5 rounded-md border border-neutral-200 p-0.5 dark:border-neutral-700"
+      data-testid="iteration-limit-stepper"
+    >
+      <button
+        type="button"
+        aria-label={t('conversation.iterationLimit.decrease')}
+        disabled={maxIterations === 0 || maxIterations <= ITERATION_LIMIT_MIN}
+        onClick={() => applyValue(maxIterations - ITERATION_LIMIT_STEP)}
+        className="flex h-5 w-5 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+      >
+        <Minus className="h-3 w-3" />
+      </button>
+      {draft !== null ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          autoFocus
+          value={draft}
+          aria-label={t('settings.maxIterations')}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitDraft()
+            if (e.key === 'Escape') setDraft(null)
+          }}
+          className="h-5 w-8 rounded border border-brand-400 bg-white text-center text-xs tabular-nums text-neutral-700 outline-none dark:bg-neutral-900 dark:text-neutral-200"
+        />
+      ) : (
+        <button
+          type="button"
+          aria-label={t('settings.maxIterations')}
+          title={t('settings.maxIterations')}
+          onClick={() => setDraft(maxIterations === 0 ? '' : String(maxIterations))}
+          className="h-5 w-8 rounded text-center text-xs font-medium tabular-nums text-neutral-500 transition-colors hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          {display}
+        </button>
+      )}
+      <button
+        type="button"
+        aria-label={t('conversation.iterationLimit.increase')}
+        disabled={maxIterations === 0 || maxIterations >= ITERATION_LIMIT_MAX}
+        onClick={() => applyValue(maxIterations + ITERATION_LIMIT_STEP)}
+        className="flex h-5 w-5 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+      >
+        <Plus className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        aria-label={t('settings.maxIterationsUnlimited')}
+        title={t('settings.maxIterationsUnlimited')}
+        aria-pressed={maxIterations === 0}
+        onClick={() => applyValue(maxIterations === 0 ? lastFinite : 0)}
+        className={`flex h-5 w-5 items-center justify-center rounded text-xs transition-colors ${
+          maxIterations === 0
+            ? 'text-brand-500'
+            : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300'
+        }`}
+      >
+        ∞
+      </button>
+    </div>
+  )
+})
+
 // ─── Main component ───────────────────────────────────────────────────
 
 export const AssistantTurnBubble = memo(function AssistantTurnBubble({
@@ -447,6 +562,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
                 {t('conversation.iterationLimit.hint')}
               </span>
             </span>
+            <IterationLimitStepper />
             {conversationActions?.sendMessage && (
               <button
                 type="button"

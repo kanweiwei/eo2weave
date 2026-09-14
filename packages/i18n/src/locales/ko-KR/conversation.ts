@@ -91,6 +91,8 @@ export const conversation = {
       reached: "최대 반복 횟수에 도달했습니다 ({count}회)",
       continue: "계속",
       hint: "작업이 완료되지 않았을 수 있습니다. 메시지를 보내 에이전트가 계속 작업하도록 할 수 있습니다",
+      decrease: "5개 감소",
+      increase: "5개 증가",
     },
     // 이미지 생성 (레거시 /image 명령어는 제거되었습니다 —— 이미지 생성은 Agent의 generate_image 도구로 수행됩니다)
     imageGen: {
