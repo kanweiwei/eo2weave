@@ -37,6 +37,10 @@ interface ParseResult {
 
 /**
  * Parse a SKILL.md string into a Skill object.
+ *
+ * Tolerates common hand-written YAML mistakes: unquoted scalars containing
+ * `: ` (or a trailing `:`) and naively nested double quotes are auto-repaired
+ * before the final parse error is reported (see `repairFrontmatter`).
  */
 export function parseSkillMd(content: string, source: SkillSource = 'import'): ParseResult {
   const trimmed = content.trim()
@@ -57,8 +61,19 @@ export function parseSkillMd(content: string, source: SkillSource = 'import'): P
   try {
     meta = yaml.load(yamlBlock) as Record<string, unknown>
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e)
-    return { skill: null, error: `YAML frontmatter parse error: ${detail}` }
+    // Strict YAML rejects several patterns that hand-written SKILL.md files
+    // produce constantly (`description: Use when: X`, naively nested quotes).
+    // Repair the ambiguous lines and retry before giving up — an unregistered
+    // skill is much worse than a conservatively re-quoted scalar.
+    const repaired = repairFrontmatter(yamlBlock)
+    if (repaired === yamlBlock) {
+      return frontmatterError(e)
+    }
+    try {
+      meta = yaml.load(repaired) as Record<string, unknown>
+    } catch (e2) {
+      return frontmatterError(e2)
+    }
   }
   if (!meta || typeof meta !== 'object') {
     return { skill: null, error: 'Invalid YAML frontmatter (not a mapping)' }
@@ -174,6 +189,116 @@ export function serializeSkillMd(skill: Skill): string {
 // ============================================================================
 // Internal Helpers
 // ============================================================================
+
+/** Build the parse error for frontmatter failures, with an actionable hint. */
+function frontmatterError(e: unknown): ParseResult {
+  const detail = e instanceof Error ? e.message : String(e)
+  return {
+    skill: null,
+    error:
+      `YAML frontmatter parse error: ${detail}. ` +
+      'Hint: quote field values that contain special characters, e.g. ' +
+      'description: "text with: colons or \\"quotes\\""',
+  }
+}
+
+/** A complete, properly escaped double-quoted YAML scalar. */
+const DOUBLE_QUOTED_SCALAR = /^"(?:[^"\\]|\\.)*"$/
+
+/** A complete single-quoted YAML scalar ('' escapes a literal quote). */
+const SINGLE_QUOTED_SCALAR = /^'(?:[^']|'')*'$/
+
+/** Matches `key: value` lines (indent allowed; value must be non-empty). */
+const FRONTMATTER_KEY_LINE = /^([ \t]*)([A-Za-z_][\w.-]*):[ \t](.+)$/
+
+/** Block scalar headers: `>`, `|-`, `>2`, `|2-`, ... */
+const BLOCK_SCALAR_HEADER = /^[|>][0-9]*[+-]?$/
+
+/**
+ * Decide whether an unquoted/naively-quoted scalar value needs repair.
+ *
+ * Only called when strict YAML parsing of the whole block already failed, so
+ * being liberal here cannot break a file that currently works.
+ */
+function needsQuoteRepair(value: string): boolean {
+  if (DOUBLE_QUOTED_SCALAR.test(value) || SINGLE_QUOTED_SCALAR.test(value)) return false
+  if (/:\s/.test(value)) return true // ": " — mapping-value indicator mid-scalar
+  if (/:$/.test(value)) return true // trailing colon acts as a value indicator
+  if (/^#/.test(value) || /\s#/.test(value)) return true // would start a YAML comment
+  if (value.startsWith('"') || value.startsWith("'")) return true // broken quoting
+  return false
+}
+
+/**
+ * Re-quote a raw scalar value as a properly escaped YAML double-quoted
+ * string. One layer of broken wrapping quotes is stripped first, so
+ * `"say "hi""` becomes `"say \\"hi\\""` (parses back to `say "hi"`).
+ */
+function quoteYamlScalar(raw: string): string {
+  let v = raw
+  const wrappedDQ = v.length >= 2 && v.startsWith('"') && v.endsWith('"')
+  const wrappedSQ = v.length >= 2 && v.startsWith("'") && v.endsWith("'")
+  if (wrappedDQ) {
+    v = v.slice(1, -1).replace(/\\(["\\])/g, '$1')
+  } else if (wrappedSQ) {
+    v = v.slice(1, -1).replace(/''/g, "'")
+  }
+  return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
+}
+
+/**
+ * Tolerant repair for hand-written SKILL.md frontmatter.
+ *
+ * Wraps ambiguous scalar values in escaped double quotes so that strings
+ * containing `: `, trailing colons, ` #`, or naively nested quotes parse as
+ * literal text instead of aborting registration. Line-based and conservative:
+ *
+ * - values that are already valid quoted scalars are left untouched
+ * - block scalars (`description: >` + indented lines) are skipped entirely
+ * - `required: false` and other pattern-free lines are never touched, so
+ *   boolean/array semantics survive the repair
+ *
+ * Only invoked after strict `yaml.load` has failed.
+ */
+function repairFrontmatter(yamlBlock: string): string {
+  const out: string[] = []
+  // Indent of the key line that opened a block scalar, while inside one.
+  let blockScalarIndent: number | null = null
+
+  for (const rawLine of yamlBlock.split('\n')) {
+    const line = rawLine.replace(/\r$/, '')
+    const indent = line.length - line.trimStart().length
+
+    if (blockScalarIndent !== null) {
+      // Blank or more-indented lines belong to the block scalar — verbatim.
+      if (line.trim() === '' || indent > blockScalarIndent) {
+        out.push(line)
+        continue
+      }
+      blockScalarIndent = null // dedented — the block scalar ended
+    }
+
+    const m = FRONTMATTER_KEY_LINE.exec(line)
+    if (!m) {
+      out.push(line)
+      continue
+    }
+    const [, lead, key, rawValue] = m
+    const value = rawValue.replace(/[ \t]+$/, '')
+    if (BLOCK_SCALAR_HEADER.test(value)) {
+      blockScalarIndent = indent
+      out.push(line)
+      continue
+    }
+    if (!needsQuoteRepair(value)) {
+      out.push(line)
+      continue
+    }
+    out.push(`${lead}${key}: ${quoteYamlScalar(value)}`)
+  }
+
+  return out.join('\n')
+}
 
 /** Parse Markdown into named sections by H1 headings */
 function parseMarkdownSections(body: string): Record<string, string> {
