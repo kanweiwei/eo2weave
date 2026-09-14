@@ -50,7 +50,7 @@ EO2Weave 是一款 **本地优先的 AI 原生创作平台**。它将本地文�
 
 ```bash
 git clone https://github.com/nutstore/eo2weave.git
-cd creatorweave
+cd eo2weave
 
 # 推荐：按项目配置安装 pnpm 10.21.0
 mise install

@@ -115,7 +115,7 @@ The project is also exploring multi-agent collaboration workflows for content cr
 ```bash
 # Clone the repository
 git clone https://github.com/nutstore/eo2weave.git
-cd creatorweave
+cd eo2weave
 
 # Install the pinned pnpm version (recommended)
 mise install
@@ -147,7 +147,7 @@ pnpm -C web run build
 ### Project Structure
 
 ```
-creatorweave/
+eo2weave/
 ├── web/                    # React frontend application (Desktop)
 │   ├── src/
 │   │   ├── agent/         # AI agent logic, tools, multi-agent collaboration
