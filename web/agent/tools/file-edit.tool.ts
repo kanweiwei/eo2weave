@@ -15,163 +15,19 @@ import { rewritePythonMountPathForNonPythonTool, validateRootPrefix } from './pa
 import { getFormatHandler, buildFormatWriteContext } from './format-registry'
 import { withToolTimeout, isToolTimeoutError } from './tool-utils'
 import { tryDecodeAsText } from './io-shared'
+import {
+  countLinesBefore,
+  findEditMatch,
+  reindentNewText,
+  type EditMatch,
+  type MatchOutcome,
+  type MatchTier,
+} from './fuzzy-match'
 
 // Ensure format handlers are registered before first use
 import './formats'
 
-// ── Fuzzy matching helpers ──────────────────────────────────────────
 
-/** Curly quote constants — models can't output these directly */
-const CURLY_QUOTES = {
-  leftSingle: '\u2018',  // '
-  rightSingle: '\u2019', // '
-  leftDouble: '\u201C',  // "
-  rightDouble: '\u201D', // "
-} as const
-
-/** Normalize curly quotes to straight quotes for fuzzy matching */
-function normalizeQuotes(str: string): string {
-  return str
-    .replaceAll(CURLY_QUOTES.leftSingle, "'")
-    .replaceAll(CURLY_QUOTES.rightSingle, "'")
-    .replaceAll(CURLY_QUOTES.leftDouble, '"')
-    .replaceAll(CURLY_QUOTES.rightDouble, '"')
-}
-
-/** Strip trailing whitespace from each line while preserving line endings */
-function stripTrailingWhitespace(str: string): string {
-  const lines = str.split(/(\r\n|\n|\r)/)
-  let result = ''
-  for (let i = 0; i < lines.length; i++) {
-    const part = lines[i]
-    if (part !== undefined) {
-      result += i % 2 === 0 ? part.replace(/\s+$/, '') : part
-    }
-  }
-  return result
-}
-
-/** Model sometimes outputs sanitized versions of special tags */
-const DESANITIZATIONS: Record<string, string> = {
-  '<fnr>': '<function_results>',
-  '<n>': '<name>',
-  '</n>': '</name>',
-  '<o>': '<output>',
-  '</o>': '</output>',
-  '<e>': '<error>',
-  '</e>': '</error>',
-  '<s>': '<system>',
-  '</s>': '</system>',
-  '<r>': '<result>',
-  '</r>': '</result>',
-}
-
-/** Apply de-sanitization and return which replacements were applied */
-function desanitize(str: string): { result: string; applied: Array<{ from: string; to: string }> } {
-  let result = str
-  const applied: Array<{ from: string; to: string }> = []
-  for (const [from, to] of Object.entries(DESANITIZATIONS)) {
-    const before = result
-    result = result.replaceAll(from, to)
-    if (before !== result) applied.push({ from, to })
-  }
-  return { result, applied }
-}
-
-/**
- * Find the actual string in fileContent matching searchString.
- * Tries in order: exact → quote-normalized.
- * Returns the *actual* substring from fileContent (preserving original formatting),
- * or null if nothing matched.
- */
-function findActualString(fileContent: string, searchString: string): string | null {
-  // 1. Exact match
-  if (fileContent.includes(searchString)) return searchString
-
-  // 2. Quote normalization
-  const normSearch = normalizeQuotes(searchString)
-  const normFile = normalizeQuotes(fileContent)
-  const idx = normFile.indexOf(normSearch)
-  if (idx !== -1) return fileContent.substring(idx, idx + searchString.length)
-
-  return null
-}
-
-/**
- * Normalize input similar to Claude Code's edit preprocessing:
- * - Trim trailing whitespace from new_text for non-markdown files
- * - If old_text is sanitized and exact match fails, de-sanitize old_text and apply
- *   the same replacements to new_text.
- */
-function normalizeEditInput(
-  path: string,
-  fileContent: string,
-  oldText: string,
-  newText: string
-): { oldText: string; newText: string } {
-  // Markdown uses trailing spaces for hard line breaks.
-  const isMarkdown = /\.(md|mdx)$/i.test(path)
-  const normalizedNewText = isMarkdown ? newText : stripTrailingWhitespace(newText)
-
-  // Keep exact match input unchanged.
-  if (fileContent.includes(oldText)) {
-    return { oldText, newText: normalizedNewText }
-  }
-
-  // If model sent sanitized tokens, de-sanitize old_text and mirror replacements in new_text.
-  const { result: desanitizedOldText, applied } = desanitize(oldText)
-  if (desanitizedOldText === oldText || !fileContent.includes(desanitizedOldText)) {
-    return { oldText, newText: normalizedNewText }
-  }
-
-  let desanitizedNewText = normalizedNewText
-  for (const { from, to } of applied) {
-    desanitizedNewText = desanitizedNewText.replaceAll(from, to)
-  }
-
-  return { oldText: desanitizedOldText, newText: desanitizedNewText }
-}
-
-/** Preserve curly quote style from the file into new_text */
-function preserveQuoteStyle(oldString: string, actualOldString: string, newString: string): string {
-  if (oldString === actualOldString) return newString
-
-  const hasDouble =
-    actualOldString.includes(CURLY_QUOTES.leftDouble) ||
-    actualOldString.includes(CURLY_QUOTES.rightDouble)
-  const hasSingle =
-    actualOldString.includes(CURLY_QUOTES.leftSingle) ||
-    actualOldString.includes(CURLY_QUOTES.rightSingle)
-  if (!hasDouble && !hasSingle) return newString
-
-  let result = newString
-  if (hasDouble) result = applyCurlyQuotes(result, '"', CURLY_QUOTES.leftDouble, CURLY_QUOTES.rightDouble)
-  if (hasSingle) result = applyCurlyQuotes(result, "'", CURLY_QUOTES.leftSingle, CURLY_QUOTES.rightSingle)
-  return result
-}
-
-function isOpeningContext(chars: string[], i: number): boolean {
-  if (i === 0) return true
-  const prev = chars[i - 1]
-  return prev === ' ' || prev === '\t' || prev === '\n' || prev === '\r' ||
-    prev === '(' || prev === '[' || prev === '{'
-}
-
-function applyCurlyQuotes(str: string, straight: string, open: string, close: string): string {
-  const chars = [...str]
-  return chars.map((ch, i) => {
-    if (ch !== straight) return ch
-    // For single quotes, don't convert apostrophes in contractions
-    if (straight === "'") {
-      const prev = i > 0 ? chars[i - 1] : undefined
-      const next = i < chars.length - 1 ? chars[i + 1] : undefined
-      if (prev && /\p{L}/u.test(prev) && next && /\p{L}/u.test(next)) {
-        return close // apostrophe
-      }
-    }
-    return isOpeningContext(chars, i) ? open : close
-  }).join('')
-}
 
 /** Format hunks from structuredPatch into a compact unified-diff string */
 function formatHunksToDiff(hunks: Array<{ oldStart: number; oldLines: number; newStart: number; newLines: number; lines: string[] }>): string {
@@ -197,19 +53,21 @@ export const editDefinition: ToolDefinition = {
       'DO NOT use write() for targeted changes to existing files. Always prefer edit() for modifications.',
       '',
       'WORKFLOW:',
-      '1. If the edit fails because old_text was not found, call read(path) to see current contents and retry',
-      '2. Identify the exact text to change',
-      '3. Call edit(path, edits=[{old_text=<exact snippet>, new_text=<replacement>}])',
+      '1. Identify the exact text to change — copy it from read() output',
+      '2. Call edit(path, edits=[{old_text=<snippet>, new_text=<replacement>}])',
+      '3. If the edit fails with old_text_not_found, the error lists the closest candidate lines with similarity — fix old_text from that report, or read(path) again',
+      '',
+      'MATCHING: old_text is matched with a tolerant cascade: exact, then quote/whitespace-normalized, then indentation-insensitive (your indentation is re-applied to new_text), then fuzzy similarity >= 0.9, then line-anchored fuzzy >= 0.8. A match at a lower tier consumes more risk — still aim for exact copies.',
       '',
       'The `edits` array supports one or more edits applied atomically to the same file.',
-      'Each edit is applied atomically — if any edit fails, the entire operation is rolled back.',
+      'If any edit fails, nothing is written.',
       'Example single edit: edit(path, edits=[{old_text:"foo", new_text:"bar"}])',
       'Example multi edit: edit(path, edits=[{old_text:"foo", new_text:"bar"}, {old_text:"baz", new_text:"qux"}])',
       '',
       'TIPS:',
-      '- Copy old_text EXACTLY — whitespace and line breaks must match',
-      '- old_text must be unique in the file (each occurrence must match exactly once)',
-      '- For multi-line changes, include enough surrounding context to make old_text unique',
+      '- Copy old_text directly from read() output — exact matches are always preferred',
+      '- old_text must be unique in the file; ambiguous matches are rejected with the candidate line numbers',
+      '- For multi-line changes, include enough surrounding lines to make old_text unique',
       '- new_text can be an empty string to delete text',
       '- Supports vfs://workspace/... and vfs://agents/{id}/... paths',
     ].join('\n'),
@@ -228,7 +86,7 @@ export const editDefinition: ToolDefinition = {
             properties: {
               old_text: {
                 type: 'string',
-                description: 'Exact text to find in the file. Must match exactly including whitespace and indentation. Copy directly from read() output. Must be unique in the file.',
+                description: 'Text to find in the file. Matched with a tolerant cascade (exact → whitespace/indent-normalized → fuzzy with line anchors); must resolve to exactly one location. Copy from read() output for best fidelity.',
               },
               new_text: {
                 type: 'string',
@@ -252,6 +110,116 @@ export const editDefinition: ToolDefinition = {
 interface ResolvedEdit {
   oldText: string
   newText: string
+}
+
+/**
+ * Strip trailing whitespace from each line while preserving line endings.
+ * Used on new_text for non-markdown files (markdown needs trailing spaces
+ * for hard line breaks).
+ */
+function stripTrailingWhitespace(str: string): string {
+  const lines = str.split(/(\r\n|\n|\r)/)
+  let result = ''
+  for (let i = 0; i < lines.length; i++) {
+    const part = lines[i]
+    if (part !== undefined) {
+      result += i % 2 === 0 ? part.replace(/[ \t]+$/, '') : part
+    }
+  }
+  return result
+}
+
+/** Model output channels sometimes sanitize special tags; undo that */
+const DESANITIZATIONS: Record<string, string> = {
+  '<fnr>': '<function_results>',
+  '<n>': '<name>',
+  '</n>': '</name>',
+  '<o>': '<output>',
+  '</o>': '</output>',
+  '<e>': '<error>',
+  '</e>': '</error>',
+  '<s>': '<system>',
+  '</s>': '</system>',
+  '<r>': '<result>',
+  '</r>': '</result>',
+}
+
+function desanitize(str: string): { result: string; applied: Array<{ from: string; to: string }> } {
+  let result = str
+  const applied: Array<{ from: string; to: string }> = []
+  for (const [from, to] of Object.entries(DESANITIZATIONS)) {
+    const before = result
+    result = result.replaceAll(from, to)
+    if (before !== result) applied.push({ from, to })
+  }
+  return { result, applied }
+}
+
+/**
+ * Match old_text through the cascade. When it finds nothing and old_text
+ * contains sanitized tokens, retry the cascade with the de-sanitized text
+ * and mirror the same replacements into new_text (matching how the model
+ * had to sanitize both sides).
+ */
+function resolveEditMatch(
+  fileContent: string,
+  edit: ResolvedEdit
+): { outcome: MatchOutcome; newText: string } {
+  const outcome = findEditMatch(fileContent, edit.oldText)
+  if (outcome.kind !== 'not_found') {
+    return { outcome, newText: edit.newText }
+  }
+  const { result: desanitized, applied } = desanitize(edit.oldText)
+  if (applied.length === 0 || desanitized === edit.oldText) {
+    return { outcome, newText: edit.newText }
+  }
+  const retry = findEditMatch(fileContent, desanitized)
+  if (retry.kind === 'not_found') {
+    // Report candidates for what the model actually sent.
+    return { outcome, newText: edit.newText }
+  }
+  let newText = edit.newText
+  for (const { from, to } of applied) {
+    newText = newText.replaceAll(from, to)
+  }
+  // Surface 'ok' and also 'ambiguous' — the latter is more actionable than
+  // a generic not_found (newText mirroring is unused for ambiguous).
+  return { outcome: retry, newText }
+}
+
+// ── Not-found error reporting ───────────────────────────────────────
+
+/**
+ * Build the old_text_not_found error. When fuzzy scanning surfaced close
+ * candidates, include them (line + similarity + preview) so the model can
+ * self-correct from the report alone instead of re-reading the file.
+ */
+function buildNotFoundError(
+  path: string,
+  editIndex: number,
+  outcome: Extract<MatchOutcome, { kind: 'not_found' }>
+): string {
+  let message =
+    `edits[${editIndex}].old_text not found in ${path}. ` +
+    'Read the file and adjust old_text. '
+  if (outcome.candidates.length > 0) {
+    const lines = outcome.candidates.map(
+      (c) => `  line ${c.line} (similarity ${c.similarity}): ${c.text}`
+    )
+    message +=
+      `Closest candidates (best similarity ${outcome.bestSimilarity}):\n` +
+      lines.join('\n')
+  } else {
+    message += 'No similar region found in the file.'
+  }
+  return toolErrorJson('edit', 'old_text_not_found', message, {
+    details: {
+      editIndex,
+      path,
+      bestSimilarity: outcome.bestSimilarity,
+      candidates: outcome.candidates,
+    },
+  })
 }
 
 export const editExecutor: ToolExecutor = async (args, context) => {
@@ -445,64 +413,65 @@ async function executeEdits(
       )
     }
 
-    // ── Phase 1: Resolve all matches ───────────────────────────────
+    // ── Phase 1: Resolve all matches via the fuzzy cascade ─────────
     interface ResolvedMatch {
       index: number           // position in original fileContent
       editIndex: number       // index into edits array
-      actualOldText: string   // the actual text from the file (with original quotes etc.)
-      actualNewText: string   // new_text adjusted for quote style
+      actualOldText: string   // the actual text from the file
+      actualNewText: string   // new_text adjusted for indentation
+      tier: MatchTier
+      similarity: number
+      line: number            // 1-based line of the match start
     }
+
+    // new_text carries trailing-whitespace semantics only for markdown
+    // (hard line breaks); elsewhere trailing spaces are model noise.
+    const isMarkdown = /\.(md|mdx)$/i.test(path)
+    const normalizedEdits: ResolvedEdit[] = edits.map((edit) => ({
+      oldText: edit.oldText,
+      newText: isMarkdown ? edit.newText : stripTrailingWhitespace(edit.newText),
+    }))
 
     const matches: ResolvedMatch[] = []
 
-    for (let i = 0; i < edits.length; i++) {
-      const edit = edits[i]!
-      const normalizedEdit = normalizeEditInput(path, fileContent, edit.oldText, edit.newText)
-      const actualOldText = findActualString(fileContent, normalizedEdit.oldText)
+    for (let i = 0; i < normalizedEdits.length; i++) {
+      const edit = normalizedEdits[i]!
+      const { outcome, newText: resolvedNewText } = resolveEditMatch(fileContent, edit)
 
-      if (!actualOldText) {
-        return toolErrorJson(
-          'edit',
-          'old_text_not_found',
-          `edits[${i}].old_text not found in the file. ` +
-            'Verify the exact content with the read tool first. ' +
-            'Hint: Whitespace and line endings must match exactly.'
-        )
+      if (outcome.kind === 'not_found') {
+        return buildNotFoundError(path, i, outcome)
       }
 
-      const actualNewText = preserveQuoteStyle(
-        normalizedEdit.oldText,
-        actualOldText,
-        normalizedEdit.newText
-      )
-
-      // Check for ambiguous match (multiple occurrences)
-      const matchCount = fileContent.split(actualOldText).length - 1
-      if (matchCount > 1) {
+      if (outcome.kind === 'ambiguous') {
+        const occurrences = outcome.occurrences
+        const locList = occurrences.map((o) => `line ${o.line}`).join(', ')
+        const hint =
+          outcome.tier === 'fuzzy' || outcome.tier === 'anchored'
+            ? 'These locations differ only slightly (fuzzy match). Include a distinguishing line, e.g. a function signature or unique identifier, in old_text.'
+            : 'Include more surrounding lines to make old_text unique.'
         return toolErrorJson(
           'edit',
           'ambiguous_match',
-          `edits[${i}].old_text appears ${matchCount} times in the file. ` +
-            'Provide a more unique snippet for this edit.'
+          `edits[${i}].old_text matches ${occurrences.length} location(s): ${locList}. ${hint}`,
+          {
+            details: {
+              editIndex: i,
+              path,
+              tier: outcome.tier,
+              occurrences,
+            },
+          }
         )
       }
 
-      // Find the actual character offset using the actual old text
-      const charOffset = fileContent.indexOf(actualOldText)
-      if (charOffset === -1) {
-        // Should not happen since findActualString succeeded, but safety check
-        return toolErrorJson(
-          'edit',
-          'old_text_not_found',
-          `edits[${i}].old_text could not be located in the file.`
-        )
-      }
+      const found: EditMatch = outcome.match
+      const start = found.start
+      const end = found.end
 
       // Check for overlapping matches
       const overlapWith = matches.find((m) => {
         const mEnd = m.index + m.actualOldText.length
-        const thisEnd = charOffset + actualOldText.length
-        return charOffset < mEnd && m.index < thisEnd
+        return start < mEnd && m.index < end
       })
       if (overlapWith) {
         return toolErrorJson(
@@ -512,11 +481,22 @@ async function executeEdits(
         )
       }
 
+      // Re-indent new_text when the match relied on an indent delta.
+      // lineAligned=false means the region starts after the file line's own
+      // leading whitespace — its first line needs no delta.
+      let actualNewText = resolvedNewText
+      if (found.indentDelta) {
+        actualNewText = reindentNewText(actualNewText, found.indentDelta, !found.lineAligned)
+      }
+
       matches.push({
-        index: charOffset,
+        index: start,
         editIndex: i,
-        actualOldText,
+        actualOldText: fileContent.slice(start, end),
         actualNewText,
+        tier: found.tier,
+        similarity: found.similarity,
+        line: countLinesBefore(fileContent, start),
       })
     }
 
@@ -587,6 +567,13 @@ async function executeEdits(
       totalEdits: edits.length,
       appliedCount,
       noopCount,
+      editResults: matches.map((m) => ({
+        editIndex: m.editIndex,
+        line: m.line,
+        tier: m.tier,
+        similarity: m.similarity,
+        noop: m.actualOldText === m.actualNewText,
+      })),
       diff: diffText || undefined,
       status,
       pendingCount,
@@ -620,6 +607,6 @@ export const editPromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   section: '### File Operations',
   lines: [
-    '- `edit(path, edits=[{old_text, new_text}])` - Apply one or more text replacements to an existing file. All edits are applied atomically. (supports `vfs://workspace/...`, `vfs://agents/{id}/...`)',
+    '- `edit(path, edits=[{old_text, new_text}])` - Apply one or more text replacements to an existing file. All edits are applied atomically. old_text matching is tolerant (whitespace/indent-normalized, fuzzy fallback); ambiguous or unmatched old_text fails with candidate locations. (supports `vfs://workspace/...`, `vfs://agents/{id}/...`)',
   ],
 }

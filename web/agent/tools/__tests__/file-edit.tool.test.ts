@@ -285,7 +285,9 @@ describe('file edit tool (edits-array-only)', () => {
     const error = unwrapError(result)
 
     expect(error.code).toBe('ambiguous_match')
-    expect(error.message).toContain('appears 2 times')
+    expect(error.message).toContain('matches 2 location(s)')
+    expect(error.message).toContain('line 1')
+    expect(error.message).toContain('line 2')
     expect(writeFileMock).not.toHaveBeenCalled()
   })
 
@@ -599,6 +601,96 @@ describe('file edit tool (edits-array-only)', () => {
     expect(writeFileMock).toHaveBeenCalledWith('src/a.ts', 'const label = "new"\n', null, 'ws-1')
   })
 
+  it('re-indents ALL new_text lines at the indent tier, including the first (S4 regression)', async () => {
+    // Search is one level shallower than the file block: the delta vote
+    // captures '+2 spaces'. The match region starts at column 0 (the file
+    // line's own indentation is inside it), so the first new_text line must
+    // also receive the delta.
+    const fileContent = [
+      'export function alpha(x: number): number {',
+      '  const total = sum(values)',
+      '  if (x > 0) {',
+      '    const scaled = x * factor',
+      '    return alpha(total + scaled)',
+      '  }',
+      '  return alpha(total)',
+      '}',
+    ].join('\n')
+    resolveVfsTargetMock.mockResolvedValueOnce({
+      kind: 'workspace',
+      path: 'src/a.ts',
+      backend: {
+        label: 'workspace',
+        readFile: async () => ({
+          content: fileContent,
+          metadata: { size: fileContent.length, contentType: 'text/plain' },
+        }),
+        writeFile: writeFileMock,
+      },
+    })
+    const readFileState = new Map([
+      ['workspace:src/a.ts', { content: fileContent, timestamp: Date.now(), isPartialView: false }],
+    ])
+
+    const result = await editExecutor(
+      {
+        path: 'src/a.ts',
+        edits: [
+          {
+            old_text: 'if (x > 0) {\n  const scaled = x * factor\n  return alpha(total + scaled)\n}',
+            new_text: 'if (x > 0) {\n  const scaled = x * factor2\n  return alpha(total + scaled)\n}',
+          },
+        ],
+      },
+      makeContext({ readFileState })
+    )
+    const data = unwrapOk(result)
+
+    expect(data.appliedCount).toBe(1)
+    expect(data.editResults[0]?.tier).toBe('indent')
+    expect(writeFileMock).toHaveBeenCalledWith(
+      'src/a.ts',
+      [
+        'export function alpha(x: number): number {',
+        '  const total = sum(values)',
+        '  if (x > 0) {',
+        '    const scaled = x * factor2',
+        '    return alpha(total + scaled)',
+        '  }',
+        '  return alpha(total)',
+        '}',
+      ].join('\n')
+    )
+  })
+
+  it('adds a distinguishing-line hint for fuzzy/anchored ambiguity (S5 feedback)', async () => {
+    const fileContent = 'function alpha() {\n  work(1)\n}\n\nfunction gamma() {\n  work(1)\n}\n'
+    resolveVfsTargetMock.mockResolvedValueOnce({
+      kind: 'workspace',
+      path: 'src/a.ts',
+      backend: {
+        label: 'workspace',
+        readFile: async () => ({
+          content: fileContent,
+          metadata: { size: fileContent.length, contentType: 'text/plain' },
+        }),
+        writeFile: writeFileMock,
+      },
+    })
+    const readFileState = new Map([
+      ['workspace:src/a.ts', { content: fileContent, timestamp: Date.now(), isPartialView: false }],
+    ])
+
+    const result = await editExecutor(
+      { path: 'src/a.ts', edits: [{ old_text: 'function beta() {\n  work(1)\n}', new_text: 'x' }] },
+      makeContext({ readFileState })
+    )
+    const error = unwrapError(result)
+
+    expect(error.code).toBe('ambiguous_match')
+    expect(error.message).toContain('distinguishing line')
+  })
+
   it('preserves trailing whitespace in new_text for markdown files', async () => {
     resolveVfsTargetMock.mockResolvedValueOnce({
       kind: 'workspace',
@@ -639,7 +731,7 @@ describe('file edit tool (edits-array-only)', () => {
     expect(writeFileMock).toHaveBeenCalledWith('README.md', 'Title  \n', null, 'ws-1')
   })
 
-  it('does not fuzzy-match old_text based on trailing whitespace differences', async () => {
+  it('matches old_text despite trailing whitespace differences (whitespace tier)', async () => {
     resolveVfsTargetMock.mockResolvedValueOnce({
       kind: 'workspace',
       path: 'src/a.ts',
@@ -663,9 +755,12 @@ describe('file edit tool (edits-array-only)', () => {
       { path: 'src/a.ts', edits: [{ old_text: 'abc\nnext', new_text: 'replaced' }] },
       makeContext({ readFileState })
     )
-    const error = unwrapError(result)
+    const data = unwrapOk(result)
 
-    expect(error.code).toBe('old_text_not_found')
-    expect(writeFileMock).not.toHaveBeenCalled()
+    // The whitespace-insensitive tier matches despite the trailing spaces
+    expect(data.appliedCount).toBe(1)
+    expect(data.editResults[0]?.tier).toBe('whitespace')
+    // This fixture's backend.writeFile is the raw mock (no extra args)
+    expect(writeFileMock).toHaveBeenCalledWith('src/a.ts', 'replaced\n')
   })
 })
