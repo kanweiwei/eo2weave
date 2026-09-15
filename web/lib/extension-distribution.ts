@@ -22,6 +22,19 @@
 
 export type GuideMethod = 'store' | 'zip'
 
+/**
+ * True on mobile devices (phones/tablets), where Chrome/Edge extensions
+ * cannot be installed at all. User-agent based on purpose: a narrow
+ * desktop window is still a desktop and CAN install the extension, so a
+ * viewport check (useMobile) would be wrong here. SSR-safe (returns false).
+ */
+export function isMobileDeviceForExtension(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  )
+}
+
 /** Chrome Web Store listing for EO2Weave. */
 export const CHROME_WEB_STORE_URL =
   'https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml'

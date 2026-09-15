@@ -52,6 +52,7 @@ import { ExportPanel, useExport } from '@/components/export'
 import { initializeTheme, useThemeStore } from '@/store/theme.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionBanner, ExtensionOutdatedBanner } from '@/components/extension'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { MCPSettingsDialog } from '@/components/mcp'
 import { SettingsDialog, type SettingsTab } from '@/components/settings/SettingsDialog'
 import { useLocale, useT } from '@/i18n'
@@ -773,8 +774,11 @@ export function WorkspaceLayout({
         }}
       />
 
-      {/* Extension install banner — opens guide dialog via store */}
-      <ExtensionBanner onInstallClick={() => useExtensionStore.getState().openInstallGuide()} />
+      {/* Extension install banner — opens guide dialog via store.
+          Hidden on mobile: browsers there cannot install extensions. */}
+      {!isMobileDeviceForExtension() && (
+        <ExtensionBanner onInstallClick={() => useExtensionStore.getState().openInstallGuide()} />
+      )}
 
       {/* Extension outdated banner — shown when installed version is behind latest */}
       <ExtensionOutdatedBanner />

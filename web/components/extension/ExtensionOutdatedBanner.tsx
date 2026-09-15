@@ -16,7 +16,7 @@ import { AlertTriangle, Store, Download, Sparkles, RefreshCw, X } from 'lucide-r
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, EXTENSION_LATEST_VERSION } from '@/app-build'
-import { CHROME_WEB_STORE_URL } from '@/lib/extension-distribution'
+import { CHROME_WEB_STORE_URL, isMobileDeviceForExtension } from '@/lib/extension-distribution'
 
 export function ExtensionOutdatedBanner() {
   const t = useT()
@@ -28,14 +28,18 @@ export function ExtensionOutdatedBanner() {
   const shouldShowNewerBanner = useExtensionStore((s) => s.shouldShowNewerBanner)
   const dismissOutdatedBanner = useExtensionStore((s) => s.dismissOutdatedBanner)
   const dismissNewerBanner = useExtensionStore((s) => s.dismissNewerBanner)
+  // Only meaningful when the extension is installed, which mobile devices can
+  // never have — gate here so both banners are structurally mobile-free.
+  const isMobile = isMobileDeviceForExtension()
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
+    if (isMobile) return
     if (status === 'checking') return
     setVisible(shouldShowOutdatedBanner() || shouldShowNewerBanner())
-  }, [status, extensionVersion, newerThanWeb, shouldShowOutdatedBanner, shouldShowNewerBanner])
+  }, [isMobile, status, extensionVersion, newerThanWeb, shouldShowOutdatedBanner, shouldShowNewerBanner])
 
-  if (!visible) return null
+  if (!visible || isMobile) return null
 
   const outdated = shouldShowOutdatedBanner()
 

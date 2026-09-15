@@ -8,6 +8,7 @@ import {
 } from '@/webmcp'
 import { useSettingsStore } from '@/store/settings.store'
 import { useExtensionStore } from '@/store/extension.store'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { ExternalTrustCard } from '@/components/external-tools/ExternalTrustCard'
 import { WebMCPGlobalToggleCard } from './WebMCPGlobalToggleCard'
 import { WebMCPHostList } from './WebMCPHostList'
@@ -65,6 +66,10 @@ export function WebMCPSettings() {
     useExtensionStore.getState().openInstallGuide()
   }
 
+  // Mobile browsers cannot install extensions — hide the install prompt;
+  // the rest of the WebMCP card (status, refresh, host list) stays unchanged.
+  const showInstallPrompt = !bridgeAvailable && !extensionInstalled && !isMobileDeviceForExtension()
+
   const formatTime = (timestamp: number) =>
     new Date(timestamp).toLocaleString(undefined, {
       month: 'short',
@@ -89,6 +94,7 @@ export function WebMCPSettings() {
         onToggleGlobal={undefined}
         onRefresh={handleRefresh}
         onInstallExtension={handleInstallExtension}
+        showInstallPrompt={showInstallPrompt}
         formatTime={formatTime}
       />
 

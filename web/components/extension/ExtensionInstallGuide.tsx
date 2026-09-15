@@ -38,6 +38,7 @@ import {
   ExternalLink,
   Store,
   Package,
+  Smartphone,
 } from 'lucide-react'
 import {
   BrandDialog,
@@ -49,7 +50,11 @@ import {
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID } from '@/app-build'
-import { CHROME_WEB_STORE_URL, type GuideMethod } from '@/lib/extension-distribution'
+import {
+  CHROME_WEB_STORE_URL,
+  isMobileDeviceForExtension,
+  type GuideMethod,
+} from '@/lib/extension-distribution'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -579,6 +584,45 @@ interface ExtensionInstallGuideProps {
   onOpenChange: (open: boolean) => void
 }
 
+/**
+ * Mobile variant of the guide: phones/tablets cannot install desktop-browser
+ * extensions, so instead of the multi-step walkthrough we show a short
+ * "desktop only" notice. Kept as its own component so the main guide's hook
+ * order stays unconditional (rules-of-hooks).
+ */
+function MobileInstallNotice({ open, onOpenChange }: ExtensionInstallGuideProps) {
+  const t = useT()
+
+  return (
+    <BrandDialog open={open} onOpenChange={onOpenChange} modal={true}>
+      <BrandDialogContent className="w-[min(94vw,400px)] max-w-none">
+        <BrandDialogHeader>
+          <div className="flex items-center gap-2.5">
+            <Globe className="h-[18px] w-[18px] text-primary-600 dark:text-primary-400" />
+            <BrandDialogTitle>{t('extension.guideTitle')}</BrandDialogTitle>
+          </div>
+          <BrandDialogClose asChild>
+            <button
+              type="button"
+              aria-label={t('common.close')}
+              className="text-tertiary transition-colors hover:text-primary"
+              onClick={() => onOpenChange(false)}
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </BrandDialogClose>
+        </BrandDialogHeader>
+        <div className="flex items-start gap-3 rounded-xl border border-border bg-tertiary px-4 py-3">
+          <Smartphone className="mt-0.5 h-4 w-4 shrink-0 text-tertiary" />
+          <p className="text-sm leading-relaxed text-secondary">
+            {t('extension.mobileNotice')}
+          </p>
+        </div>
+      </BrandDialogContent>
+    </BrandDialog>
+  )
+}
+
 export function ExtensionInstallGuide({ open, onOpenChange }: ExtensionInstallGuideProps) {
   const t = useT()
   const installGuideStep = useExtensionStore((s) => s.installGuideStep)
@@ -589,6 +633,13 @@ export function ExtensionInstallGuide({ open, onOpenChange }: ExtensionInstallGu
   // Subscribed so picking a method re-renders the flow immediately.
   const guideMethod = useExtensionStore((s) => s.guideMethod)
   const pickGuideMethod = useExtensionStore((s) => s.pickGuideMethod)
+
+  // Mobile browsers cannot install extensions — delegate to the notice
+  // variant. This branch stays AFTER all hooks so hook order is stable.
+  if (isMobileDeviceForExtension()) {
+    return <MobileInstallNotice open={open} onOpenChange={onOpenChange} />
+  }
+
   const method: GuideMethod | null = installGuideStep <= 1 ? null : guideMethod
   const storeFlow = method === 'store'
   const TOTAL = storeFlow ? 4 : 5

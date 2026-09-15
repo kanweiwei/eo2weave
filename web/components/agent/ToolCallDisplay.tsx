@@ -22,6 +22,7 @@ import { QuestionCard } from './QuestionCard'
 import type { RawOption } from './QuestionCard.utils'
 import { ExtensionErrorCard } from '@/components/extension'
 import { useExtensionStore } from '@/store/extension.store'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { getPendingQuestion, removePendingQuestion } from '@/store/pending-question.store'
 import { useT } from '@/i18n'
 import { getRenderer } from './tool-renderers/registry'
@@ -270,8 +271,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
   // ── 2. web bridge error → ExtensionErrorCard ──
   const isWebBridgeTool = toolName === 'web_search' || toolName === 'web_fetch'
   if (isWebBridgeTool && ctx.result && !ctx.result.ok && (ctx.result.error as { code?: string })?.code === 'BRIDGE_UNAVAILABLE') {
-    const openInstallGuide = useExtensionStore.getState().openInstallGuide
-    return <ExtensionErrorCard onInstallClick={() => openInstallGuide()} />
+    // Mobile devices can't install the extension — no install prompt there.
+    if (!isMobileDeviceForExtension()) {
+      const openInstallGuide = useExtensionStore.getState().openInstallGuide
+      return <ExtensionErrorCard onInstallClick={() => openInstallGuide()} />
+    }
   }
 
   // ── 3. spawn_subagent / batch_spawn → rich subagent view ──

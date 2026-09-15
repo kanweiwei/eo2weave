@@ -37,6 +37,7 @@ import {
   Keyboard,
   Database,
   ShieldCheck,
+  Smartphone,
   Store,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -61,7 +62,7 @@ import { useSettingsStore } from '@/store/settings.store'
 import { useTheme, type ThemeMode } from '@/store/theme.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, APP_VERSION, EXTENSION_LATEST_VERSION } from '@/app-build'
-import { CHROME_WEB_STORE_URL } from '@/lib/extension-distribution'
+import { CHROME_WEB_STORE_URL, isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { useWebContainerStore } from '@/store/webcontainer.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import {
@@ -317,6 +318,9 @@ function NotificationsSection() {
 function ExtensionSettingsPanel() {
   const t = useT()
   const { checkStatus, openInstallGuide } = useExtensionStore()
+  // Mobile browsers cannot install extensions — hide the install actions and
+  // show the desktop-only notice instead (status/version info stays visible).
+  const isMobileDevice = isMobileDeviceForExtension()
 
   // Refresh status when this panel renders
   const currentStatus = checkStatus()
@@ -329,6 +333,14 @@ function ExtensionSettingsPanel() {
   return (
     <div className="space-y-5 py-1">
       <p className="text-xs text-tertiary">{t('extension.settingsDescription')}</p>
+
+      {/* Mobile: extensions can't be installed here — notice replaces install buttons */}
+      {isMobileDevice && (
+        <div className="flex items-start gap-3 rounded-xl border border-border bg-tertiary px-4 py-3">
+          <Smartphone className="mt-0.5 h-4 w-4 shrink-0 text-tertiary" />
+          <p className="text-sm leading-relaxed text-secondary">{t('extension.mobileNotice')}</p>
+        </div>
+      )}
 
       {/* Status */}
       <div className="flex items-center justify-between rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-800">
@@ -421,28 +433,33 @@ function ExtensionSettingsPanel() {
 
       {/* Install from Chrome Web Store — one-click install + auto-updates.
           Always visible: the store serves every Chromium browser and users
-          without store access can fall back to the zip button below. */}
-      <BrandButton
-        variant="primary"
-        className="w-full"
-        onClick={() => window.open(CHROME_WEB_STORE_URL, '_blank')}
-      >
-        <Store className="mr-2 h-4 w-4" />
-        {t('extension.settingsStoreButton')}
-      </BrandButton>
+          without store access can fall back to the zip button below.
+          Hidden on mobile, where extensions cannot be installed at all. */}
+      {!isMobileDevice && (
+        <BrandButton
+          variant="primary"
+          className="w-full"
+          onClick={() => window.open(CHROME_WEB_STORE_URL, '_blank')}
+        >
+          <Store className="mr-2 h-4 w-4" />
+          {t('extension.settingsStoreButton')}
+        </BrandButton>
+      )}
 
-      {/* Download extension button — always visible */}
-      <BrandButton
-        variant="outline"
-        className="w-full"
-        onClick={() => window.open(`/chrome-extension.zip?v=${APP_BUILD_ID}`, '_blank')}
-      >
-        <Download className="mr-2 h-4 w-4" />
-        {t('extension.downloadButton')}
-      </BrandButton>
+      {/* Download extension button — always visible (desktop only) */}
+      {!isMobileDevice && (
+        <BrandButton
+          variant="outline"
+          className="w-full"
+          onClick={() => window.open(`/chrome-extension.zip?v=${APP_BUILD_ID}`, '_blank')}
+        >
+          <Download className="mr-2 h-4 w-4" />
+          {t('extension.downloadButton')}
+        </BrandButton>
+      )}
 
       {/* Install guide button — only when not installed */}
-      {!isInstalled && (
+      {!isInstalled && !isMobileDevice && (
         <BrandButton
           variant="secondary"
           className="w-full"

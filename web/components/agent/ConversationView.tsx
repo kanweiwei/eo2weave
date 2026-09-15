@@ -25,6 +25,7 @@ import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.stor
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useSettingsStore } from '@/store/settings.store'
 import { useExtensionStore } from '@/store/extension.store'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import type { FileMentionItem } from './FileMentionExtension'
 import { useInitialMessage } from './useInitialMessage'
 import { ConversationMessages } from './ConversationMessages'
@@ -754,7 +755,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
             <p className={`mt-0.5 ${colors.mutedText}`}>
               {t(pattern.getDescriptionKey())}
             </p>
-            {pattern.action && (
+            {pattern.action && !isMobileDeviceForExtension() && (
               <button
                 type="button"
                 onClick={() => pattern.action!.onClick(store)}

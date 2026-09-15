@@ -12,6 +12,8 @@ interface WebMCPGlobalToggleCardProps {
   onToggleGlobal?: (enabled: boolean) => void
   onRefresh: () => void
   onInstallExtension: () => void
+  /** Whether the "extension required → install" prompt shows (hidden on mobile) */
+  showInstallPrompt?: boolean
   formatTime: (timestamp: number) => string
 }
 
@@ -33,6 +35,7 @@ export function WebMCPGlobalToggleCard({
   onToggleGlobal,
   onRefresh,
   onInstallExtension,
+  showInstallPrompt,
   formatTime,
 }: WebMCPGlobalToggleCardProps) {
   return (
@@ -77,8 +80,9 @@ export function WebMCPGlobalToggleCard({
         </BrandButton>
       </div>
 
-      {/* Extension not installed — prompt to install (inline, no tab switching) */}
-      {!bridgeAvailable && !extensionInstalled && (
+      {/* Extension not installed — prompt to install (inline, no tab switching).
+          Callers hide this on mobile where extensions cannot be installed. */}
+      {(showInstallPrompt ?? (!bridgeAvailable && !extensionInstalled)) && (
         <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="min-w-0 flex-1">

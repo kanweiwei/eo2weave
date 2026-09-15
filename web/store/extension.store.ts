@@ -10,7 +10,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { isWebBridgeAvailable } from '@/agent/tools/web-bridge.tool'
 import { EXTENSION_LATEST_VERSION } from '@/app-build'
-import type { GuideMethod } from '@/lib/extension-distribution'
+import { isMobileDeviceForExtension, type GuideMethod } from '@/lib/extension-distribution'
 import {
   registerDynamicProvider,
   unregisterDynamicProvider,
@@ -348,6 +348,8 @@ export const useExtensionStore = create<ExtensionState>()(
 
       shouldShowBanner: () => {
         const { status, bannerDismissedAt } = get()
+        // Mobile browsers cannot install extensions — never nag there.
+        if (isMobileDeviceForExtension()) return false
         if (status === 'installed') return false
         if (status === 'checking') return false
         if (bannerDismissedAt) {
@@ -358,6 +360,9 @@ export const useExtensionStore = create<ExtensionState>()(
       },
 
       openInstallGuide: () => {
+        // Mobile devices can't install extensions; the guide only shows a
+        // "desktop only" notice there (see ExtensionInstallGuide).
+        if (isMobileDeviceForExtension()) return
         set({ installGuideOpen: true })
       },
 

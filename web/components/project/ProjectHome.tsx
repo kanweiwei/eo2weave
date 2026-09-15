@@ -52,6 +52,7 @@ import { useTheme, ACCENT_COLORS, type AccentColor } from '@/store/theme.store'
 import { useT, useLocale, LOCALE_LABELS, type Locale } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionBanner } from '@/components/extension'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { runDiagnostics, copyMarkdownToClipboard } from '@/storage/diagnostics'
 import { RESET_REQUIRES_TAB_CLOSURE } from '@/storage/init'
 import { SiteFooter } from '@/components/layout/SiteFooter'
@@ -919,8 +920,11 @@ export function ProjectHome({
     <div className="relative min-h-screen bg-background home-grain">
       <style>{designStyles}</style>
 
-      {/* Extension install banner */}
-      <ExtensionBanner onInstallClick={() => useExtensionStore.getState().openInstallGuide()} />
+      {/* Extension install banner — hidden on mobile: browsers there
+          cannot install extensions. */}
+      {!isMobileDeviceForExtension() && (
+        <ExtensionBanner onInstallClick={() => useExtensionStore.getState().openInstallGuide()} />
+      )}
 
       {/* Hero section */}
       <header className="relative overflow-hidden">
