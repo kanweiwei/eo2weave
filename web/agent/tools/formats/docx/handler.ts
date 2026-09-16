@@ -5,9 +5,6 @@
  * Strategy:
  *   - ≤30,000 chars → full text output
  *   - >30,000 chars → first 30,000 chars + summary + python hint
- *
- * For editing, the agent should use the cw-word-editor skill (Python/Pyodide)
- * which provides a full structured DocumentModel + 89 EditOps.
  */
 
 import type { FormatHandler, FormatReadResult } from '../../format-registry'
@@ -52,9 +49,7 @@ export const docxHandler: FormatHandler = {
   formatHint:
     'This is a Word (.docx) document. read() returns basic text extraction. '
     + 'For small documents (≤10K chars), full content is shown. '
-    + 'For larger documents, the first 10K chars are shown with a summary. '
-    + 'To edit, restructure, or perform detailed analysis, use the cw-word-editor skill '
-    + 'which provides full document structure (paragraphs, tables, images, styles) and 89 edit operations.',
+    + 'For larger documents, the first 10K chars are shown with a summary.',
 
   async read(data: ArrayBuffer | Uint8Array, path: string): Promise<FormatReadResult> {
     const input = data instanceof ArrayBuffer ? new Uint8Array(data) : data
@@ -122,8 +117,6 @@ export const docxHandler: FormatHandler = {
           '--- Full Content ---',
           '',
           text,
-          '',
-          `💡 Use the cw-word-editor skill to edit this document (styles, formatting, tables, images, 89 edit operations).`,
         ].join('\n'),
         kind: 'docx',
         metadata: { totalParagraphs, totalChars },
@@ -148,8 +141,6 @@ export const docxHandler: FormatHandler = {
         previewText,
         '',
         `... ${remainingChars.toLocaleString()} more characters (showing first ~${FULL_TEXT_THRESHOLD.toLocaleString()} of ${totalChars.toLocaleString()})`,
-        '',
-        `💡 Use the cw-word-editor skill to read/edit the full document, or ask to read a specific section.`,
       ].join('\n'),
       kind: 'docx',
       metadata: { totalParagraphs, totalChars },

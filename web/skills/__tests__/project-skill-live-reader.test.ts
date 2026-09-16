@@ -41,7 +41,7 @@ describe('parseProjectSkillId', () => {
   })
 
   it('returns null for non-project skill IDs', () => {
-    expect(parseProjectSkillId('builtin:cw-word-editor')).toBeNull()
+    expect(parseProjectSkillId('builtin:cw-brainstorm')).toBeNull()
     expect(parseProjectSkillId('user:my-skill')).toBeNull()
     expect(parseProjectSkillId('some-random-id')).toBeNull()
   })

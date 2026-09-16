@@ -56,7 +56,7 @@ export async function ensureMaterialized(
   }
 
   // Prune stale builtin skill directories that are no longer bundled.
-  // This handles renamed skills (e.g. `cw:word-editor` → `cw-word-editor`):
+  // This handles renamed skills (e.g. `cw:brainstorm` → `cw-brainstorm`):
   // the old directory remains on disk after a rename. We compare the actual
   // `builtin/` entries against the bundled skill names and remove orphans.
   const pruned = await pruneStaleBuiltinDirs(adapter, bundledManifest)

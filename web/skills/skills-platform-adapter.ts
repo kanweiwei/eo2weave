@@ -237,7 +237,7 @@ async function listFilesRecursive(
  * This is used by read_skill to always get the latest instruction content,
  * bypassing the SQLite cache which may be stale.
  *
- * @param skillName - Skill name (e.g. "cw-word-editor")
+ * @param skillName - Builtin skill name (e.g. "cw-brainstorm")
  * @returns Raw SKILL.md text content, or null
  */
 export async function readSkillMdFromOPFS(
@@ -258,7 +258,7 @@ export async function readSkillMdFromOPFS(
  * List all resource files for a builtin skill from OPFS.
  * Returns metadata (path, type, size) without reading file content.
  *
- * @param skillName - Skill name (e.g. "cw-word-editor")
+ * @param skillName - Builtin skill name (e.g. "cw-brainstorm")
  * @returns Array of resource metadata
  */
 export async function listSkillResourcesFromOPFS(
@@ -307,8 +307,8 @@ export async function listSkillResourcesFromOPFS(
  * Read a specific resource file for a builtin skill from OPFS.
  * Falls back to bundled registry if file not found in OPFS.
  *
- * @param skillName - Skill name (e.g. "cw-word-editor")
- * @param resourcePath - Relative path (e.g. "scripts/writeback.py")
+ * @param skillName - Builtin skill name (e.g. "cw-brainstorm")
+ * @param resourcePath - Relative path within the skill package
  * @returns Resource data with content
  */
 export async function readSkillResourceFromOPFS(

@@ -84,52 +84,6 @@ registerSkill('cw-brainstorm', [
 ])
 
 // ============================================================================
-// cw-nol-editor — Guide for .nol (Outline Notes) file operations
-// ============================================================================
-
-import nolEditorSkillMd from './builtin-packages/nol-editor/SKILL.md?raw'
-
-registerSkill('cw-nol-editor', [
-  { path: 'SKILL.md', content: nolEditorSkillMd },
-])
-
-// ============================================================================
-// word-editor — LLM Wiki mode docx editor (89 EditOps)
-// ============================================================================
-
-// Text files — imported as raw strings through webpack's asset/source rule
-import wordEditorSkillMd from './builtin-packages/word-editor/SKILL.md?raw'
-import wordEditorInit from './builtin-packages/word-editor/scripts/__init__.py?raw'
-import wordEditorIngest from './builtin-packages/word-editor/scripts/ingest.py?raw'
-import wordEditorLint from './builtin-packages/word-editor/scripts/lint.py?raw'
-import wordEditorModel from './builtin-packages/word-editor/scripts/model.py?raw'
-import wordEditorView from './builtin-packages/word-editor/scripts/view.py?raw'
-import wordEditorWriteback from './builtin-packages/word-editor/scripts/writeback.py?raw'
-import wordEditorValidateXml from './builtin-packages/word-editor/scripts/validate_xml.py?raw'
-
-import wordEditorDesign from './builtin-packages/word-editor/references/DESIGN.md?raw'
-import wordEditorSchema from './builtin-packages/word-editor/references/SCHEMA.md?raw'
-
-// Binary file — blank.docx stored as base64 text
-import wordEditorBlankB64 from './builtin-packages/word-editor/blank.docx.b64?raw'
-
-registerSkill('cw-word-editor', [
-  { path: 'SKILL.md', content: wordEditorSkillMd },
-  { path: 'scripts/__init__.py', content: wordEditorInit },
-  { path: 'scripts/ingest.py', content: wordEditorIngest },
-  { path: 'scripts/lint.py', content: wordEditorLint },
-  { path: 'scripts/model.py', content: wordEditorModel },
-  { path: 'scripts/view.py', content: wordEditorView },
-  { path: 'scripts/writeback.py', content: wordEditorWriteback },
-  { path: 'scripts/validate_xml.py', content: wordEditorValidateXml },
-
-  { path: 'references/DESIGN.md', content: wordEditorDesign },
-  { path: 'references/SCHEMA.md', content: wordEditorSchema },
-  // Binary: blank.docx stored as base64, materialized as blank.docx (decoded)
-  { path: 'blank.docx.b64', content: wordEditorBlankB64, binary: true },
-])
-
-// ============================================================================
 // cw-skill-creator — Create, evaluate, and improve workspace skills
 // ============================================================================
 

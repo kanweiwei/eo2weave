@@ -335,7 +335,7 @@ function parseMarkdownSections(body: string): Record<string, string> {
 /**
  * Convert a skill name to a filesystem-safe directory slug.
  *
- * Skill names use a `cw-` prefix with kebab-case (e.g. `cw-word-editor`).
+ * Skill names use a `cw-` prefix with kebab-case (e.g. `cw-brainstorm`).
  * Since the name is already filesystem-safe (no colons or special chars),
  * this function primarily handles edge cases: trimming, lowercasing, and
  * collapsing non-alphanumeric runs (excluding CJK) into dashes.
