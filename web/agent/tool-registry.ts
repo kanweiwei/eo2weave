@@ -121,8 +121,9 @@ import {
   searchConversationsPromptDoc,
 } from './tools/search-conversations.tool'
 
-// OCR tool (on-demand image text recognition)
+// Image reading tools
 import { ocrDefinition, ocrExecutor, ocrPromptDoc } from './tools/ocr.tool'
+import { readImageDefinition, readImageExecutor, readImagePromptDoc } from './tools/read-image.tool'
 import { canvasToolDefinitions, canvasPromptDoc } from './tools/canvas.tool'
 import { dbQueryTool } from './tools/db-query.tool'
 
@@ -216,8 +217,9 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
   { definition: pythonDefinition, executor: pythonToolExecutor },
   // Bash shell (just-bash sandbox)
   { definition: bashDefinition, executor: bashToolExecutor },
-  // OCR (image text recognition)
+  // Image reading
   { definition: ocrDefinition, executor: ocrExecutor },
+  { definition: readImageDefinition, executor: readImageExecutor },
   // Visual workflow canvas tools
   ...canvasToolDefinitions.map((t) => ({ definition: t.definition, executor: t.executor })),
   // Dev: database query (full CRUD) — dev mode only
@@ -268,6 +270,7 @@ const ALL_PROMPT_DOCS: ToolPromptDoc[] = [
   pythonPromptDoc,
   bashPromptDoc,
   ocrPromptDoc,
+  readImagePromptDoc,
   canvasPromptDoc,
   snapshotPromptDoc,
   changesetPromptDoc,

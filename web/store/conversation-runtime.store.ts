@@ -32,6 +32,10 @@ export interface QueuedMessage {
   enqueuedAt: number
   /** Upstream page context captured at enqueue time (side-panel mode) */
   pageContext?: Message['pageContext']
+  /** Persisted multimodal content for a synthetic follow-up user message. */
+  contentParts?: Message['contentParts']
+  /** Provenance for a user-role message created by an agent tool handoff. */
+  readImageHandoff?: Message['readImageHandoff']
 }
 
 /** Maximum queued messages per conversation */

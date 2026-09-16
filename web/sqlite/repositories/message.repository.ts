@@ -37,6 +37,7 @@ interface MessageMeta {
   images?: Array<{ data: string; mimeType: string }>
   contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   runChanges?: { snapshotId: string }
+  readImageHandoff?: Message['readImageHandoff']
 }
 
 interface AppSessionSerializedMessage {
@@ -255,6 +256,10 @@ export class MessageRepository {
       meta.runChanges = message.runChanges
       hasMeta = true
     }
+    if (message.readImageHandoff !== undefined) {
+      meta.readImageHandoff = message.readImageHandoff
+      hasMeta = true
+    }
 
     return {
       contentJson,
@@ -284,6 +289,7 @@ export class MessageRepository {
       images: meta.images,
       contentParts: meta.contentParts,
       runChanges: meta.runChanges,
+      readImageHandoff: meta.readImageHandoff,
     }
   }
 

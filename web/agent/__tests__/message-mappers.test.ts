@@ -129,6 +129,40 @@ describe('message-mappers', () => {
     expect(mapped[1]).toMatchObject({ toolCallId: 'call-delayed', content: [{ text: 'README contents' }] })
   })
 
+  it('maps a persisted read_image handoff as a user multimodal message', () => {
+    const mapped = internalToPiMessages(
+      [
+        {
+          id: 'read-image-handoff',
+          role: 'user',
+          content: 'AI requested to read chart.png',
+          contentParts: [
+            { type: 'text', text: 'AI requested to read chart.png' },
+            { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+          ],
+          readImageHandoff: {
+            path: 'charts/chart.png',
+            mimeType: 'image/png',
+            ocrStatus: 'not_needed',
+          },
+          timestamp: 1,
+        },
+      ],
+      { api: 'openai', provider: 'openai', id: 'vision-model', input: ['text', 'image'] } as never,
+      'Earlier conversation summary:',
+    )
+
+    expect(mapped).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'AI requested to read chart.png' },
+          { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+        ],
+      }),
+    ])
+  })
+
   it('preserves screenshot image parts when replaying a persisted tool result', () => {
     const mapped = internalToPiMessages(
       [

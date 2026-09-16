@@ -323,6 +323,25 @@ export interface ToolContext {
     task: string
     reason?: string
   }) => void
+  /**
+   * Called by read_image after preparing a follow-up user message. The
+   * conversation store owns queueing, persistence, and starting the next run.
+   */
+  onReadImageSuccess?: (payload: {
+    content: string
+    contentParts: Array<
+      | { type: 'text'; text: string }
+      | { type: 'image'; data: string; mimeType: string }
+    >
+    readImage: {
+      path: string
+      mimeType: string
+      /** Raw base64 retained for in-history preview when OCR is used. */
+      imageData?: string
+      toolCallId?: string
+      ocrStatus: 'not_needed' | 'done' | 'empty' | 'failed' | 'timeout'
+    }
+  }) => boolean
 }
 
 /** Ask user question type */

@@ -214,7 +214,7 @@ function createPolicyTable(): Map<string, ToolPolicy> {
   for (const name of [
     'read', 'write', 'edit', 'delete', 'search', 'ls',
     'run_python', 'bash',
-    'ocr',
+    'ocr', 'read_image',
     'canvas_add_node', 'canvas_connect', 'canvas_create', 'canvas_disconnect',
     'canvas_get', 'canvas_remove', 'canvas_run', 'canvas_update',
     'create_checkpoint', 'detect_conflicts', 'rollback_checkpoint',

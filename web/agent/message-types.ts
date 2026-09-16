@@ -106,6 +106,19 @@ export interface Message {
     reason?: string
   }
   /**
+   * Present on a user-role message created after the agent successfully calls
+   * read_image. The API role remains user so providers receive a compatible
+   * follow-up turn, while the UI can preserve its real automated origin.
+   */
+  readImageHandoff?: {
+    path: string
+    mimeType: string
+    /** Raw base64 retained for in-history preview when OCR is used. */
+    imageData?: string
+    toolCallId?: string
+    ocrStatus: 'not_needed' | 'done' | 'empty' | 'failed' | 'timeout'
+  }
+  /**
    * Frozen snapshot of the upstream page context at the moment this user
    * message was sent. Populated only when CreatorWeave runs in side-panel
    * mode (opened from a WebMCP-enabled page). The UI does NOT render this
@@ -277,6 +290,7 @@ export function createUserMessage(
   content: string,
   assets?: AssetMeta[],
   pageContext?: Message['pageContext'],
+  options?: Pick<Message, 'contentParts' | 'readImageHandoff'>,
 ): Message {
   return {
     id: generateId(),
@@ -285,6 +299,8 @@ export function createUserMessage(
     timestamp: Date.now(),
     assets,
     ...(pageContext ? { pageContext } : {}),
+    ...(options?.contentParts ? { contentParts: options.contentParts } : {}),
+    ...(options?.readImageHandoff ? { readImageHandoff: options.readImageHandoff } : {}),
   }
 }
 

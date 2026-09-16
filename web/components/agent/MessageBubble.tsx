@@ -6,7 +6,7 @@
  */
 
 import { useState, memo } from 'react'
-import { User, Bot, Trash2, Pencil, Download, Forward, Globe } from 'lucide-react'
+import { User, Bot, Trash2, Pencil, Download, Forward, Globe, ImageIcon } from 'lucide-react'
 import type { Message } from '@/agent/message-types'
 import { ReasoningSection } from './ReasoningSection'
 import { MarkdownContent } from './MarkdownContent'
@@ -138,6 +138,15 @@ export const MessageBubble = memo(function MessageBubble({
 
   // User message rendering
   if (isUser) {
+    const readImageParts = message.readImageHandoff
+      ? message.contentParts?.filter((part): part is { type: 'image'; data: string; mimeType: string } => part.type === 'image') ?? []
+      : []
+    const handoffPreview = message.readImageHandoff?.imageData
+      ? {
+          data: message.readImageHandoff.imageData,
+          mimeType: message.readImageHandoff.mimeType,
+        }
+      : readImageParts[0]
     return (
       <div className="flex flex-row-reverse gap-3">
         {/* Avatar */}
@@ -160,6 +169,44 @@ export const MessageBubble = memo(function MessageBubble({
           ) : (
             <div className="w-fit max-w-full rounded-lg bg-primary-600 px-4 py-2 text-base text-white">
               <div className="whitespace-pre-wrap break-words overflow-x-auto">{message.content}</div>
+            </div>
+          )}
+
+          {/* Agent-read image handoff — uses user role for API compatibility but
+              remains visibly distinct from a human-authored upload. */}
+          {message.readImageHandoff && (
+            <div className="mt-1 w-full max-w-md rounded-lg border border-sky-200 bg-sky-50 p-3 text-left text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/20 dark:text-sky-100">
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-sky-700 dark:text-sky-300">
+                <ImageIcon className="h-3.5 w-3.5" />
+                <span>AI 主动读取的图片</span>
+              </div>
+              {handoffPreview && (() => {
+                const src = handoffPreview.data.startsWith('data:')
+                  ? handoffPreview.data
+                  : `data:${handoffPreview.mimeType};base64,${handoffPreview.data}`
+                return (
+                  <button
+                    type="button"
+                    className="block w-full overflow-hidden rounded-md border border-sky-200 bg-white text-left dark:border-sky-900/50 dark:bg-neutral-900"
+                    onClick={() => setLightboxSrc(src)}
+                    aria-label="预览 AI 主动读取的图片"
+                  >
+                    <img
+                      src={src}
+                      alt={`AI 主动读取的图片：${message.readImageHandoff?.path ?? ''}`}
+                      className="block max-h-72 w-full object-contain"
+                    />
+                  </button>
+                )
+              })()}
+              <div className="mt-2 break-all text-xs text-sky-700 dark:text-sky-300">
+                {message.readImageHandoff.path}
+              </div>
+              {readImageParts.length === 0 && (
+                <div className="mt-1 text-xs text-sky-700 dark:text-sky-300">
+                  当前模型不支持视觉输入，已将 OCR 结果提供给模型。
+                </div>
+              )}
             </div>
           )}
 
@@ -236,6 +283,9 @@ export const MessageBubble = memo(function MessageBubble({
             )}
           </div>
         </div>
+        {lightboxSrc && (
+          <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+        )}
       </div>
     )
   }

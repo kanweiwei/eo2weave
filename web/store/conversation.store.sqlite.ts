@@ -2469,6 +2469,17 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               }
               pendingDelegation = payload
             },
+            onReadImageSuccess: (payload) => {
+              // Queue before the tool returns. shouldYieldForQueue then ends the
+              // current loop only after its normal tool-result record is committed.
+              if (!isCurrentRun()) return false
+              return useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+                text: payload.content,
+                contentParts: payload.contentParts,
+                readImageHandoff: payload.readImage,
+                enqueuedAt: Date.now(),
+              }).enqueued
+            },
           },
           maxIterations,
           initialConvertCallCount: conv.compressionConvertCallCount ?? 0,
@@ -3793,7 +3804,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       if (finalStatus === 'idle') {
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
-          const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext)
+          const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+            contentParts: nextMsg.contentParts,
+            readImageHandoff: nextMsg.readImageHandoff,
+          })
           const currentConv = get().conversations.find((c) => c.id === conversationId)
           if (currentConv) {
             get().updateMessages(conversationId, [...currentConv.messages, userMsg])
@@ -4258,7 +4272,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
           const { createUserMessage: createMsg } = await import('@/agent/message-types')
-          const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext)
+          const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+            contentParts: nextMsg.contentParts,
+            readImageHandoff: nextMsg.readImageHandoff,
+          })
           const currentConv = get().conversations.find((c) => c.id === conversationId)
           if (currentConv) {
             get().updateMessages(conversationId, [...currentConv.messages, userMsg])
