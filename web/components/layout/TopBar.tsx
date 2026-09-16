@@ -219,7 +219,10 @@ export function TopBar({
                 inside the ⋯ more menu, which new users (especially in the
                 narrow side panel) never discovered. The TopBar renders on the
                 Welcome screen too, so this is the always-visible entry. */}
-            <div className="min-w-0 shrink">
+            {/* Fixed-width slot so the trigger can never spill over the
+                project switcher on the left (regression from 24bd878 where
+                an unconstrained trigger overlapped it on narrow viewports). */}
+            <div className="w-[140px] min-w-0 shrink min-[400px]:w-[180px]">
               <ModelQuickSwitch onManageProviders={() => openSettings('llm')} />
             </div>
 
