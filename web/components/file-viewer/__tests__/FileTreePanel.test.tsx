@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FileTreePanel } from '../FileTreePanel'
 
@@ -90,5 +90,68 @@ describe('FileTreePanel', () => {
     expect(await screen.findByText('main.ts')).toBeInTheDocument()
     expect(listDir).toHaveBeenCalledWith('scope_test', '')
     expect(listDir).toHaveBeenCalledWith('scope_test', 'src')
+  })
+
+  it('falls back to OPFS content when an expanded directory is missing on disk (native host)', async () => {
+    // The "src/generated" directory exists only in OPFS (created by the agent,
+    // not yet synced to disk). The native host's list_dir fails with
+    // "directory not found" — the tree must still render the OPFS content.
+    const listDir = vi.fn(async (_rootId: string, path: string) => {
+      if (path === '') {
+        return [{ name: 'src', kind: 'directory' as const }]
+      }
+      throw new Error(`list_dir failed: directory not found (${path})`)
+    })
+    mockOpfsState.cachedPaths = ['src/generated/report.md']
+    mockOpfsState.approvedNotSyncedPaths = new Set(['src/generated/report.md'])
+
+    render(
+      <FileTreePanel
+        directoryHandle={null}
+        diskRootId="scope_test"
+        diskExecutor={{ listDir }}
+        onFileSelect={vi.fn()}
+      />
+    )
+
+    expect(await screen.findByText('src')).toBeInTheDocument()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('src'))
+
+    expect(await screen.findByText('generated')).toBeInTheDocument()
+    await user.click(screen.getByText('generated'))
+    expect(await screen.findByText('report.md')).toBeInTheDocument()
+    expect(screen.queryByText(/list_dir failed/)).not.toBeInTheDocument()
+  })
+
+  it('rethrows disk errors for a directory with no OPFS content (native host)', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const listDir = vi.fn(async (_rootId: string, path: string) => {
+      if (path === '') {
+        return [{ name: 'src', kind: 'directory' as const }]
+      }
+      throw new Error('list_dir failed: directory not found')
+    })
+
+    render(
+      <FileTreePanel
+        directoryHandle={null}
+        diskRootId="scope_test"
+        diskExecutor={{ listDir }}
+        onFileSelect={vi.fn()}
+      />
+    )
+
+    expect(await screen.findByText('src')).toBeInTheDocument()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('src'))
+
+    // No OPFS fallback is possible: the toggle logs the failure and the node
+    // stays collapsed (children never marked loaded).
+    await waitFor(() => expect(consoleError).toHaveBeenCalled())
+    expect(consoleWarn).not.toHaveBeenCalledWith(expect.stringContaining('OPFS-only content'))
+    consoleWarn.mockRestore()
+    consoleError.mockRestore()
   })
 })

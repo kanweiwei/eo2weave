@@ -781,32 +781,48 @@ export const FileTreePanel = memo(function FileTreePanel({
       const allEntries: string[] = []
 
       if (diskRootId && diskExecutor) {
-        const entries = await diskExecutor.listDir(diskRootId, parentPath)
-        for (const entry of entries) {
-          const { name } = entry
-          allEntries.push(name)
-          if (isHidden(name)) continue
+        // The directory may exist only in OPFS (pending creates or
+        // approved-but-not-yet-synced cached files) while missing on disk.
+        // Native-host list_dir then reports "directory not found" — the same
+        // situation search.worker.ts handles with its overlay fallback. If
+        // OPFS has anything under this path prefix, keep going with an empty
+        // disk listing; the OPFS merges below populate the node.
+        const parentPrefix = parentPath ? `${parentPath}/` : ''
+        const hasOpfsContent =
+          rootPendingChanges.some(
+            (c) => c.type === 'create' && c.path.startsWith(parentPrefix)
+          ) || rootCachedPaths.some((p) => p.startsWith(parentPrefix))
+        try {
+          const entries = await diskExecutor.listDir(diskRootId, parentPath)
+          for (const entry of entries) {
+            const { name } = entry
+            allEntries.push(name)
+            if (isHidden(name)) continue
 
-          const path = parentPath ? `${parentPath}/${name}` : name
-          if (entry.kind === 'file') {
-            if (mode === 'directories') continue
-            children.push({
-              name,
-              path,
-              kind: 'file',
-              size: entry.stat?.size,
-              handle: null,
-            })
-          } else {
-            children.push({
-              name,
-              path,
-              kind: 'directory',
-              handle: null,
-              children: [],
-              loaded: false,
-            })
+            const path = parentPath ? `${parentPath}/${name}` : name
+            if (entry.kind === 'file') {
+              if (mode === 'directories') continue
+              children.push({
+                name,
+                path,
+                kind: 'file',
+                size: entry.stat?.size,
+                handle: null,
+              })
+            } else {
+              children.push({
+                name,
+                path,
+                kind: 'directory',
+                handle: null,
+                children: [],
+                loaded: false,
+              })
+            }
           }
+        } catch (error) {
+          if (!hasOpfsContent) throw error
+          console.warn(`[FileTree] Not on disk yet, rendering OPFS-only content: ${parentPath || '/'}`)
         }
       } else if (dirHandle !== null) {
         for await (const entry of dirHandle.entries()) {
@@ -900,6 +916,7 @@ export const FileTreePanel = memo(function FileTreePanel({
       getPendingCreatesForPath,
       getPendingCreateSubdirs,
       rootCachedPaths,
+      rootPendingChanges,
       addCachedFilesAtLevel,
       addCachedSubdirsAtLevel,
     ]
