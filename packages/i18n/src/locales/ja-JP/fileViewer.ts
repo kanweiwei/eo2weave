@@ -25,6 +25,7 @@ export const filePreview = {
     cannotReadFile: "ファイルを読み込めません",
     fileTooLarge: "ファイルが大きすぎます ({size})、最大サポートは {maxSize}",
     readFileFailed: "ファイルの読み込みに失敗しました: {error}",
+    workspaceLinkNotFound: "ファイル「{path}」が見つかりません。削除されたか、まだ作成されていない可能性があります",
     clickFileTreeToPreview: "ファイルツリーでファイルをクリックしてプレビュー",
     conflict: "競合",
     diskFileNewer:

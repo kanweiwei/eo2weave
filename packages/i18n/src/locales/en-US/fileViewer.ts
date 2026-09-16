@@ -23,6 +23,7 @@ export const filePreview = {
     cannotReadFile: "Cannot read file",
     fileTooLarge: "File too large ({size}), maximum supported is {maxSize}",
     readFileFailed: "Failed to read file: {error}",
+    workspaceLinkNotFound: "File \"{path}\" not found — it may have been deleted or not created yet",
     clickFileTreeToPreview: "Click a file in the file tree to preview",
     conflict: "Conflict",
     diskFileNewer: "Disk file is newer than OPFS, there may be a conflict",

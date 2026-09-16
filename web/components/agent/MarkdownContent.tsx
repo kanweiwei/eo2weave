@@ -22,10 +22,221 @@ import rehypeKatex from 'rehype-katex'
 import rehypeRaw from 'rehype-raw'
 import 'katex/dist/katex.min.css'
 import { Copy, Check, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { readAssetBlob, readWorkspaceFileBlob } from './asset-utils'
 import { HtmlSandboxPreview } from './HtmlSandboxPreview'
 import { Lightbox } from './Lightbox'
 import { MermaidDiagram } from './MermaidDiagram'
+import { useT } from '@/i18n'
+import { useWorkspaceStore } from '@/store/workspace.store'
+
+/**
+ * Detect workspace-file links emitted by the AI (e.g. "[打开文档](daily/report.md)").
+ *
+ * A relative markdown link like `daily/2026-08-OKR.md` resolves against the
+ * CURRENT PAGE URL in the browser, so a plain <a href> would navigate the
+ * whole app to `<app-origin>/daily/2026-08-OKR.md` (a 404 or a file download).
+ * These links must be intercepted and routed to the in-app FilePreview drawer
+ * instead. Anchors (#...), root-relative (/...) and absolute URLs are NOT
+ * workspace references and stay as regular links.
+ */
+function isWorkspaceRelativePath(href: string): boolean {
+  return (
+    href.length > 0 &&
+    !href.startsWith('#') &&
+    !href.startsWith('/') &&
+    !href.startsWith('//') &&
+    !/^[a-z][a-z0-9+.-]*:/i.test(href)
+  )
+}
+
+/**
+ * react-markdown percent-encodes non-ASCII hrefs when serializing to hast
+ * (normalizeUri), so a link like `[周报](daily/2026-09-16-周报.md)` reaches
+ * us as `daily/2026-09-16-%E5%91%A8%E6%8A%A5.md`. Workspace probing must
+ * decode before touching the filesystem; decodeURI (not decodeURIComponent)
+ * keeps reserved characters intact.
+ */
+function safeDecodeHref(href: string): string {
+  if (!href.includes('%')) return href
+  try {
+    return decodeURI(href)
+  } catch {
+    return href
+  }
+}
+
+/**
+ * MarkdownLink — custom `a` component for react-markdown.
+ *
+ * Relative file links are resolved against the workspace OPFS store (not the
+ * page URL). On a hit the file opens in the shared FilePreview drawer — this
+ * works for OPFS-only (pending, not yet synced to disk) files too. On a miss
+ * the user gets a toast explaining the file does not exist; we never hand a
+ * bare relative href to the browser, which would navigate the app away.
+ */
+function MarkdownLink({ href, children }: React.ComponentPropsWithoutRef<'a'>) {
+  const t = useT()
+  // Keep the raw (percent-encoded) href for the DOM; probe/display with the
+  // decoded form so non-ASCII filenames resolve and read naturally.
+  const rawHref = href || ''
+  const hrefStr = safeDecodeHref(rawHref)
+  const [resolvedPath, setResolvedPath] = useState<string | null>(null)
+  // In-flight lookup promise: lets a click that happens BEFORE resolution
+  // finishes await the result instead of showing a premature "not found".
+  const lookupSeqRef = useRef(0)
+  const lookupPromiseRef = useRef<Promise<string | null> | null>(null)
+
+  const isWorkspaceRef = isWorkspaceRelativePath(hrefStr)
+
+  useEffect(() => {
+    if (!isWorkspaceRef) return
+    const seq = ++lookupSeqRef.current
+    const promise = resolveWorkspaceFilePath(hrefStr)
+      .then((path) => {
+        // Only the latest lookup may update rendered state; a superseded one
+        // still resolves its promise (an already-pending click may await it).
+        if (seq === lookupSeqRef.current) setResolvedPath(path)
+        return path
+      })
+      .catch(() => {
+        if (seq === lookupSeqRef.current) setResolvedPath(null)
+        return null
+      })
+    lookupPromiseRef.current = promise
+    // No cleanup invalidation needed: every state write is guarded by
+    // `seq === lookupSeqRef.current` inside the promise callbacks, and the
+    // next effect run (href change) bumps the seq itself. A late resolution
+    // after unmount is a harmless no-op setState in React 18.
+  }, [hrefStr, isWorkspaceRef])
+
+  const handleClick = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      // Prefer the cached resolution; if the user clicked before the initial
+      // lookup finished, await that lookup instead of giving up early.
+      let path = resolvedPath
+      if (!path && lookupPromiseRef.current) {
+        path = await lookupPromiseRef.current
+      }
+      if (!path) {
+        toast.error(t('filePreview.workspaceLinkNotFound', { path: hrefStr.split('/').pop() || hrefStr }))
+        return
+      }
+      // Opens the workspace-level FilePreview drawer, which reads from the
+      // workspace runtime — including files that only exist in OPFS.
+      useWorkspaceStore.getState().openInFilePreview(path)
+    },
+    [resolvedPath, hrefStr, t],
+  )
+
+  if (isWorkspaceRef) {
+    return (
+      <a
+        href={rawHref}
+        onClick={handleClick}
+        className="text-primary-600 dark:text-primary-500 underline hover:text-primary-700 dark:hover:text-primary-700"
+        title={resolvedPath ?? hrefStr}
+      >
+        {children}
+      </a>
+    )
+  }
+
+  return (
+    <a
+      href={rawHref}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-primary-600 dark:text-primary-500 underline hover:text-primary-700 dark:hover:text-primary-700"
+    >
+      {children}
+    </a>
+  )
+}
+
+/**
+ * Probe a workspace-relative markdown link for an actual file.
+ *
+ * Resolution order (all reads go through the workspace runtime, which serves
+ * pending OPFS-only files as well as synced disk files):
+ * 1. Workspace roots — as-is when the first segment matches a rootName,
+ *    otherwise try `rootName/<path>` for every known root.
+ * 2. Conversation assets directory (nested paths supported).
+ *
+ * @returns the resolved workspace path to hand to FilePreview, or null when
+ *          the link does not reference an existing workspace file.
+ */
+async function resolveWorkspaceFilePath(href: string): Promise<string | null> {
+  const normalized = href.replace(/^\.\//, '').replace(/\\/g, '/').replace(/\/{2,}/g, '/')
+  if (!normalized || normalized.endsWith('/')) return null
+
+  // 1) Workspace roots. Enumerate root names so bare paths can be tried as
+  //    `rootName/path` (the runtime requires a rootName prefix for multi-root
+  //    workspaces). Sources, in order:
+  //    a. SQLite project roots — the SAME authoritative source the runtime's
+  //       resolvePath uses (covers native-host roots, no store hydration needed)
+  //    b. In-memory runtime handles (FS Access)
+  //    c. folder-access store roots (UI-layer mirror)
+  const rootNames: string[] = []
+  const pushRoot = (name: string | undefined | null) => {
+    if (name && !rootNames.includes(name)) rootNames.push(name)
+  }
+  try {
+    const { getProjectRepository } = await import('@/sqlite/repositories/project.repository')
+    const projectId = (await getProjectRepository().findActiveProject())?.id
+    if (projectId) {
+      try {
+        const { getProjectRootRepository } = await import('@/sqlite/repositories/project-root.repository')
+        const dbRoots = await getProjectRootRepository().findByProject(projectId)
+        // Runtime sorts the default root first for deterministic routing —
+        // mirror that so our first candidate matches its first choice.
+        const sorted = [...dbRoots].sort((a, b) => Number(b.isDefault ?? false) - Number(a.isDefault ?? false))
+        for (const root of sorted) pushRoot(root.name)
+      } catch {
+        // ignore — fallback sources below
+      }
+      const { getRuntimeHandlesForProject } = await import('@/native-fs')
+      for (const name of getRuntimeHandlesForProject(projectId).keys()) pushRoot(name)
+    }
+    const { useFolderAccessStore } = await import('@/store/folder-access.store')
+    for (const root of useFolderAccessStore.getState().roots) pushRoot(root.name)
+  } catch {
+    // ignore — root enumeration is best-effort; the direct-path probe below
+    // still covers single-root workspaces
+  }
+
+  const tryRead = async (path: string): Promise<boolean> => {
+    try {
+      const workspaceId = useWorkspaceStore.getState().activeWorkspaceId
+      if (!workspaceId) return false
+      const { getWorkspaceManager } = await import('@/opfs')
+      const manager = await getWorkspaceManager()
+      const workspace = await manager.getWorkspace(workspaceId)
+      if (!workspace) return false
+      const result = await workspace.readFile(path, null, { policy: 'auto' })
+      return result?.content != null
+    } catch {
+      return false
+    }
+  }
+
+  const firstSegment = normalized.split('/')[0]
+  const candidates = rootNames.includes(firstSegment)
+    ? [normalized]
+    : [...rootNames.map((root) => `${root}/${normalized}`), normalized]
+  for (const candidate of candidates) {
+    if (await tryRead(candidate)) return candidate
+  }
+
+  // 2) Conversation assets directory (e.g. generated reports, images).
+  if (await readAssetBlob(normalized)) {
+    return `assets/${normalized}`
+  }
+
+  return null
+}
 
 /** Context for passing the image click callback from MarkdownContent to MarkdownImage/AssetImage */
 const ImageClickContext = createContext<(src: string) => void>(() => {})
@@ -337,17 +548,8 @@ function buildMarkdownComponents(streaming: boolean) {
     return <ol className="mb-2 list-decimal space-y-0.5 pl-5 last:mb-0">{children}</ol>
   },
   // Links
-  a({ href, children }: React.ComponentPropsWithoutRef<'a'>) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-primary-600 dark:text-primary-500 underline hover:text-primary-700 dark:hover:text-primary-700"
-      >
-        {children}
-      </a>
-    )
+  a(props: React.ComponentPropsWithoutRef<'a'>) {
+    return <MarkdownLink {...props} />
   },
   // Headings
   h1({ children }: React.ComponentPropsWithoutRef<'h1'>) {

@@ -24,6 +24,7 @@ export const filePreview = {
     cannotReadFile: "파일을 읽을 수 없습니다",
     fileTooLarge: "파일이 너무 큽니다 ({size}), 최대 지원 크기는 {maxSize}",
     readFileFailed: "파일 읽기 실패: {error}",
+    workspaceLinkNotFound: "\"{path}\" 파일을 찾을 수 없습니다. 삭제되었거나 아직 생성되지 않았을 수 있습니다",
     clickFileTreeToPreview: "파일 트리에서 파일을 클릭하여 미리보기",
     conflict: "충돌",
     diskFileNewer: "디스크 파일이 OPFS보다 최신입니다. 충돌이 있을 수 있습니다",
