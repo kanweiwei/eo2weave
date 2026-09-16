@@ -10,6 +10,8 @@ import type { ToolContext, ToolDefinition, ToolExecutor, ToolPromptDoc } from '.
 import { resolveVfsTarget } from './vfs-resolver'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from './agent-file-protection'
 import { fileToBase64, isOcrCompatibleImage, performOcr } from '@/services/ocr.service'
+import { t as translateStatic } from '@creatorweave/i18n'
+import { useI18nStore } from '@/i18n/store'
 import { toolErrorJson, toolOkJson } from './tool-envelope'
 
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
@@ -17,6 +19,10 @@ const MAX_SOURCE_BYTES = 10 * 1024 * 1024
 const MAX_IMAGE_PIXELS = 20_000_000
 const MAX_IMAGE_EDGE = 4096
 const MAX_NORMALIZED_BYTES = 4 * 1024 * 1024
+
+function translateReadImage(key: string, params?: Record<string, string | number>): string {
+  return translateStatic(useI18nStore.getState().locale, `conversation.readImage.${key}`, params)
+}
 
 class ReadImagePreparationError extends Error {
   constructor(
@@ -63,21 +69,21 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number):
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob)
-      else reject(new ReadImagePreparationError('invalid_image', 'Unable to encode the normalized image.'))
+      else reject(new ReadImagePreparationError('invalid_image', translateReadImage('normalizeFailed')))
     }, type, quality)
   })
 }
 
 async function normalizeImage(file: File): Promise<File> {
   if (typeof createImageBitmap !== 'function') {
-    throw new ReadImagePreparationError('invalid_image', 'This browser cannot decode image files for safe processing.')
+    throw new ReadImagePreparationError('invalid_image', translateReadImage('browserUnsupported'))
   }
 
   let bitmap: ImageBitmap
   try {
     bitmap = await createImageBitmap(file)
   } catch {
-    throw new ReadImagePreparationError('invalid_image', 'The file could not be decoded as a valid image.')
+    throw new ReadImagePreparationError('invalid_image', translateReadImage('invalidImage'))
   }
 
   try {
@@ -85,7 +91,11 @@ async function normalizeImage(file: File): Promise<File> {
     if (!bitmap.width || !bitmap.height || sourcePixels > MAX_IMAGE_PIXELS) {
       throw new ReadImagePreparationError(
         'image_dimensions_too_large',
-        `Image dimensions ${bitmap.width}×${bitmap.height} exceed the ${MAX_IMAGE_PIXELS.toLocaleString()} pixel limit.`,
+        translateReadImage('dimensionsTooLarge', {
+          width: bitmap.width,
+          height: bitmap.height,
+          maxPixels: MAX_IMAGE_PIXELS.toLocaleString(),
+        }),
       )
     }
 
@@ -100,7 +110,7 @@ async function normalizeImage(file: File): Promise<File> {
     canvas.height = height
     const context = canvas.getContext('2d')
     if (!context) {
-      throw new ReadImagePreparationError('invalid_image', 'This browser cannot prepare the image for model input.')
+      throw new ReadImagePreparationError('invalid_image', translateReadImage('normalizeFailed'))
     }
     context.drawImage(bitmap, 0, 0, width, height)
 
@@ -112,7 +122,7 @@ async function normalizeImage(file: File): Promise<File> {
     }
     throw new ReadImagePreparationError(
       'image_too_large',
-      `The normalized image exceeds the ${Math.round(MAX_NORMALIZED_BYTES / 1024 / 1024)} MB limit.`,
+      translateReadImage('normalizedTooLarge', { maxSize: Math.round(MAX_NORMALIZED_BYTES / 1024 / 1024) }),
     )
   } finally {
     bitmap.close()
@@ -154,7 +164,7 @@ export const readImageExecutor: ToolExecutor = async (
     return toolErrorJson(
       'read_image',
       'handoff_unavailable',
-      'Image reading is unavailable because this conversation cannot create a follow-up message.',
+      translateReadImage('handoffUnavailable'),
     )
   }
 
@@ -169,7 +179,10 @@ export const readImageExecutor: ToolExecutor = async (
       return toolErrorJson(
         'read_image',
         'image_too_large',
-        `Image is ${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; the maximum supported size is ${MAX_SOURCE_BYTES / 1024 / 1024} MB.`,
+        translateReadImage('sourceTooLarge', {
+          size: (bytes.byteLength / 1024 / 1024).toFixed(1),
+          maxSize: MAX_SOURCE_BYTES / 1024 / 1024,
+        }),
         { details: { path: target.path, size: bytes.byteLength, maxSize: MAX_SOURCE_BYTES } },
       )
     }
@@ -181,7 +194,7 @@ export const readImageExecutor: ToolExecutor = async (
       return toolErrorJson(
         'read_image',
         'not_an_image',
-        `File is not a supported image format (${mimeType}). Supported formats: PNG, JPEG, WebP, BMP, GIF.`,
+        translateReadImage('notImage', { mimeType }),
         { details: { path: target.path, mimeType } },
       )
     }
@@ -192,7 +205,7 @@ export const readImageExecutor: ToolExecutor = async (
     const visiblePath = displayPath(target.path)
     const model = context.provider?.getModel()
     const supportsVision = model?.input?.includes('image') ?? false
-    const prefix = `以下图片来自你调用的 read_image 工具。文件：${visiblePath}。请在本轮直接基于图片内容回答。`
+    const prefix = translateReadImage('sourceContext', { path: visiblePath })
 
     let content = prefix
     let contentParts: NonNullable<Parameters<NonNullable<ToolContext['onReadImageSuccess']>>[0]['contentParts']>
@@ -217,8 +230,8 @@ export const readImageExecutor: ToolExecutor = async (
             : 'failed'
       const ocrText = ocr.text.trim()
       const fallback = ocrText
-        ? `图片 OCR 识别结果：\n${ocrText}`
-        : '该图片未识别到可用文字（可能是照片、图形，或 OCR 识别失败）；当前模型不支持视觉输入，无法可靠理解其视觉内容。'
+        ? translateReadImage('ocrResult', { ocrText })
+        : translateReadImage('ocrUnavailable')
       content = `${prefix}\n\n${fallback}`
       contentParts = [{ type: 'text', text: content }]
     }
@@ -238,7 +251,7 @@ export const readImageExecutor: ToolExecutor = async (
       return toolErrorJson(
         'read_image',
         'handoff_unavailable',
-        'Unable to queue the image as a follow-up conversation message. Try again.',
+        translateReadImage('handoffUnavailable'),
         { retryable: true },
       )
     }
@@ -247,7 +260,7 @@ export const readImageExecutor: ToolExecutor = async (
       path: visiblePath,
       mimeType: normalizedMimeType,
       mode: supportsVision ? 'vision' : 'ocr',
-      message: 'The image has been added as a new user message for the next turn. Do not call more tools; answer directly from that next message.',
+      message: translateReadImage('handoffQueued'),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -260,7 +273,7 @@ export const readImageExecutor: ToolExecutor = async (
     if (message.includes('File not found') || message.includes('NotFoundError') || message.includes('not found')) {
       return toolErrorJson('read_image', 'file_not_found', `Image file not found: ${path}`)
     }
-    return toolErrorJson('read_image', 'internal_error', `Unable to read image: ${message}`, { retryable: true })
+    return toolErrorJson('read_image', 'internal_error', translateReadImage('readFailed', { message }), { retryable: true })
   }
 }
 

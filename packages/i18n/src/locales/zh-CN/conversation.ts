@@ -128,6 +128,25 @@ export const conversation = {
         '2:3': "海报",
       },
     },
+    readImage: {
+      label: "AI 主动读取的图片",
+      preview: "预览 AI 主动读取的图片",
+      alt: "AI 主动读取的图片：{path}",
+      ocrFallback: "当前模型不支持视觉输入，已将 OCR 结果提供给模型。",
+      sourceContext: "以下图片来自你调用的 read_image 工具。文件：{path}。请在本轮直接基于图片内容回答。",
+      ocrResult: "图片 OCR 识别结果：\n{ocrText}",
+      ocrUnavailable: "该图片未识别到可用文字（可能是照片、图形，或 OCR 识别失败）；当前模型不支持视觉输入，无法可靠理解其视觉内容。",
+      notImage: "文件不是受支持的图片格式（{mimeType}）。支持格式：PNG、JPEG、WebP、BMP、GIF。",
+      sourceTooLarge: "图片为 {size} MB，最大支持 {maxSize} MB。",
+      dimensionsTooLarge: "图片尺寸 {width}×{height} 超过 {maxPixels} 像素上限。",
+      normalizedTooLarge: "规范化后的图片超过 {maxSize} MB 上限。",
+      invalidImage: "无法将该文件解码为有效图片。",
+      browserUnsupported: "当前浏览器无法安全解码图片文件。",
+      normalizeFailed: "无法将图片处理为可供模型使用的格式。",
+      handoffUnavailable: "无法将图片加入后续会话消息，请重试。",
+      handoffQueued: "图片已作为新的用户消息加入下一轮。请勿继续调用工具，请在下一轮直接基于该图片回答。",
+      readFailed: "无法读取图片：{message}",
+    },
     // Codex OAuth 错误
     codex: {
       error: {

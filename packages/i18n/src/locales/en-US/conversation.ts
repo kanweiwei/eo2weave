@@ -129,6 +129,25 @@ export const conversation = {
         '2:3': "Poster",
       },
     },
+    readImage: {
+      label: "Image read by AI",
+      preview: "Preview image read by AI",
+      alt: "Image read by AI: {path}",
+      ocrFallback: "The current model does not support vision input. OCR text was provided to the model instead.",
+      sourceContext: "The following image is from the read_image tool you called. File: {path}. Answer directly based on the image in this turn.",
+      ocrResult: "Image OCR result:\n{ocrText}",
+      ocrUnavailable: "No usable text was recognized in this image (it may be a photo, graphic, or OCR may have failed). The current model does not support vision input and cannot reliably understand its visual content.",
+      notImage: "File is not a supported image format ({mimeType}). Supported formats: PNG, JPEG, WebP, BMP, GIF.",
+      sourceTooLarge: "Image is {size} MB; the maximum supported size is {maxSize} MB.",
+      dimensionsTooLarge: "Image dimensions {width}×{height} exceed the {maxPixels} pixel limit.",
+      normalizedTooLarge: "The normalized image exceeds the {maxSize} MB limit.",
+      invalidImage: "The file could not be decoded as a valid image.",
+      browserUnsupported: "This browser cannot decode image files for safe processing.",
+      normalizeFailed: "Unable to prepare the image for model input.",
+      handoffUnavailable: "Unable to queue the image as a follow-up conversation message. Try again.",
+      handoffQueued: "The image has been added as a new user message for the next turn. Do not call more tools; answer directly from that next message.",
+      readFailed: "Unable to read image: {message}",
+    },
     // Codex OAuth error
     codex: {
       error: {

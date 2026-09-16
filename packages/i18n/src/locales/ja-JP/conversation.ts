@@ -115,6 +115,25 @@ export const conversation = {
         '2:3': "ポスター",
       },
     },
+    readImage: {
+      label: "AI が読み取った画像",
+      preview: "AI が読み取った画像をプレビュー",
+      alt: "AI が読み取った画像：{path}",
+      ocrFallback: "現在のモデルは画像入力に対応していないため、OCR テキストをモデルに渡しました。",
+      sourceContext: "次の画像は、呼び出した read_image ツールからのものです。ファイル：{path}。このターンでは画像の内容に基づいて直接回答してください。",
+      ocrResult: "画像 OCR の認識結果：\n{ocrText}",
+      ocrUnavailable: "この画像から利用可能なテキストを認識できませんでした（写真・図形であるか、OCR に失敗した可能性があります）。現在のモデルは画像入力に対応していないため、視覚的な内容を確実に理解できません。",
+      notImage: "ファイルは対応している画像形式ではありません（{mimeType}）。対応形式：PNG、JPEG、WebP、BMP、GIF。",
+      sourceTooLarge: "画像は {size} MB です。最大対応サイズは {maxSize} MB です。",
+      dimensionsTooLarge: "画像サイズ {width}×{height} は {maxPixels} ピクセルの上限を超えています。",
+      normalizedTooLarge: "正規化後の画像が {maxSize} MB の上限を超えています。",
+      invalidImage: "ファイルを有効な画像としてデコードできませんでした。",
+      browserUnsupported: "このブラウザでは画像ファイルを安全にデコードできません。",
+      normalizeFailed: "モデル入力用に画像を処理できません。",
+      handoffUnavailable: "画像を後続の会話メッセージに追加できませんでした。もう一度お試しください。",
+      handoffQueued: "画像を次のターンの新しいユーザーメッセージとして追加しました。これ以上ツールを呼び出さず、次のメッセージの画像に基づいて直接回答してください。",
+      readFailed: "画像を読み取れませんでした：{message}",
+    },
     // Codex OAuth エラー
     codex: {
       error: {

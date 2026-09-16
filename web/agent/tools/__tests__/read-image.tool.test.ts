@@ -127,7 +127,7 @@ describe('read_image tool', () => {
     )
 
     expect(onReadImageSuccess).toHaveBeenCalledWith(expect.objectContaining({
-      content: expect.stringContaining('未识别到可用文字'),
+      content: expect.stringContaining('No usable text was recognized'),
       readImage: expect.objectContaining({ ocrStatus: 'empty' }),
     }))
   })

@@ -178,7 +178,7 @@ export const MessageBubble = memo(function MessageBubble({
             <div className="mt-1 w-full max-w-md rounded-lg border border-sky-200 bg-sky-50 p-3 text-left text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/20 dark:text-sky-100">
               <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-sky-700 dark:text-sky-300">
                 <ImageIcon className="h-3.5 w-3.5" />
-                <span>AI 主动读取的图片</span>
+                <span>{t('conversation.readImage.label')}</span>
               </div>
               {handoffPreview && (() => {
                 const src = handoffPreview.data.startsWith('data:')
@@ -189,11 +189,11 @@ export const MessageBubble = memo(function MessageBubble({
                     type="button"
                     className="block w-full overflow-hidden rounded-md border border-sky-200 bg-white text-left dark:border-sky-900/50 dark:bg-neutral-900"
                     onClick={() => setLightboxSrc(src)}
-                    aria-label="预览 AI 主动读取的图片"
+                    aria-label={t('conversation.readImage.preview')}
                   >
                     <img
                       src={src}
-                      alt={`AI 主动读取的图片：${message.readImageHandoff?.path ?? ''}`}
+                      alt={t('conversation.readImage.alt', { path: message.readImageHandoff?.path ?? '' })}
                       className="block max-h-72 w-full object-contain"
                     />
                   </button>
@@ -204,7 +204,7 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
               {readImageParts.length === 0 && (
                 <div className="mt-1 text-xs text-sky-700 dark:text-sky-300">
-                  当前模型不支持视觉输入，已将 OCR 结果提供给模型。
+                  {t('conversation.readImage.ocrFallback')}
                 </div>
               )}
             </div>
