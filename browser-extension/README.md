@@ -358,7 +358,7 @@ EO2Weave Web App
                           └── chrome.runtime.connect (streaming)
                                   │
                                   └──→ background.ts (Service Worker)
-                                          ├── web_search → DuckDuckGo
+                                          ├── web_search → DuckDuckGo (falls back to Baidu on bot-challenge/rate limit)
                                           ├── web_fetch → Direct URL fetch
                                           ├── codex_auth → Device Code OAuth
                                           ├── codex_proxy_fetch_stream → chatgpt.com/codex

@@ -116,10 +116,29 @@ let _cachedProviderAt = 0;
 const PROVIDER_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
 
 /**
+ * DuckDuckGo serves an anti-bot challenge page (HTTP 202) to automated-looking
+ * traffic. While this flag is fresh, auto selection prefers Baidu and provider
+ * detection skips the DuckDuckGo connectivity probe, so agent search bursts
+ * don't keep hammering the challenge page. Short on purpose: challenges are
+ * usually IP/reputation based and clear within the hour.
+ */
+let _ddgThrottledAt = 0;
+const DDG_THROTTLE_TTL = 60 * 60 * 1000; // 1h
+
+/** Marker text on DuckDuckGo's bot-challenge page (observed 2026-09-17). */
+const DDG_CHALLENGE_MARKER = 'Unfortunately, bots use DuckDuckGo';
+
+/**
  * Detect the best search provider for the current user.
  * Strategy: timezone hint → connectivity test → cache result.
  */
 async function detectProvider() {
+  // A recent bot-challenge beats any cached decision: stop hitting DuckDuckGo
+  // and let Baidu serve searches until the throttle window expires.
+  if ((Date.now() - _ddgThrottledAt) < DDG_THROTTLE_TTL) {
+    return 'baidu';
+  }
+
   // Return cache if still valid
   if (_cachedProvider && (Date.now() - _cachedProviderAt) < PROVIDER_CACHE_TTL) {
     return _cachedProvider;
@@ -157,10 +176,14 @@ async function isDuckDuckGoReachable() {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    await fetch('https://html.duckduckgo.com/html/?q=test', {
+    const resp = await fetch('https://html.duckduckgo.com/html/?q=test', {
       signal: controller.signal,
     });
     clearTimeout(timer);
+    // 202/403 is the bot-challenge page, not a healthy result page.
+    if (resp.status === 202 || resp.status === 403) {
+      return false;
+    }
     return true;
   } catch {
     return false;
@@ -172,6 +195,17 @@ async function searchDuckDuckGo(query, limit) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   const resp = await fetchWithTimeout(url);
   const html = await resp.text();
+
+  // DuckDuckGo answers automated-looking traffic with a bot-challenge page
+  // (HTTP 202, no result nodes). Without this check the page would parse as
+  // "0 results" and hide the real cause. Mark DDG throttled so auto selection
+  // prefers Baidu and detectProvider stops re-probing for a while.
+  if (resp.status === 202 || resp.status === 403 || html.includes(DDG_CHALLENGE_MARKER)) {
+    _ddgThrottledAt = Date.now();
+    throw new Error('duckduckgo bot challenge (rate limited)');
+  }
+  // A successful DDG search proves the challenge window has cleared.
+  _ddgThrottledAt = 0;
 
   const results = [];
   const blocks = html.split(/class="result\b/);
