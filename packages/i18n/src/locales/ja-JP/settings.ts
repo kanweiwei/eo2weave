@@ -470,6 +470,9 @@ export const settings = {
       noProviders: "先にプロバイダの API Key を設定してください",
       manualInput: "手動入力",
       manualPlaceholder: "モデル名を入力、例: gpt-4o",
+      refreshReference: "モデル参照データを更新（価格とコンテキスト長）",
+      refreshReferenceSuccess: "モデル参照データを更新しました",
+      refreshReferenceFailed: "更新に失敗しました — キャッシュを使用中",
     },
 
     // プロバイダ管理

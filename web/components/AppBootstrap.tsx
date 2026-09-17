@@ -472,6 +472,17 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [])
 
+  // ── OpenRouter model reference auto-refresh ──
+  // The bundled openrouter-models.json is a bootstrap fallback that lags
+  // upstream (new DeepSeek/Qwen releases missing → wrong context window,
+  // no pricing, vision dropped). Once a day, silently pull the live model
+  // list in the background; failure is invisible (snapshot keeps serving).
+  useEffect(() => {
+    void import('@/agent/providers/openrouter-pricing').then(({ maybeRefreshOpenRouterModels }) => {
+      maybeRefreshOpenRouterModels()
+    })
+  }, [])
+
   // ── Workspace Assistant: side panel URL params are captured synchronously
   //    at module load by workspace-assistant-context.ts. Page context itself
   //    is pulled fresh on every LLM call via fetchSidePanelContext() in

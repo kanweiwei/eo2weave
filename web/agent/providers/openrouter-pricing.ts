@@ -1,16 +1,24 @@
 /**
- * OpenRouter Pricing & Context-Window Reference (static snapshot)
+ * OpenRouter Pricing & Context-Window Reference (static snapshot + runtime refresh)
  *
- * Single source of truth for per-token USD pricing and context-window
- * lengths, sourced from OpenRouter's public /api/v1/models endpoint.
+ * Per-token USD pricing and context-window lengths, sourced from OpenRouter's
+ * public /api/v1/models endpoint.
  *
- * The snapshot is bundled at build time (src/data/openrouter-models.json)
- * and imported directly — no runtime fetch, no localStorage, no async.
- * This avoids the GLM-5.2 prefix-match bug (missing from a hand-maintained
- * table → fell back to glm-5's wrong price) by covering 338 models from
- * all major providers automatically.
+ * Two layers:
+ *   1. Static snapshot (src/data/openrouter-models.json) — bundled at build
+ *      time, imported directly. BOOTSTRAP fallback: guarantees data on first
+ *      load even with zero network. May lag upstream (new models missing).
+ *   2. Runtime refresh overlay — background fetch of the live endpoint on
+ *      app start (throttled to once per day, persisted in localStorage).
+ *      Once fetched, the overlay REPLACES the snapshot in the in-memory index
+ *      so newly-released models (e.g. a V4.1 two weeks after the snapshot)
+ *      resolve correctly.
  *
- * To refresh the snapshot:
+ * The snapshot avoids the GLM-5.2 prefix-match bug (missing from a
+ * hand-maintained table → fell back to glm-5's wrong price) by covering all
+ * models automatically.
+ *
+ * To manually refresh the bundled snapshot:
  *   curl https://openrouter.ai/api/v1/models > src/data/openrouter-models.json
  */
 
@@ -66,7 +74,7 @@ function perTokenToPerMillion(s: string | undefined | null): number | null {
   return n * 1_000_000
 }
 
-// ─── Index (built once at module load) ───────────────────────────────────────
+// ─── Index ───────────────────────────────────────────────────────────────────
 
 function buildIndex(
   data: {
@@ -120,7 +128,92 @@ function buildIndex(
   return { byBare, byFull }
 }
 
-const { byBare, byFull } = buildIndex(orSnapshot)
+let index = buildIndex(orSnapshot)
+
+/**
+ * Swap the in-memory index for a fresher dataset (runtime refresh overlay).
+ * All synchronous getters below consult the live `index` binding, so once a
+ * refresh lands, newly-released models resolve without any code change.
+ * Returns false (index untouched) for empty payloads — a degenerate response
+ * must not evict the bundled snapshot, nor count as a successful refresh.
+ */
+function swapIndex(data: ORSnapshotShape): boolean {
+  const next = buildIndex(data)
+  if (Object.keys(next.byFull).length === 0) return false
+  index = next
+  return true
+}
+
+/**
+ * Run the refresh immediately: fetch the live model list with a bounded
+ * timeout, swap the in-memory index on success, persist the throttle
+ * timestamp. Resolves to true only when a fresh dataset actually replaced
+ * the index.
+ *
+ * Concurrent callers share a single in-flight attempt (one fetch, one swap);
+ * the slot is cleared on settle so a failed attempt can be retried at once
+ * (e.g. the manual settings button after a failed auto-refresh).
+ */
+let inflight: Promise<boolean> | null = null
+
+export function refreshOpenRouterModelsNow(): Promise<boolean> {
+  if (inflight) return inflight
+  inflight = doRefreshOpenRouterModels()
+  void inflight.finally(() => {
+    inflight = null
+  })
+  return inflight
+}
+
+async function doRefreshOpenRouterModels(): Promise<boolean> {
+  try {
+    const res = await fetch(MODELS_ENDPOINT, {
+      headers: { Accept: 'application/json' },
+      // Same 10s bound as every other provider fetch (model-fetcher,
+      // deepseek-provider): a hung gateway must not spin the manual refresh
+      // spinner forever or occupy the daily auto-refresh window.
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return false
+    // Proxied challenge/error pages are usually HTML — reject before parsing.
+    // Absent content-type stays lenient; the shape check below still rules.
+    const contentType = res.headers.get('content-type')
+    if (contentType && !contentType.includes('json')) return false
+    const parsed = (await res.json()) as ORSnapshotShape
+    if (!parsed || !Array.isArray(parsed.data)) return false
+    const swapped = swapIndex(parsed)
+    if (!swapped) return false
+    try {
+      localStorage.setItem(STORAGE_KEY_FRESH_AT, String(Date.now()))
+    } catch {
+      /* private mode / storage disabled — skip persistence, refetch next boot */
+    }
+    return true
+  } catch (err) {
+    // Offline / timeout / bad JSON — no user-facing noise, but leave one
+    // diagnostics line: a persistently failing refresh is otherwise
+    // indistinguishable from "already refreshed today".
+    console.warn('[openrouter-pricing] refresh failed:', err)
+    return false
+  }
+}
+
+/**
+ * Background auto-refresh, throttled to once per 24h via localStorage.
+ * Fire-and-forget: never blocks startup, never throws, and stays quiet to
+ * users on failure (one diagnostics console.warn; the bundled snapshot keeps
+ * serving as fallback). Called once from AppBootstrap on app start.
+ */
+export function maybeRefreshOpenRouterModels(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const last = Number(localStorage.getItem(STORAGE_KEY_FRESH_AT) ?? 0)
+    if (Number.isFinite(last) && Date.now() - last < REFRESH_INTERVAL_MS) return
+  } catch {
+    /* storage unavailable — still attempt the refresh */
+  }
+  void refreshOpenRouterModelsNow()
+}
 
 /** Look up a raw ORModelEntry by model id (sync). Returns null if unknown.
  *  Case-insensitive — OpenRouter ids are always lowercase, but callers may
@@ -132,11 +225,18 @@ function findEntry(modelId: string): ORModelEntry | null {
   const lower = modelId.toLowerCase()
   const candidates = [lower, stripVendorPrefix(lower)].filter(Boolean)
   for (const c of candidates) {
-    const e = byFull[c] ?? byBare[c]
+    const e = index.byFull[c] ?? index.byBare[c]
     if (e) return e
   }
   return null
 }
+
+// ─── Refresh constants & storage keys ───────────────────────────────────────
+
+const MODELS_ENDPOINT = 'https://openrouter.ai/api/v1/models'
+/** Re-fetch the live model list at most once per day. */
+const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
+const STORAGE_KEY_FRESH_AT = 'cw.openrouter-models.fetchedAt'
 
 // ─── Public API (all synchronous) ────────────────────────────────────────────
 

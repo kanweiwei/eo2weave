@@ -458,6 +458,9 @@ export const settings = {
       noProviders: "请先在下方配置服务商 API Key",
       manualInput: "手动输入",
       manualPlaceholder: "输入模型名称，如 glm-5.1",
+      refreshReference: "刷新模型参考数据（价格与上下文窗口）",
+      refreshReferenceSuccess: "模型参考数据已更新",
+      refreshReferenceFailed: "刷新失败，已保留本地数据",
     },
 
     // 服务商管理

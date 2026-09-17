@@ -470,6 +470,9 @@ export const settings = {
       noProviders: "Please configure an API Key below first",
       manualInput: "Manual Input",
       manualPlaceholder: "Enter model name, e.g. gpt-4o",
+      refreshReference: "Refresh model reference (pricing & context windows)",
+      refreshReferenceSuccess: "Model reference updated",
+      refreshReferenceFailed: "Refresh failed — using cached data",
     },
 
     // Provider Management

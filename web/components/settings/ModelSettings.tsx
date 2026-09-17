@@ -18,7 +18,9 @@ import {
   BookOpen,
   Info,
   ChevronDown,
+  RefreshCw,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import type { LLMProviderType, ModelCapability } from '@/agent/providers/types'
@@ -26,6 +28,12 @@ import { useT } from '@/i18n'
 import { resolveModelOutputCap } from '@/agent/llm/pi-ai-model-resolver'
 import { BrandSlider } from '@creatorweave/ui'
 import { BrandSwitch } from '@creatorweave/ui'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@creatorweave/ui'
 import {
   Select,
   SelectTrigger,
@@ -192,6 +200,7 @@ export function ModelSettings({ open }: ModelSettingsProps) {
   const t = useT()
 
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [referenceRefreshing, setReferenceRefreshing] = useState(false)
   const [providers, setProviders] = useState<
     Array<{
       providerType: LLMProviderType
@@ -234,6 +243,28 @@ export function ModelSettings({ open }: ModelSettingsProps) {
     [switchProviderAndModel],
   )
 
+  // ── Force-refresh the OpenRouter model reference (pricing / context / vision)
+  // Bypasses the daily auto-refresh throttle (refreshOpenRouterModelsNow
+  // persists a fresh timestamp on success, so the next boot skips the fetch).
+  // Concurrency is safe: the module dedupes in-flight refreshes, and the
+  // disabled state keeps the button inert while one is running.
+  const handleRefreshReference = useCallback(async () => {
+    setReferenceRefreshing(true)
+    try {
+      const { refreshOpenRouterModelsNow } = await import('@/agent/providers/openrouter-pricing')
+      const ok = await refreshOpenRouterModelsNow()
+      if (ok) {
+        toast.success(t('settings.defaultModel.refreshReferenceSuccess'))
+      } else {
+        toast.error(t('settings.defaultModel.refreshReferenceFailed'))
+      }
+    } catch {
+      toast.error(t('settings.defaultModel.refreshReferenceFailed'))
+    } finally {
+      setReferenceRefreshing(false)
+    }
+  }, [t])
+
   // Convert temperature (0-1) to slider value (0-100)
   const temperatureValue = Math.round(temperature * 100)
 
@@ -260,9 +291,31 @@ export function ModelSettings({ open }: ModelSettingsProps) {
     <div ref={rootRef} className="space-y-6">
       {/* ── Section 1: Default Model Selection ── */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-secondary">
-          {t('settings.defaultModel.title')}
-        </label>
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-secondary">
+            {t('settings.defaultModel.title')}
+          </label>
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={handleRefreshReference}
+                  disabled={referenceRefreshing}
+                  className="text-tertiary hover:text-primary disabled:opacity-50"
+                  aria-label={t('settings.defaultModel.refreshReference')}
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${referenceRefreshing ? 'animate-spin' : ''}`}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {t('settings.defaultModel.refreshReference')}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
         <Select value={currentSelectValue} onValueChange={handleSelectChange}>
           <SelectTrigger className="w-full">
             <SelectValue placeholder={t('topbar.modelSwitcher.unavailable')}>

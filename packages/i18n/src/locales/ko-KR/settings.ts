@@ -466,6 +466,9 @@ export const settings = {
       noProviders: "먼저 프로바이더 API Key를 설정해주세요",
       manualInput: "수동 입력",
       manualPlaceholder: "모델 이름 입력, 예: gpt-4o",
+      refreshReference: "모델 참조 데이터 새로 고침 (가격 및 컨텍스트 길이)",
+      refreshReferenceSuccess: "모델 참조 데이터가 업데이트되었습니다",
+      refreshReferenceFailed: "새로 고침 실패 — 캐시된 데이터를 사용 중입니다",
     },
 
     // 프로바이더 관리
