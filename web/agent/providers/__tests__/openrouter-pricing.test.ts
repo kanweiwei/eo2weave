@@ -30,7 +30,7 @@ const LIVE_OK_RESPONSE = {
   ok: true,
   headers: JSON_HEADERS,
   json: () => Promise.resolve(FRESH_DATASET),
-} as Response
+} as unknown as Response
 
 const FETCHED_AT_KEY = 'cw.openrouter-models.fetchedAt'
 
@@ -190,7 +190,7 @@ describe('refreshOpenRouterModelsNow (runtime overlay)', () => {
         ok: true,
         headers: JSON_HEADERS,
         json: () => Promise.resolve({ data: [] }),
-      } as Response),
+      } as unknown as Response),
     )
 
     const swapped = await mod.refreshOpenRouterModelsNow()
