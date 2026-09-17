@@ -573,6 +573,8 @@ interface CodexBlockExports {
   parseJsonSafe(resp: Response): Promise<{ text: string; json: any }>;
   codexHeaders(tokens: CodexTokensLike): Record<string, string>;
   getCodexResetCredits(tokens: CodexTokensLike): Promise<unknown>;
+  getCodexUsageLive(tokens: CodexTokensLike): Promise<unknown>;
+  persistCodexUsageLive(live: any): Promise<void>;
   consumeCodexResetCredit(tokens: CodexTokensLike, creditId: string): Promise<unknown>;
   DEVICEAUTH_USERCODE_URL: string;
   DEVICE_VERIFY_URL: string;
@@ -602,6 +604,10 @@ const DEVICE_VERIFY_URL = 'https://auth.openai.com/codex/device';
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CODEX_BACKEND_API_URL = 'https://chatgpt.com/backend-api';
 const CODEX_RESET_CREDITS_URL = `${CODEX_BACKEND_API_URL}/wham/rate-limit-reset-credits`;
+// Discovered 2026-09-17: live usage query endpoint. Returns the same 5h/weekly
+// windows as the responses headers plus credits, spend control and available
+// models — without consuming quota or requiring a prior real request.
+const CODEX_USAGE_URL = `${CODEX_BACKEND_API_URL}/codex/usage`;
 const CODEX_RESET_CONSUME_URL = `${CODEX_RESET_CREDITS_URL}/consume`;
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const CODEX_REDIRECT_URI = 'https://auth.openai.com/deviceauth/callback';
@@ -754,6 +760,71 @@ async function getCodexResetCredits(tokens: any): Promise<CodexResetCreditsRespo
   return codexBackendJsonRequest<CodexResetCreditsResponse>(CODEX_RESET_CREDITS_URL, tokens);
 }
 
+// Codex usage snapshot from the live /codex/usage endpoint. The five-hour and
+// weekly windows overlap with the responses headers, but this adds credits,
+// spend control and per-model availability, and it works without a prior real
+// request (the header path only updates after an actual Codex turn).
+type CodexUsageWindow = {
+  used_percent?: number;
+  limit_window_seconds?: number;
+  reset_after_seconds?: number;
+  reset_at?: number;
+};
+
+type CodexUsageLive = {
+  plan_type?: string;
+  rate_limit?: {
+    allowed?: boolean;
+    limit_reached?: boolean;
+    primary_window?: CodexUsageWindow;
+    secondary_window?: CodexUsageWindow;
+  };
+  credits?: {
+    has_credits?: boolean;
+    unlimited?: boolean;
+    overage_limit_reached?: boolean;
+    balance?: string | number | null;
+  };
+  spend_control?: {
+    reached?: boolean;
+    individual_limit?: {
+      source?: string;
+      unit?: string;
+      limit?: string;
+      used?: string;
+      remaining?: string;
+      used_percent?: number;
+      remaining_percent?: number;
+      reset_at?: number;
+    } | null;
+  } | null;
+  model_usage?: Record<string, { available?: boolean; available_at?: string | null; credits_would_enable?: boolean }> | null;
+  rate_limit_reset_credits?: { available_count?: number; applicable_available_count?: number } | null;
+};
+
+async function getCodexUsageLive(tokens: any): Promise<CodexUsageLive> {
+  return codexBackendJsonRequest<CodexUsageLive>(CODEX_USAGE_URL, tokens);
+}
+
+// Persist a live usage snapshot in the same `codex_usage` shape the popup
+// already reads, plus the untouched live payload for richer rendering.
+async function persistCodexUsageLive(live: CodexUsageLive) {
+  const rateLimit = live?.rate_limit || {};
+  const headers: Record<string, string> = {};
+  const toHeader = (prefix: string, win: CodexUsageWindow | undefined) => {
+    if (!win || typeof win.used_percent !== 'number') return;
+    headers[prefix + '-used-percent'] = String(win.used_percent);
+    if (typeof win.limit_window_seconds === 'number') {
+      headers[prefix + '-window-minutes'] = String(Math.round(win.limit_window_seconds / 60));
+    }
+    if (typeof win.reset_at === 'number') headers[prefix + '-reset-at'] = String(win.reset_at);
+  };
+  toHeader('x-codex-primary', rateLimit.primary_window);
+  toHeader('x-codex-secondary', rateLimit.secondary_window);
+  if (live?.plan_type) headers['x-codex-plan-type'] = live.plan_type;
+  await chrome.storage.local.set({ codex_usage: { headers, live, updatedAt: Date.now() } });
+}
+
 async function consumeCodexResetCredit(tokens: any, creditId: string) {
   const redeemRequestId = typeof crypto?.randomUUID === 'function'
     ? crypto.randomUUID()
@@ -831,6 +902,8 @@ CODEX = {
   parseJsonSafe,
   codexHeaders,
   getCodexResetCredits,
+  getCodexUsageLive,
+  persistCodexUsageLive,
   consumeCodexResetCredit,
   DEVICEAUTH_USERCODE_URL,
   DEVICE_VERIFY_URL,
@@ -886,6 +959,28 @@ export default defineBackground(() => {
     }
   }
 
+  // ── Live usage refresh (GET /backend-api/codex/usage) ──
+  // A read-only quota query: costs no tokens and does not consume rate-limit
+  // windows. Throttled to once per 4 minutes so the shared 5-minute token
+  // alarm can piggyback on it without hammering the backend. On failure the
+  // previously persisted snapshot stays untouched, so the popup keeps showing
+  // stale-but-valid data.
+  const CODEX_USAGE_REFRESH_MIN_INTERVAL_MS = 4 * 60 * 1000;
+  let codexUsageLastRefreshAt = 0;
+
+  async function refreshCodexUsageThrottled() {
+    if (Date.now() - codexUsageLastRefreshAt < CODEX_USAGE_REFRESH_MIN_INTERVAL_MS) return;
+    codexUsageLastRefreshAt = Date.now();
+    try {
+      const tokens = await CODEX!.getCodexTokens();
+      if (!tokens?.access_token) return;
+      const live = await CODEX!.getCodexUsageLive(tokens);
+      await CODEX!.persistCodexUsageLive(live);
+    } catch (err) {
+      console.warn('[Codex] Usage refresh failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   // Check on service worker startup
   if (CODEX_OAUTH_ENABLED) proactiveRefreshIfNeeded();
 
@@ -895,6 +990,7 @@ export default defineBackground(() => {
   chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (CODEX_OAUTH_ENABLED && alarm.name === CODEX_TOKEN_REFRESH_ALARM) {
       await proactiveRefreshIfNeeded();
+      await refreshCodexUsageThrottled();
       return;
     }
 
@@ -1933,6 +2029,35 @@ export default defineBackground(() => {
         if (CODEX_OAUTH_ENABLED && message.type === 'codex_get_usage') {
           const { codex_usage } = await chrome.storage.local.get('codex_usage');
           sendResponse({ ok: true, data: codex_usage || null });
+          return;
+        }
+
+        // Live quota query against /codex/usage. On success the snapshot is
+        // persisted so `codex_get_usage` (and the web app) see fresh data too;
+        // on failure we fall back to whatever snapshot is already stored so
+        // the popup still renders instead of going blank.
+        if (CODEX_OAUTH_ENABLED && message.type === 'codex_query_usage') {
+          const tokens = await CODEX!.getCodexTokens();
+          if (!tokens?.access_token) {
+            sendResponse({ ok: false, errorCode: 'NOT_AUTHORIZED', status: 0, message: 'Not authorized. Please complete device code login first.' });
+            return;
+          }
+          try {
+            const live = await CODEX!.getCodexUsageLive(tokens);
+            await CODEX!.persistCodexUsageLive(live);
+            const { codex_usage } = await chrome.storage.local.get('codex_usage');
+            sendResponse({ ok: true, data: codex_usage || null });
+          } catch (err: any) {
+            const { codex_usage } = await chrome.storage.local.get('codex_usage');
+            console.warn('[Codex] Live usage query failed, falling back to snapshot:', String(err?.message || err));
+            sendResponse({
+              ok: Boolean(codex_usage),
+              data: codex_usage || null,
+              errorCode: codex_usage ? undefined : 'USAGE_QUERY_FAILED',
+              status: 502,
+              message: String(err?.message || err),
+            });
+          }
           return;
         }
 

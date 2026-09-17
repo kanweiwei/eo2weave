@@ -193,12 +193,35 @@
       background: #c9922e;
       font-size: 11px;
     }
+    /* Usage refresh: icon button beside "updated at". 24px square keeps a
+       comfortable touch target while staying visually quiet. */
+    #usageRefreshBtn {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      font-size: 15px;
+      line-height: 1;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #6b7280;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #usageRefreshBtn:hover {
+      background: #f0fdfa;
+      color: #0d9488;
+    }
+    #usageRefreshBtn:active {
+      transform: scale(0.92);
+    }
     /* Focus rings — match the popup's brand teal (logo mid-stop). Mouse
        click stays clean; only keyboard navigation reveals the ring. */
     .cta:focus-visible,
     .footer-link:focus-visible,
     .codex-btn:focus-visible,
     #copyCodeBtn:focus-visible,
+    #usageRefreshBtn:focus-visible,
     .capline .mgr:focus-visible,
     .webmcp-toggle:focus-visible,
     .webmcp-host-left:focus-visible,
@@ -546,7 +569,12 @@
         </div>
         <div id="usagePrimary" style="margin-bottom: 6px;"></div>
         <div id="usageSecondary" style="margin-bottom: 4px;"></div>
-        <div id="usageUpdated" style="font-size: 10px; color: #9ca3af;"></div>
+        <div id="usageSpend" style="display:none;font-size:10px;color:#6b7280;margin-bottom:2px;"></div>
+        <div id="usageModels" style="display:none;font-size:10px;color:#6b7280;margin-bottom:2px;"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div id="usageUpdated" style="font-size: 10px; color: #9ca3af;"></div>
+          <button id="usageRefreshBtn" title="Refresh usage" aria-label="Refresh usage" data-i18n-title="refreshUsageTitle">⟳</button>
+        </div>
       </div>
 
       <div id="resetCreditBox" class="reset-credit-box">

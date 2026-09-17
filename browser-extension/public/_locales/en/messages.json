@@ -213,10 +213,41 @@
       }
     }
   },
+  "refreshUsageTitle": {
+    "message": "Refresh usage now"
+  },
   "updatedAt": {
     "message": "Updated $TIME$",
     "placeholders": {
       "time": {
+        "content": "$1"
+      }
+    }
+  },
+  "refreshing": {
+    "message": "Refreshing…"
+  },
+  "refreshFailed": {
+    "message": "Refresh failed — showing last known usage"
+  },
+  "spendControl": {
+    "message": "Spend: $USED$ / $LIMIT$ credits ($PERCENT$%)",
+    "placeholders": {
+      "used": {
+        "content": "$1"
+      },
+      "limit": {
+        "content": "$2"
+      },
+      "percent": {
+        "content": "$3"
+      }
+    }
+  },
+  "modelsAvailable": {
+    "message": "Models: $MODELS$",
+    "placeholders": {
+      "models": {
         "content": "$1"
       }
     }

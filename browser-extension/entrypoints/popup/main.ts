@@ -906,6 +906,46 @@ function renderCapline(): void {
         : '');
   }
 
+  // ── Rich rendering for the live /codex/usage payload (persisted by the
+  // background as `codex_usage.live`). Everything here is additive: when the
+  // field is absent the row simply stays hidden.
+  function renderLiveUsage(live: any) {
+    if (!live || typeof live !== 'object') return;
+
+    // Spend control (team/workspace credit budget) — string decimals from
+    // the API, so parse before formatting.
+    var spend = live.spend_control && live.spend_control.individual_limit;
+    var spendEl = document.getElementById('usageSpend');
+    if (spendEl) {
+      var used = spend ? parseFloat(spend.used) : NaN;
+      var limit = spend ? parseFloat(spend.limit) : NaN;
+      if (spend && isFinite(used) && isFinite(limit) && limit > 0) {
+        var pct = Math.round((used / limit) * 100);
+        spendEl.style.display = 'block';
+        // chrome.i18n.getMessage takes all substitutions as ONE array —
+        // passing them as separate arguments silently drops the extras.
+        spendEl.textContent = t('spendControl', [String(Math.round(used)), String(Math.round(limit)), String(pct)]);
+      } else {
+        spendEl.style.display = 'none';
+      }
+    }
+
+    // Available models — up to three names, collapsed with +N when longer.
+    var modelsEl = document.getElementById('usageModels');
+    if (modelsEl) {
+      var modelUsage = live.model_usage || {};
+      var names = Object.keys(modelUsage).filter(function (id) { return modelUsage[id] && modelUsage[id].available; });
+      if (names.length > 0) {
+        var shown = names.slice(0, 3).join(', ');
+        var extra = names.length - 3;
+        modelsEl.style.display = 'block';
+        modelsEl.textContent = extra > 0 ? t('modelsAvailable', shown + ' +' + extra) : t('modelsAvailable', shown);
+      } else {
+        modelsEl.style.display = 'none';
+      }
+    }
+  }
+
   // ── Device code display + copy ──
 
   function showDeviceCode(code: string, url?: string) {
@@ -964,35 +1004,54 @@ function renderCapline(): void {
     });
   }
 
+  // Shared renderer for a `codex_usage` snapshot (headers + optional live
+  // payload). Used by both the popup-open load path and the manual refresh
+  // button, so they always stay visually consistent.
+  function renderSnapshotUsage(usage: any) {
+    if (!usage) return;
+    var headers = usage.headers || {};
+    // Both windows are optional — render whichever the server returns and
+    // hide the other. Labels are derived from each window's `window-minutes`
+    // (matching codex-rs), so this stays correct if OpenAI re-enables the
+    // 5-hour window or changes durations later.
+    var primary = parseWindow(headers, 'x-codex-primary');
+    var secondary = parseWindow(headers, 'x-codex-secondary');
+    if (!primary && !secondary) return;
+
+    var container = document.getElementById('codexUsage')!;
+    if (container) container.style.display = 'block';
+
+    var planType = headers['x-codex-plan-type'] || headers['x-codex-active-limit'] || '';
+    var planEl = document.getElementById('usagePlan')!;
+    if (planEl && planType) planEl.textContent = planType;
+
+    renderWindow('usagePrimary', formatDurationLabel(primary && primary.windowMinutes, '5h'), primary);
+    renderWindow('usageSecondary', formatDurationLabel(secondary && secondary.windowMinutes, 'Wk'), secondary);
+    renderLiveUsage(usage.live);
+
+    if (usage.updatedAt) {
+      var updatedEl = document.getElementById('usageUpdated')!;
+      if (updatedEl) updatedEl.textContent = t('updatedAt', new Date(usage.updatedAt).toLocaleTimeString());
+    }
+  }
+
   function loadUsageData() {
-    loadResetCredits();
-    sendMessage({ type: 'codex_get_usage' }).then(function (resp) {
-      if (!resp || !resp.ok || !resp.data) return;
-      var usage = resp.data;
-      var headers = usage.headers || {};
-      // Both windows are optional — render whichever the server returns and
-      // hide the other. Labels are derived from each window's `window-minutes`
-      // (matching codex-rs), so this stays correct if OpenAI re-enables the
-      // 5-hour window or changes durations later.
-      var primary = parseWindow(headers, 'x-codex-primary');
-      var secondary = parseWindow(headers, 'x-codex-secondary');
-      if (!primary && !secondary) return;
-
-      var container = document.getElementById('codexUsage')!;
-      if (container) container.style.display = 'block';
-
-      var planType = headers['x-codex-plan-type'] || headers['x-codex-active-limit'] || '';
-      var planEl = document.getElementById('usagePlan')!;
-      if (planEl && planType) planEl.textContent = planType;
-
-      renderWindow('usagePrimary', formatDurationLabel(primary && primary.windowMinutes, '5h'), primary);
-      renderWindow('usageSecondary', formatDurationLabel(secondary && secondary.windowMinutes, 'Wk'), secondary);
-
-      if (usage.updatedAt) {
-        var updatedEl = document.getElementById('usageUpdated')!;
-        if (updatedEl) updatedEl.textContent = t('updatedAt', new Date(usage.updatedAt).toLocaleTimeString());
+    // Fire a live /codex/usage query (fresh numbers while the popup is open);
+    // fall back to the stored snapshot when the query is unavailable.
+    sendMessage({ type: 'codex_query_usage' }).then(function (resp) {
+      if (resp && resp.ok && resp.data) {
+        renderSnapshotUsage(resp.data);
+        loadResetCredits();
+        return;
       }
-    }).catch(function () {});
+      if (resp && !resp.ok) console.warn('[popup] live usage query failed:', resp.message || resp.error || resp.errorCode);
+      return sendMessage({ type: 'codex_get_usage' }).then(function (cachedResp) {
+        if (cachedResp && cachedResp.ok && cachedResp.data) renderSnapshotUsage(cachedResp.data);
+        loadResetCredits();
+      });
+    }).catch(function () {
+      loadResetCredits();
+    });
   }
 
   resetCreditBtn.addEventListener('click', async function () {
@@ -1024,6 +1083,34 @@ function renderCapline(): void {
     if (usageEl) usageEl.style.display = 'none';
     log(t('loginStateCleared'));
   });
+
+  // Manual refresh: force a live /codex/usage query. The popup path always
+  // queries; the 4-minute throttle only gates the alarm-driven refresh.
+  var usageRefreshBtn = document.getElementById('usageRefreshBtn');
+  if (usageRefreshBtn) {
+    usageRefreshBtn.addEventListener('click', function () {
+      var updatedEl = document.getElementById('usageUpdated');
+      if (updatedEl) updatedEl.textContent = t('refreshing');
+      sendMessage({ type: 'codex_query_usage' }).then(function (resp) {
+        console.log('[popup] refresh response:', JSON.stringify({
+          ok: resp && resp.ok,
+          errorCode: resp && resp.errorCode,
+          message: resp && resp.message,
+          hasData: Boolean(resp && resp.data),
+          hasLive: Boolean(resp && resp.data && resp.data.live),
+          headers: resp && resp.data && resp.data.headers,
+        }));
+        if (resp && resp.ok && resp.data) {
+          renderSnapshotUsage(resp.data);
+        } else if (updatedEl) {
+          updatedEl.textContent = t('refreshFailed');
+        }
+      }).catch(function (err) {
+        console.warn('[popup] refresh threw:', err);
+        if (updatedEl) updatedEl.textContent = t('refreshFailed');
+      });
+    });
+  }
 
   btn.addEventListener('click', async function () {
     logEl.textContent = '';
