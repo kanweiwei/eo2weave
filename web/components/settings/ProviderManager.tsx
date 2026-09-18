@@ -51,7 +51,7 @@ import { useI18nStore } from '@/i18n/store'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, updateGatewayModels, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
 import { performDeviceCodeFlow, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
-import type { AuthState, RateLimitWindow } from '@/agent/providers/llm-gateway-auth'
+import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
 // =============================================================================
 // Constants
@@ -1140,15 +1140,53 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
 // LLM Gateway Card - Special provider card for Device Code Flow
 // =============================================================================
 
-/** Format an ISO reset timestamp as a compact relative string. */
-function formatResetTime(iso: string | null, t: (key: string, params?: Record<string, string | number>) => string): string {
+/** Format an ISO reset/expiry timestamp as a compact relative string. */
+function formatResetTime(iso: string | null | undefined, t: (key: string, params?: Record<string, string | number>) => string): string {
   if (!iso) return t('settings.gatewayRateLimits.resetUnknown')
   const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return t('settings.gatewayRateLimits.resetUnknown')
   const diffMs = d.getTime() - Date.now()
   const diffH = Math.round(diffMs / 3_600_000)
   if (diffH <= 0) return t('settings.gatewayRateLimits.resetSoon')
   if (diffH < 24) return t('settings.gatewayRateLimits.resetInHours', { count: diffH })
   return t('settings.gatewayRateLimits.resetInDays', { count: Math.round(diffH / 24) })
+}
+
+/** Render one credit package (monthly quota or top-up pack) as a usage bar. */
+function CreditPackageBar({ label, pkg, t }: {
+  label: string
+  pkg: CreditPackage
+  t: (key: string, params?: Record<string, string | number>) => string
+}) {
+  const total = typeof pkg.total_credit === 'number' ? pkg.total_credit : 0
+  const used = typeof pkg.used_credit === 'number' ? pkg.used_credit : 0
+  const remainingPct =
+    typeof pkg.remaining_percentage === 'number'
+      ? pkg.remaining_percentage
+      : total > 0
+        ? ((typeof pkg.remaining_credit === 'number' ? pkg.remaining_credit : 0) / total) * 100
+        : 100
+  const usedPct = Math.min(100, Math.max(0, 100 - remainingPct))
+  const color = usedPct >= 85 ? '#ef4444' : usedPct >= 60 ? '#f59e0b' : 'var(--brand, #0d9488)'
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[11px] mb-1">
+        <span className="text-secondary">{label}</span>
+        <span className="font-mono text-tertiary">
+          {used} / {total}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-border/40 overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all"
+          style={{ width: `${usedPct}%`, background: color }}
+        />
+      </div>
+      <div className="text-[10px] text-tertiary/70 mt-0.5">
+        {formatResetTime(pkg.expires_at, t)}
+      </div>
+    </div>
+  )
 }
 
 function LLMGatewayCard({
@@ -1592,50 +1630,46 @@ function LLMGatewayCard({
                 </BrandDialogContent>
               </BrandDialog>
 
-              {/* Rate-limits status */}
+              {/* Rate-limits status (credit-based quota) */}
               {(rateLimitsResult || rateLimitsError) && (
                 <div className="rounded-md border border-border/60 bg-muted/20 p-2.5 space-y-2">
                   {rateLimitsError ? (
                     <p className="text-[11px] text-red-500 break-all">{rateLimitsError}</p>
                   ) : rateLimitsResult ? (
-                    [
-                      { label: t('settings.gatewayRateLimits.fiveHour'), data: rateLimitsResult.five_hour },
-                      { label: t('settings.gatewayRateLimits.week'), data: rateLimitsResult.week },
-                    ]
-                      .filter((w): w is { label: string; data: RateLimitWindow } => {
-                        const d = w.data
-                        return (
-                          !!d &&
-                          typeof d.used === 'number' &&
-                          typeof d.limit === 'number' &&
-                          typeof d.remaining_percentage === 'number' &&
-                          (typeof d.next_reset_at === 'string' || d.next_reset_at === null || d.next_reset_at === undefined)
-                        )
-                      })
-                      .map(({ label, data }) => {
-                      const usedPct = Math.max(0, 100 - data.remaining_percentage)
-                      const color =
-                        usedPct >= 85 ? '#ef4444' : usedPct >= 60 ? '#f59e0b' : 'var(--brand, #0d9488)'
-                      return (
-                        <div key={label}>
-                          <div className="flex items-center justify-between text-[11px] mb-1">
-                            <span className="text-secondary">{label}</span>
-                            <span className="font-mono text-tertiary">
-                              ¥{data.used.toFixed(1)} / ¥{data.limit}
-                            </span>
-                          </div>
-                          <div className="h-1.5 rounded-full bg-border/40 overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{ width: `${usedPct}%`, background: color }}
-                            />
-                          </div>
-                          <div className="text-[10px] text-tertiary/70 mt-0.5">
-                            {formatResetTime(data.next_reset_at, t)}
-                          </div>
-                        </div>
-                      )
-                    })
+                    <>
+                      {/* Available credit summary */}
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-secondary font-medium">{t('settings.gatewayRateLimits.availableCredit')}</span>
+                        <span className="font-mono text-secondary">
+                          {typeof rateLimitsResult.available_credit === 'number' ? rateLimitsResult.available_credit : '—'}
+                        </span>
+                      </div>
+                      {/* Monthly package */}
+                      {rateLimitsResult.credit_usage?.monthly && (
+                        <CreditPackageBar
+                          label={t('settings.gatewayRateLimits.monthly')}
+                          pkg={rateLimitsResult.credit_usage.monthly}
+                          t={t}
+                        />
+                      )}
+                      {/* Top-up packages */}
+                      {(rateLimitsResult.credit_usage?.topup_packages ?? [])
+                        .filter((pkg) => {
+                          return (
+                            !!pkg &&
+                            typeof pkg === 'object' &&
+                            (typeof pkg.total_credit === 'number' || typeof pkg.remaining_credit === 'number')
+                          )
+                        })
+                        .map((pkg, idx) => (
+                          <CreditPackageBar
+                            key={pkg.package_id || idx}
+                            label={t('settings.gatewayRateLimits.topup', { count: idx + 1 })}
+                            pkg={pkg}
+                            t={t}
+                          />
+                        ))}
+                    </>
                   ) : null}
                 </div>
               )}

@@ -530,8 +530,9 @@ export const settings = {
       volcengineCoding: "Volcengine Ark Coding",
     },
     gatewayRateLimits: {
-      fiveHour: "直近5時間",
-      week: "今週",
+      availableCredit: "利用可能クレジット",
+      monthly: "月間パッケージ",
+      topup: "チャージパック {count}",
       resetUnknown: "リセット時刻不明",
       resetSoon: "まもなくリセット",
       resetInHours: "{count}時間後にリセット",

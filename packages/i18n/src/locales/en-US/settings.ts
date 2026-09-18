@@ -531,8 +531,9 @@ export const settings = {
       volcengineCoding: "Volcengine Ark Coding",
     },
     gatewayRateLimits: {
-      fiveHour: "Last 5 hours",
-      week: "This week",
+      availableCredit: "Available credits",
+      monthly: "Monthly quota",
+      topup: "Top-up pack {count}",
       resetUnknown: "Reset time unknown",
       resetSoon: "Resets soon",
       resetInHours: "Resets in {count}h",

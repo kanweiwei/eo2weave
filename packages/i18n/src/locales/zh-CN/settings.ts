@@ -518,8 +518,9 @@ export const settings = {
       volcengineCoding: "火山方舟 Coding",
     },
     gatewayRateLimits: {
-      fiveHour: "近 5 小时",
-      week: "本周",
+      availableCredit: "可用积分",
+      monthly: "本月套餐",
+      topup: "充值包 {count}",
       resetUnknown: "重置时间未知",
       resetSoon: "即将重置",
       resetInHours: "{count} 小时后重置",

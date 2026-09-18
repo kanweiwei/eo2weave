@@ -42,28 +42,47 @@ export interface GatewayError {
 
 // ── Rate Limits ──
 
-/** Single rate-limit window (e.g. 5-hour rolling window or weekly window). */
-export interface RateLimitWindow {
-  /** 配额上限（人民币） */
-  limit: number
-  /** 已用配额（人民币） */
-  used: number
-  /** 剩余配额（人民币） */
-  remaining: number
+/**
+ * A credit package: either the monthly quota or a purchased top-up pack.
+ * The gateway bills in credits (积分) rather than currency.
+ */
+export interface CreditPackage {
+  package_id: string
+  /** "monthly" for the monthly quota, "payment" for top-up packs */
+  source_type: string
+  /** 包总额度（积分） */
+  total_credit: number
+  /** 已消耗额度（积分） */
+  used_credit: number
+  /** 剩余额度（积分） */
+  remaining_credit: number
   /** 剩余百分比 (0–100) */
   remaining_percentage: number
-  /** Next reset time (ISO 8601 UTC); may be null when the gateway omits it */
-  next_reset_at: string | null
+  /**
+   * ISO 8601 timestamp with timezone. For monthly packages this is the next
+   * reset date (calendar month); for top-up packs this is the expiry date.
+   * May be null when the gateway omits it.
+   */
+  expires_at: string | null
+  /** e.g. "active" */
+  status: string
 }
 
-/** Response of `GET /v1/rate-limits`. */
+/** Credit usage breakdown of `GET /v1/rate-limits`. */
+export interface CreditUsage {
+  /** 本月套餐（自然月刷新）；无月套餐时为 null */
+  monthly: CreditPackage | null
+  /** 已购充值积分包 */
+  topup_packages: CreditPackage[]
+}
+
+/** Response of `GET /v1/rate-limits` (credit-based quota). */
 export interface RateLimitsResponse {
   /** 用户标识 */
   uid: string
-  /** 5 小时滚动窗口 */
-  five_hour: RateLimitWindow
-  /** 周窗口 */
-  week: RateLimitWindow
+  /** 当前可用总积分（月套餐剩余 + 所有充值包剩余） */
+  available_credit: number
+  credit_usage: CreditUsage
 }
 
 // ── Token Persistence ──
