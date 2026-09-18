@@ -7,12 +7,16 @@
     "packages/*",
     "web"
   ],
+  "devDependencies": {
+    "zx": "^8.8.5"
+  },
   "resolutions": {
     "esbuild": "^0.21.5"
   },
   "scripts": {
     "test": "cd web && pnpm test",
     "check": "make lint && make typecheck && make test",
+    "release": "node scripts/release.mjs",
     "host": "cargo build --release --manifest-path browser-extension/native-host/Cargo.toml",
     "host:mac": "cargo build --release --manifest-path browser-extension/native-host/Cargo.toml",
     "host:win": "cargo build --release --target x86_64-pc-windows-gnu --manifest-path browser-extension/native-host/Cargo.toml",
