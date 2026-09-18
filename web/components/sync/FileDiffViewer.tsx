@@ -271,6 +271,8 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
         const isFormat = !!formatUI
         let showNativePanel = fileChange.type !== 'add'
 
+        let originalContent: string | null = null
+
         if (fileChange.type !== 'add') {
           const nativeContent = await readNativeFileViaConversation(conversation, filePath)
           // Deletion preview: keep the disk content visible even though the
@@ -279,6 +281,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           // early-return below) instead of WHAT is being deleted — which is
           // exactly what the user needs for informed consent.
           showNativePanel = fileChange.type === 'delete' ? true : nativeContent !== null
+          originalContent = nativeContent
         }
 
         if (isImage) {
@@ -403,10 +406,10 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           }
           setContent({
             opfs: formatText,
-            native: null,
+            native: originalContent,
             opfsImageUrl: null,
             nativeImageUrl: null,
-            showNativePanel: false,
+            showNativePanel,
             loading: false,
             error: null,
           })
