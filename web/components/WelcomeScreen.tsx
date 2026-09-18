@@ -10,9 +10,17 @@
  *   (SKIPPED entirely in side-panel mode — sidebar users almost never
  *    need a mounted local folder; a user who dismissed it via "Skip for
  *    now" also never sees it again — the choice persists in localStorage)
- * - ready: shows quick-start prompts + rich input
+ * - ready: shows the one-line hint above the rich input
  *
  * Steps are conditional, so use setup labels instead of a linear step count.
+ *
+ * NOTE: the rich input is deliberately mounted on EVERY step except
+ * 'welcome' (and while loading). Readiness can flip back and forth while
+ * the user edits provider keys in Settings (e.g. clear-then-paste while
+ * replacing an API key), and the old ready-only rendering unmounted the
+ * editor on each flip — silently discarding the user's unsent text.
+ * Drafts additionally persist per project via useInputDraftStore, so
+ * even a full WelcomeScreen remount restores the input.
  */
 
 import { useState, useCallback, useEffect } from 'react'
@@ -22,6 +30,8 @@ import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { useAssetStore } from '@/store/asset.store'
+import { useProjectStore } from '@/store/project.store'
+import { useInputDraftStore } from '@/store/input-draft.store'
 import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
@@ -128,7 +138,30 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const addNativeHostRoot = useFolderAccessStore((s) => s.addNativeHostRoot)
   const [isAddingNativeHost, setIsAddingNativeHost] = useState(false)
   const t = useT()
-  // Availability = full-chain ping (page → extension → Rust host), not just
+
+  // ── Draft persistence (survives input remounts) ──
+  // The rich input only renders in the 'ready' step, so any transient
+  // readiness flip (e.g. clearing an API key while replacing it in
+  // Settings) unmounts the editor and used to silently discard the
+  // user's unsent text. WelcomeScreen serves a per-project draft
+  // conversation (bare project URL), so the project id is the natural
+  // draft key — same store the conversation view uses for per-workspace
+  // drafts.
+  const projectId = useProjectStore((s) => s.activeProjectId)
+  // NOTE: `||` (not `??`) — activeProjectId is '' (not null) before the
+  // project store hydrates, and '' must fall back to the same transient key
+  // the orphan-migration effect below looks for. With `??` the fallback was
+  // dead code and pre-hydration drafts landed under '' where nothing could
+  // ever migrate them.
+  const draftKey = projectId || 'welcome'
+  const saveDraft = useCallback((text: string) => {
+    useInputDraftStore.getState().saveDraft(draftKey, {
+      text,
+      mentionedAgentIds: [],
+      selectedFiles: [],
+    })
+  }, [draftKey])
+
   // "bridge function exists" — hides the entry when the Rust app is not
   // installed (click would fail with a raw Chrome "host not found" error).
   // Re-probes on window focus.
@@ -215,9 +248,51 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const handleSubmit = useCallback(() => {
     const text = inputValue.trim()
     if (!text) return
+    // The persistent input also renders on setup steps, but those have no
+    // working model yet — sending would start a conversation that fails on
+    // every turn. Point the user at the setup card instead; the draft store
+    // keeps what they typed so nothing is lost.
+    if (step !== 'ready') {
+      toast.warning(t('welcome.sendBlockedNotReady'))
+      if (step === 'api-key' || step === 'select-model') onOpenSettings?.('llm')
+      return
+    }
     onStartConversation(text)
     setInputValue('')
-  }, [inputValue, onStartConversation])
+    // Sent — the draft is consumed. Clear it so it won't be re-injected
+    // if the input remounts later in this session.
+    useInputDraftStore.getState().clearDraft(draftKey)
+  }, [inputValue, onStartConversation, draftKey, step, t, onOpenSettings])
+
+  // Pull the persisted draft into the editor on remount. initialText is
+  // only consumed when the editor is EMPTY (AgentRichInput's draft effect),
+  // so a user typing faster than the restore lands can't be overwritten.
+  // onDraftRestored clears the pending draft so a manual clear sticks.
+  const [draftToRestore, setDraftToRestore] = useState<string | null>(null)
+  const restoreDraft = useCallback(() => {
+    setDraftToRestore(null)
+    useInputDraftStore.getState().clearDraft(draftKey)
+  }, [draftKey])
+  useEffect(() => {
+    // A draft saved under the 'welcome' fallback key (typed before the
+    // project id was hydrated) would be orphaned once the real key arrives —
+    // carry it over so it is still restored. Runs before the peek below
+    // (same effect), so the migrated text is picked up in the same pass.
+    if (draftKey !== 'welcome') {
+      const store = useInputDraftStore.getState()
+      const orphaned = store.peekDraft('welcome')
+      if (orphaned?.text && !store.peekDraft(draftKey)) {
+        store.saveDraft(draftKey, {
+          text: orphaned.text,
+          mentionedAgentIds: [],
+          selectedFiles: [],
+        })
+      }
+      store.clearDraft('welcome')
+    }
+    const draft = useInputDraftStore.getState().peekDraft(draftKey)
+    setDraftToRestore(draft?.text ?? null)
+  }, [draftKey])
 
   const handleSelectFolder = useCallback(async () => {
     try {
@@ -240,8 +315,11 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const handleInputChange = useCallback(
     ({ text }: AgentRichInputValue) => {
       setInputValue(text)
+      // Mirror every edit into the draft store. Store drops empty drafts
+      // itself, so clearing the input also clears the persisted draft.
+      saveDraft(text)
     },
-    [],
+    [saveDraft],
   )
 
   const handleCaptureScreenshot = useCallback(async () => {
@@ -551,13 +629,23 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </button>
             </div>
           </div>
-        ) : (
-          /* ── Ready: Active input ── */
+        ) : null}
+
+        {/* ── Persistent rich input ──
+            Rendered on every step except 'welcome'. Previously the input only
+            existed on the 'ready' step, so a transient readiness flip (e.g.
+            clearing an API key while replacing it in Settings) unmounted the
+            editor and silently discarded unsent text. Drafts additionally
+            persist per project via useInputDraftStore as a second safety net
+            for full remounts. */}
+        {!isLoading && step !== 'welcome' && (
           <>
-            {/* One-line hint replacing the quick-start buttons */}
-            <p className="mb-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
-              {t('welcome.readyHint')}
-            </p>
+            {step === 'ready' && (
+              /* One-line hint replacing the quick-start buttons */
+              <p className="mb-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                {t('welcome.readyHint')}
+              </p>
+            )}
             <div className="relative mb-6" data-tour="welcome-input">
               <AgentRichInput
                 placeholder={t('welcome.placeholder')}
@@ -571,6 +659,8 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 onDeleteAgent={async () => false}
                 onChange={handleInputChange}
                 onSubmit={handleSubmit}
+                initialText={draftToRestore ?? undefined}
+                onDraftRestored={restoreDraft}
                 leadingAccessory={(
                   <TooltipProvider delayDuration={250}>
                     <Tooltip>

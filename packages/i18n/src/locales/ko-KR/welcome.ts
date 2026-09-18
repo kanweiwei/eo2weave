@@ -38,6 +38,7 @@ export const welcome = {
     mountFolderBack: "뒤로",
     mountFolderMounted: "마운트된 폴더",
     readyHint: "메시지를 입력하거나 파일을 드롭하세요",
+    sendBlockedNotReady: "먼저 위의 설정을 완료하세요——입력한 내용은 저장되어 있으며, 설정이 끝나면 바로 보낼 수 있습니다.",
     gateway: {
         title: "견과클라우드 AI 로그인",
         close: "닫기",

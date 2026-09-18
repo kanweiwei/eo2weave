@@ -2,12 +2,21 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { captureTabMock, addFilesMock, addNativeHostRootMock, conversationState, pageActionAvailable, folderAccessState } = vi.hoisted(() => ({
+const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, conversationState, pageActionAvailable, folderAccessState, settingsState, inputDraftState, projectState } = vi.hoisted(() => ({
   captureTabMock: vi.fn(async () => ({ ok: true, dataUrl: 'data:image/png;base64,c2NyZWVuc2hvdA==' })),
   addFilesMock: vi.fn(),
   addNativeHostRootMock: vi.fn(async () => true),
+  toastWarningMock: vi.fn(),
   conversationState: { conversations: [] as unknown[] },
   pageActionAvailable: { value: true },
+  // Mutable settings state so readiness-flip tests can flip hasApiKey.
+  settingsState: {
+    hasApiKey: true,
+    hasApiKeyLoaded: true,
+    checkHasApiKey: async () => {},
+    providerType: 'openai',
+    modelName: 'vision-model',
+  },
   // Mock state for folder-access store. `rootsHydrated` defaults to true so
   // existing tests (which expect the mount-folder step to render on first
   // paint) keep working; the dedicated hydration test below flips it to
@@ -18,6 +27,13 @@ const { captureTabMock, addFilesMock, addNativeHostRootMock, conversationState, 
     addRoot: async () => {},
     addNativeHostRoot: async () => true,
   },
+  // In-memory draft store mock mirroring useInputDraftStore's contract
+  // (saveDraft drops empty drafts, peekDraft is non-destructive).
+  inputDraftState: {
+    drafts: new Map<string, { text: string; mentionedAgentIds: string[]; selectedFiles: string[] }>(),
+  },
+  // Mutable so the empty-string fallback test can simulate pre-hydration.
+  projectState: { activeProjectId: 'proj-1' },
 }))
 
 vi.mock('@/store/settings.store', () => ({
@@ -27,15 +43,7 @@ vi.mock('@/store/settings.store', () => ({
     checkHasApiKey: () => Promise<void>
     providerType: string
     modelName: string
-  }) => unknown) => selector({
-    hasApiKey: true,
-    hasApiKeyLoaded: true,
-    checkHasApiKey: async () => {},
-    // Readiness gate (commit 24bd878) requires BOTH providerType and
-    // modelName; without it the screen lands on select-model, not mount-folder.
-    providerType: 'openai',
-    modelName: 'vision-model',
-  }),
+  }) => unknown) => selector(settingsState),
 }))
 
 vi.mock('@/store/conversation.store', () => ({
@@ -49,6 +57,49 @@ vi.mock('@/store/folder-access.store', () => ({
     addRoot: () => Promise<void>
     addNativeHostRoot: () => Promise<boolean>
   }) => unknown) => selector(folderAccessState),
+}))
+
+vi.mock('@/store/project.store', () => ({
+  useProjectStore: (selector: (state: { activeProjectId: string }) => unknown) =>
+    selector(projectState),
+}))
+
+vi.mock('@/store/input-draft.store', () => ({
+  useInputDraftStore: {
+    getState: () => ({
+      saveDraft: (convId: string, draft: { text: string; mentionedAgentIds: string[]; selectedFiles: string[] }) => {
+        const hasContent = draft.text
+          || (draft.mentionedAgentIds?.length ?? 0) > 0
+          || (draft.selectedFiles?.length ?? 0) > 0
+        if (!hasContent) {
+          inputDraftState.drafts.delete(convId)
+          return
+        }
+        inputDraftState.drafts.set(convId, { ...draft })
+      },
+      peekDraft: (convId: string) => {
+        const draft = inputDraftState.drafts.get(convId)
+        if (!draft) return null
+        return {
+          text: draft.text,
+          mentionedAgentIds: [...draft.mentionedAgentIds],
+          selectedFiles: [...draft.selectedFiles],
+        }
+      },
+      clearDraft: (convId: string) => {
+        inputDraftState.drafts.delete(convId)
+      },
+    }),
+  },
+}))
+
+vi.mock('sonner', () => ({
+  toast: {
+    warning: toastWarningMock,
+    error: vi.fn(),
+    success: vi.fn(),
+    info: vi.fn(),
+  },
 }))
 
 vi.mock('@/hooks/useGatewayLogin', () => ({
@@ -104,11 +155,45 @@ vi.mock('@/hooks/useNativeHostPing', () => ({
   },
 }))
 
-vi.mock('../agent/AgentRichInput', () => ({
-  AgentRichInput: ({ leadingAccessory }: { leadingAccessory?: ReactNode }) => (
-    <div data-testid="agent-rich-input">{leadingAccessory}</div>
-  ),
-}))
+vi.mock('../agent/AgentRichInput', async () => {
+  const { useState, useEffect } = await import('react')
+  // Mimics the real editor's draft contract: initialText is written into the
+  // (local) document once, then onDraftRestored consumes the pending prop —
+  // the consumed text STAYS in the editor, exactly like tiptap setContent.
+  const MockAgentRichInput = ({
+    leadingAccessory,
+    initialText,
+    onDraftRestored,
+    onChange,
+  }: {
+    leadingAccessory?: ReactNode
+    initialText?: string
+    onDraftRestored?: () => void
+    onChange?: (value: { text: string; mentionedAgentIds: string[] }) => void
+  }) => {
+    const [consumedText, setConsumedText] = useState<string | null>(null)
+    useEffect(() => {
+      if (initialText && !consumedText) {
+        setConsumedText(initialText)
+        onDraftRestored?.()
+      }
+    }, [initialText, consumedText, onDraftRestored])
+    return (
+      <div data-testid="agent-rich-input">
+        {consumedText ? <div data-testid="draft-restored">{consumedText}</div> : null}
+        <button
+          type="button"
+          data-testid="mock-input-type"
+          onClick={() => onChange?.({ text: 'typed text', mentionedAgentIds: [] })}
+        >
+          type
+        </button>
+        {leadingAccessory}
+      </div>
+    )
+  }
+  return { AgentRichInput: MockAgentRichInput }
+})
 
 vi.mock('../agent/PageScreenshotCropDialog', () => ({
   PageScreenshotCropDialog: ({ onConfirm }: { onConfirm: (file: File) => void }) => (
@@ -125,6 +210,8 @@ describe('WelcomeScreen', () => {
     pageActionAvailable.value = true
     delete (window as unknown as { __agentWeb?: unknown }).__agentWeb
     addNativeHostRootMock.mockClear()
+    toastWarningMock.mockClear()
+    projectState.activeProjectId = 'proj-1'
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
     // The mount-folder skip persists across remounts by design; clear it so
     // tests below still see the mount-folder step from a clean baseline.
@@ -134,6 +221,14 @@ describe('WelcomeScreen', () => {
     folderAccessState.roots = []
     folderAccessState.rootsHydrated = true
     folderAccessState.addNativeHostRoot = addNativeHostRootMock
+    // Restore the default readiness baseline (readiness-flip tests mutate it).
+    settingsState.hasApiKey = true
+    settingsState.hasApiKeyLoaded = true
+    settingsState.providerType = 'openai'
+    settingsState.modelName = 'vision-model'
+    // Fresh draft store per test — draft persistence is per project, so a
+    // stale entry from a previous test would leak into the restore test.
+    inputDraftState.drafts.clear()
   })
 
   // hasApiKey=true + roots=[] (store mocks) + welcome-seen → mount-folder
@@ -232,5 +327,146 @@ describe('WelcomeScreen', () => {
     render(<WelcomeScreen onStartConversation={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: 'Choose a folder' })).toBeInTheDocument()
+  })
+
+  // ── Draft persistence & persistent-input regressions ──
+  // Bug: the rich input only rendered on the 'ready' step, so any transient
+  // readiness flip (e.g. clearing an API key while replacing it in Settings)
+  // unmounted the editor and silently discarded the user's unsent text.
+
+  it('keeps the rich input mounted when the readiness gate temporarily leaves ready', () => {
+    const { rerender } = render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    advanceToReady()
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+
+    // Simulate the Settings key-replacement window: hasApiKey flips false
+    // (clear key), then true again (new key saved). Rerender picks up the
+    // mutated mock store — mutating it alone does not notify subscribers.
+    settingsState.hasApiKey = false
+    rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
+    // Auto-advance pulled the step back to api-key, but the input survives.
+    expect(screen.getByText('welcome.setupCardTitle')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+
+    settingsState.hasApiKey = true
+    rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+  })
+
+  it('persists typed text to the draft store and clears it on send', () => {
+    const onStart = vi.fn()
+    render(<WelcomeScreen onStartConversation={onStart} />)
+    advanceToReady()
+
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+
+    // i18n mock returns the raw key — the send button's title is 'welcome.send'
+    fireEvent.click(screen.getByTitle('welcome.send'))
+    expect(onStart).toHaveBeenCalledWith('typed text')
+    expect(inputDraftState.drafts.has('proj-1')).toBe(false)
+  })
+
+  it('restores the persisted draft into the editor on remount', () => {
+    inputDraftState.drafts.set('proj-1', {
+      text: 'unsent draft from before the remount',
+      mentionedAgentIds: [],
+      selectedFiles: [],
+    })
+
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    advanceToReady()
+
+    expect(screen.getByTestId('draft-restored')).toHaveTextContent(
+      'unsent draft from before the remount'
+    )
+    // Consumed after restore — a manual clear must stick (no re-injection).
+    expect(inputDraftState.drafts.has('proj-1')).toBe(false)
+  })
+
+  it('shows the rich input on the api-key step when a draft exists', () => {
+    inputDraftState.drafts.set('proj-1', {
+      text: 'typed before readiness flipped',
+      mentionedAgentIds: [],
+      selectedFiles: [],
+    })
+
+    settingsState.hasApiKey = false
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+
+    // Setup card + input side by side; the unsent text survives the flip.
+    expect(screen.getByRole('button', { name: 'Skip for now' })).toBeInTheDocument()
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+  })
+
+  it('blocks send on a setup step: warns, opens Settings, keeps the draft', () => {
+    const onStart = vi.fn()
+    const onOpenSettings = vi.fn()
+    settingsState.hasApiKey = false
+    render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={onOpenSettings} />)
+
+    // On the api-key step, type and hit send.
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+    fireEvent.click(screen.getByTitle('welcome.send'))
+
+    // No conversation starts; the user is pointed at the setup card instead.
+    expect(onStart).not.toHaveBeenCalled()
+    expect(toastWarningMock).toHaveBeenCalledWith('welcome.sendBlockedNotReady')
+    expect(onOpenSettings).toHaveBeenCalledWith('llm')
+    // The draft is preserved — nothing the user typed is lost.
+    expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+  })
+
+  it('allows send on the ready step (regression guard for the setup-step gate)', () => {
+    const onStart = vi.fn()
+    render(<WelcomeScreen onStartConversation={onStart} />)
+    advanceToReady()
+
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    fireEvent.click(screen.getByTitle('welcome.send'))
+
+    expect(onStart).toHaveBeenCalledWith('typed text')
+    expect(toastWarningMock).not.toHaveBeenCalled()
+  })
+
+  it('migrates a draft saved under the welcome fallback key once the project id arrives', () => {
+    // Draft typed before the project id was hydrated lives under 'welcome'.
+    inputDraftState.drafts.set('welcome', {
+      text: 'orphaned pre-hydration draft',
+      mentionedAgentIds: [],
+      selectedFiles: [],
+    })
+
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    advanceToReady()
+
+    // The migrated draft landed in the editor (proof the carry-over worked);
+    // the restore contract consumes it (clearDraft on restore, same as the
+    // direct-restore test above), so only the orphaned 'welcome' entry must
+    // be gone from the store afterwards.
+    expect(screen.getByTestId('draft-restored')).toHaveTextContent('orphaned pre-hydration draft')
+    expect(inputDraftState.drafts.has('welcome')).toBe(false)
+  })
+
+  // activeProjectId is '' (not null) before the project store hydrates — the
+  // fallback must catch the empty string too, or pre-hydration drafts land
+  // under a key nothing can ever migrate.
+  it('uses the welcome fallback when activeProjectId is the empty string', () => {
+    projectState.activeProjectId = ''
+    const { rerender } = render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    advanceToReady()
+
+    // Typing routes the draft to 'welcome' (NOT to '').
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(inputDraftState.drafts.has('')).toBe(false)
+    expect(inputDraftState.drafts.get('welcome')?.text).toBe('typed text')
+
+    // And when the project id arrives afterwards, the migration effect
+    // carries the transient draft over (rerender picks up the mutated mock).
+    projectState.activeProjectId = 'proj-2'
+    rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.getByTestId('draft-restored')).toHaveTextContent('typed text')
+    expect(inputDraftState.drafts.has('welcome')).toBe(false)
   })
 })

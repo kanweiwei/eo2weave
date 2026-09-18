@@ -36,6 +36,7 @@ export const welcome = {
     mountFolderBack: "Back",
     mountFolderMounted: "Mounted folders",
     readyHint: "Type a message, or drop in a file and I'll take it from there",
+    sendBlockedNotReady: "Finish the setup above first — your text is saved and ready once you're set up.",
     gateway: {
         title: "Login to Jianguoyun AI",
         close: "Close",

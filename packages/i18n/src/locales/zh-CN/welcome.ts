@@ -38,6 +38,7 @@ export const welcome = {
     mountFolderBack: "上一步",
     mountFolderMounted: "已挂载的文件夹",
     readyHint: "可以直接对话，或拖入文件让我处理",
+    sendBlockedNotReady: "请先完成上方设置——输入的内容已保存，设置完成后即可发送。",
     gateway: {
         title: "登录坚果云 AI",
         close: "关闭",

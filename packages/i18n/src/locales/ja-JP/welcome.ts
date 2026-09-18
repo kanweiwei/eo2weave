@@ -38,6 +38,7 @@ export const welcome = {
     mountFolderBack: "戻る",
     mountFolderMounted: "マウント済みフォルダ",
     readyHint: "メッセージを入力、またはファイルをドロップしてください",
+    sendBlockedNotReady: "先に上のセットアップを完了してください——入力内容は保存されており、準備ができたら送信できます。",
     gateway: {
         title: "堅果雲 AI にログイン",
         close: "閉じる",
