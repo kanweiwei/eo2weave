@@ -15,6 +15,7 @@ import {
 import '@earendil-works/pi-ai/openai-responses'
 import { normalizeBaseUrl } from './pi-ai-url-utils'
 import { assertHeaderAscii } from './http-headers'
+import { isPotentiallyDynamicProviderType } from '@/agent/providers/types'
 
 export const CW_OPENAI_FETCH_API = 'cw-openai-fetch' as const
 
@@ -864,6 +865,69 @@ function convertContextMessages(context: Context, model: Model<Api>): unknown[] 
   // tool_call lacks a following tool result. This happens when the agent
   // loop is interrupted (user abort, new message) mid-execution.
   return sanitizeApiMessages(messages)
+}
+
+// =============================================================================
+// Developer-role sanitization for dynamically-registered providers
+// =============================================================================
+
+/**
+ * Rewrite role:"developer" → role:"system" in an already-built Responses API
+ * payload, for dynamically-registered providers (llm-gateway, custom-*, and
+ * any future async-registered id).
+ *
+ * pi-ai's openai-responses handler picks the system role via
+ * `model.reasoning ? "developer" : "system"` and does NOT consult
+ * `compat.supportsDeveloperRole` — so a custom provider whose apiMode is
+ * 'responses' emits developer-role system prompts that some upstream backends
+ * reject with 400 ("developer is not one of ['system', 'assistant', ...]").
+ * Since the developer role only ever carries the system prompt here, rewriting
+ * it to "system" is semantically lossless and matches what every provider in
+ * this category expects.
+ *
+ * NO-OP for everything else: OpenAI / codex-oauth / Azure keep their native
+ * developer-role behavior untouched. (codex-oauth is technically in the
+ * dynamic-provider set, but the ChatGPT Responses endpoint natively uses and
+ * accepts the developer role — it is explicitly exempted below.)
+ *
+ * Call from the onPayload wrapper (pi-core-runner / pi-ai-provider) right
+ * before the request goes out — same insertion point as
+ * applyMaxThinkingOverride.
+ */
+export function stripDeveloperRoleForDynamicProviders(
+  payload: Record<string, unknown>,
+  provider: string | undefined
+): void {
+  if (!provider || provider === 'codex-oauth') return
+  if (!isPotentiallyDynamicProviderType(provider)) return
+
+  // Chat Completions shape: top-level messages array. The custom handler
+  // never emits developer, but sanitize defensively (e.g. if a future handler
+  // path lands here).
+  if (Array.isArray(payload.messages)) {
+    for (const msg of payload.messages) {
+      if (
+        msg &&
+        typeof msg === 'object' &&
+        (msg as { role?: unknown }).role === 'developer'
+      ) {
+        (msg as { role: string }).role = 'system'
+      }
+    }
+  }
+
+  // Responses API shape: input array of message entries.
+  if (Array.isArray(payload.input)) {
+    for (const entry of payload.input) {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        (entry as { role?: unknown }).role === 'developer'
+      ) {
+        (entry as { role: string }).role = 'system'
+      }
+    }
+  }
 }
 
 // =============================================================================

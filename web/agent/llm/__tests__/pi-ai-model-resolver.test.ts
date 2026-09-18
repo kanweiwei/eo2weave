@@ -48,6 +48,67 @@ describe('resolvePiAIModel', () => {
     expect(model.api).toBe('cw-openai-fetch')
   })
 
+  // ── Nutstore AI gateway (llm-gateway): never emit role:"developer" ──────
+  // The gateway's upstream backends include direct vendor APIs that reject
+  // role:"developer" with 400 ("is not one of ['system', 'assistant',
+  // 'user', 'tool', 'function']"). The resolver must route llm-gateway
+  // through cw-openai-fetch (which always emits system) AND declare
+  // compat.supportsDeveloperRole:false as belt-and-braces.
+
+  it('should map llm-gateway to custom fetch fallback even when not registered', () => {
+    // Deliberately called WITHOUT registering the dynamic provider first —
+    // isPotentiallyDynamicProviderType('llm-gateway') is true by id, but the
+    // point is that the answer must not depend on registration state at all:
+    // before this predicate existed, an unregistered provider fell through to
+    // pi-ai's openai-completions handler.
+    const model = resolvePiAIModel('llm-gateway', 'gpt-4o', 'https://ai.jianguoyun.com/v1')
+    expect(model.provider).toBe('llm-gateway')
+    expect(model.api).toBe('cw-openai-fetch')
+  })
+
+  it('should map unregistered custom-* providers to custom fetch fallback too', () => {
+    // custom-* provider ids are restored asynchronously from persisted
+    // settings; before restore completes isCustomProviderType is false. They
+    // must still avoid pi-ai's built-in openai-completions handler for the
+    // same developer-role reason.
+    const model = resolvePiAIModel('custom-1758123456789-abc123', 'my-model', 'https://my-proxy.example.com/v1')
+    expect(model.api).toBe('cw-openai-fetch')
+  })
+
+  it('should declare llm-gateway fallback models as not supporting developer role', () => {
+    const model = resolvePiAIModel('llm-gateway', 'some-gateway-model', 'https://ai.jianguoyun.com/v1')
+    // Model<Api>'s compat is a union across API flavors; only the
+    // openai-completions flavor carries supportsDeveloperRole.
+    const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined
+    expect(compat?.supportsDeveloperRole).toBe(false)
+  })
+
+  // ── Chinese providers: OpenAI-compatible EXCEPT the developer role ──────
+  // category:'chinese' providers must never emit role:"developer" — their
+  // endpoints reject it with 400 even though everything else is compatible.
+  // pi-ai's detectCompat() only knows deepseek/moonshot/zai URLs, so qwen
+  // (dashscope) and volcengine-coding (ark.volces.com) rely on the explicit
+  // compat flag.
+
+  it('should declare qwen fallback models as not supporting developer role', () => {
+    const model = resolvePiAIModel('qwen', 'qwen-max', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+    const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined
+    expect(compat?.supportsDeveloperRole).toBe(false)
+  })
+
+  it('should declare volcengine-coding fallback models as not supporting developer role', () => {
+    const model = resolvePiAIModel('volcengine-coding', 'kimi-k2', 'https://ark.cn-beijing.volces.com/api/coding')
+    const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined
+    expect(compat?.supportsDeveloperRole).toBe(false)
+  })
+
+  it('should keep developer role allowed for international providers', () => {
+    // Guard against over-broadening: OpenAI itself speaks developer natively.
+    const model = resolvePiAIModel('openrouter', 'openai/gpt-5.6', 'https://openrouter.ai/api/v1')
+    const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined
+    expect(compat?.supportsDeveloperRole).not.toBe(false)
+  })
+
   // ── Vision capability via OpenRouter modalities ─────────────────────────
 
   it('should resolve codex-oauth vision model with image input', () => {

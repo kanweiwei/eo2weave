@@ -3,6 +3,7 @@ import {
   applyMaxThinkingOverride,
   buildChatCompletionsPayload,
   CW_OPENAI_FETCH_API,
+  stripDeveloperRoleForDynamicProviders,
 } from '../pi-ai-custom-openai-fetch'
 
 describe('buildChatCompletionsPayload', () => {
@@ -345,5 +346,67 @@ describe('applyMaxThinkingOverride', () => {
     const payload: Record<string, unknown> = {}
     applyMaxThinkingOverride(payload, 'https://api.minimax.io/v1')
     expect(payload.reasoning_split).toBe(true)
+  })
+})
+
+describe('stripDeveloperRoleForDynamicProviders', () => {
+  it('rewrites developer → system in the Responses input array for custom-* providers', () => {
+    // A custom provider configured with apiMode:'responses' goes through
+    // pi-ai's built-in openai-responses handler, which hardcodes
+    // role:"developer" for reasoning models and ignores compat.
+    const payload: Record<string, unknown> = {
+      model: 'my-model',
+      input: [
+        { role: 'developer', content: [{ type: 'input_text', text: 'system prompt' }] },
+        { role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
+      ],
+    }
+    stripDeveloperRoleForDynamicProviders(payload, 'custom-1758123456789-abc123')
+
+    const input = payload.input as Array<{ role: string }>
+    expect(input[0].role).toBe('system')
+    expect(input[1].role).toBe('user')
+  })
+
+  it('rewrites developer → system in chat-completions messages too', () => {
+    const payload: Record<string, unknown> = {
+      messages: [
+        { role: 'developer', content: 'system prompt' },
+        { role: 'user', content: 'hello' },
+      ],
+    }
+    stripDeveloperRoleForDynamicProviders(payload, 'llm-gateway')
+
+    const messages = payload.messages as Array<{ role: string }>
+    expect(messages[0].role).toBe('system')
+    expect(messages[1].role).toBe('user')
+  })
+
+  it('is a no-op for built-in providers (openai keeps developer role)', () => {
+    const payload: Record<string, unknown> = {
+      input: [{ role: 'developer', content: [{ type: 'input_text', text: 'sys' }] }],
+    }
+    stripDeveloperRoleForDynamicProviders(payload, 'openai')
+    expect((payload.input as Array<{ role: string }>)[0].role).toBe('developer')
+  })
+
+  it('exempts codex-oauth — the ChatGPT endpoint natively uses developer role', () => {
+    const payload: Record<string, unknown> = {
+      input: [{ role: 'developer', content: [{ type: 'input_text', text: 'sys' }] }],
+    }
+    stripDeveloperRoleForDynamicProviders(payload, 'codex-oauth')
+    expect((payload.input as Array<{ role: string }>)[0].role).toBe('developer')
+  })
+
+  it('leaves payloads without developer roles untouched', () => {
+    const payload: Record<string, unknown> = {
+      messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }],
+      input: [{ role: 'system', content: [{ type: 'input_text', text: 'sys' }] }],
+    }
+    stripDeveloperRoleForDynamicProviders(payload, 'llm-gateway')
+    expect(payload).toEqual({
+      messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }],
+      input: [{ role: 'system', content: [{ type: 'input_text', text: 'sys' }] }],
+    })
   })
 })

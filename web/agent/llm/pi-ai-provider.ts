@@ -10,7 +10,7 @@ import { complete, stream, type Api, type Context, type Message, type Model, typ
 import { estimateMessagesTokens } from './token-counter'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { resolvePiAIModel } from './pi-ai-model-resolver'
-import { detectThinkingFormat, ensurePiAICustomProvidersRegistered } from './pi-ai-custom-openai-fetch'
+import { detectThinkingFormat, ensurePiAICustomProvidersRegistered, stripDeveloperRoleForDynamicProviders } from './pi-ai-custom-openai-fetch'
 import { extractTextContent } from '../loop/message-mappers'
 
 const MAX_CONTEXT_TOKENS = 128000
@@ -65,6 +65,9 @@ export class PiAIProvider implements LLMProvider {
           delete p.max_output_tokens
           delete p.temperature
         }
+        // Dynamically-registered providers never emit developer role (no-op
+        // for built-ins) — see stripDeveloperRoleForDynamicProviders.
+        stripDeveloperRoleForDynamicProviders(p, this.model.provider)
       },
     })
 
@@ -246,6 +249,9 @@ export class PiAIProvider implements LLMProvider {
           delete p.max_output_tokens
           delete p.temperature
         }
+        // Dynamically-registered providers never emit developer role (no-op
+        // for built-ins) — see stripDeveloperRoleForDynamicProviders.
+        stripDeveloperRoleForDynamicProviders(p, this.model.provider)
         // Suppress reasoning when disableThinking is set (Codex API doesn't support these params)
         if (request.disableThinking && this.model.provider !== 'codex-oauth') {
           // Each provider uses a different disable field/value — setting the wrong

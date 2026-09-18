@@ -1,7 +1,7 @@
 import { getModel } from '@earendil-works/pi-ai'
 import type { Api, KnownProvider, Model } from '@earendil-works/pi-ai'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { isCustomProviderType } from '@/agent/providers/types'
+import { isChineseProviderType, isPotentiallyDynamicProviderType } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 import { CW_OPENAI_FETCH_API } from './pi-ai-custom-openai-fetch'
@@ -140,10 +140,33 @@ function createOpenAICompatibleFallback(
     }
   }
 
-  const fallbackApi: Api =
-    providerType === 'minimax' || providerType === 'minimax-cn' || isCustomProviderType(providerType)
-      ? (apiMode === 'responses' ? 'openai-responses' : CW_OPENAI_FETCH_API)
-      : 'openai-completions'
+  // Dynamically-registered providers (llm-gateway, custom-*, and any future
+  // async-registered provider id) must ALL use the CW_OPENAI_FETCH_API handler
+  // regardless of registration state. Their upstream endpoints include
+  // OpenAI-compatible providers that reject role:"developer" with 400 ("is not
+  // one of ['system', 'assistant', 'user', 'tool', 'function']").
+  //
+  // isPotentiallyDynamicProviderType (NOT isCustomProviderType) is the correct
+  // predicate here: custom-* providers are restored asynchronously from
+  // persisted settings, and llm-gateway registers in AppBootstrap. During that
+  // bootstrap window isCustomProviderType returns false, which used to fall
+  // through to pi-ai's openai-completions handler, whose detectCompat()
+  // defaults unknown URLs to supportsDeveloperRole:true — emitting a
+  // developer-role system prompt that such endpoints reject. Routing these
+  // providers through CW_OPENAI_FETCH_API guarantees system role on every
+  // request (the custom handler never emits "developer").
+  //
+  // Literal 'llm-gateway' in the predicate (instead of importing
+  // LLM_GATEWAY_PROVIDER_TYPE) keeps this module free of the gateway
+  // provider's i18n/store import chain (same practice as
+  // pi-ai-custom-openai-fetch.ts).
+  const usesCwOpenAIFetch =
+    providerType === 'minimax' ||
+    providerType === 'minimax-cn' ||
+    isPotentiallyDynamicProviderType(providerType)
+  const fallbackApi: Api = usesCwOpenAIFetch
+    ? (apiMode === 'responses' ? 'openai-responses' : CW_OPENAI_FETCH_API)
+    : 'openai-completions'
   const contextWindow = lookupContextWindow(providerType, modelName)
 
   // Zhipu bigmodel.cn (GLM Coding Plan & standard API) rejects role:"developer"
@@ -151,7 +174,30 @@ function createOpenAICompatibleFallback(
   // pi-ai's detectCompat() only recognizes api.z.ai as "non-standard" and would
   // emit developer-role system prompts for models missing from its native zai
   // catalog (e.g. glm-5.2, glm-5.3-flash resolved via this fallback path).
+  //
+  // Same belt-and-braces for every provider whose upstream may reject
+  // role:"developer" with 400:
+  //
+  // 1. Chinese-classified providers (qwen, volcengine-coding, and every other
+  //    category:'chinese' entry): they are OpenAI-compatible EXCEPT for the
+  //    developer role. qwen and volcengine-coding always resolve through this
+  //    fallback (no PROVIDER_MAP entry), and pi-ai's detectCompat() does not
+  //    recognize dashscope.aliyuncs.com or ark.volces.com as non-standard —
+  //    so reasoning models would get developer-role system prompts they
+  //    reject. deepseek/kimi are also covered here (harmless double-cover:
+  //    pi-ai already detects them, but the explicit flag wins either way).
+  // 2. Dynamically-registered providers (llm-gateway + custom-*): same
+  //    reasoning as 1 — their upstream backends include direct vendor APIs.
+  //
+  // The compat flag does not affect CW_OPENAI_FETCH_API (which always emits
+  // system), but keeps the model object safe when routed through pi-ai's
+  // built-in openai-completions handler (getCompat respects the explicit
+  // compat over URL auto-detection).
   const isBigmodel = /bigmodel\.cn/i.test(baseUrl)
+  const noDeveloperRole =
+    isBigmodel ||
+    isChineseProviderType(providerType) ||
+    isPotentiallyDynamicProviderType(providerType)
 
   return {
     id: modelName,
@@ -174,7 +220,7 @@ function createOpenAICompatibleFallback(
     },
     contextWindow,
     maxTokens: DEFAULT_MAX_TOKENS,
-    ...(isBigmodel ? { compat: { supportsDeveloperRole: false } } : {}),
+    ...(noDeveloperRole ? { compat: { supportsDeveloperRole: false } } : {}),
   }
 }
 

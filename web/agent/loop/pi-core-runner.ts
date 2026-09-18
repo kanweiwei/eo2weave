@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/store/settings.store'
 import type { AgentMode } from '../agent-mode'
 import type { ContextManager } from '../context-manager'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
-import { applyMaxThinkingOverride, type ExtendedThinkingLevel } from '../llm/pi-ai-custom-openai-fetch'
+import { applyMaxThinkingOverride, stripDeveloperRoleForDynamicProviders, type ExtendedThinkingLevel } from '../llm/pi-ai-custom-openai-fetch'
 import { generateId, type Message } from '../message-types'
 import type { ToolRegistry } from '../tool-registry'
 import type { ToolContext } from '../tools/tool-types'
@@ -254,6 +254,11 @@ export async function executePiCoreLoop(
         if (requestedReasoning === 'max' && model.reasoning) {
           applyMaxThinkingOverride(payload, model.baseUrl, model.thinkingLevelMap)
         }
+        // Dynamically-registered providers (llm-gateway, custom-*) never emit
+        // developer role — pi-ai's responses handler hardcodes it for
+        // reasoning models and ignores compat.supportsDeveloperRole (see
+        // stripDeveloperRoleForDynamicProviders). No-op for built-in providers.
+        stripDeveloperRoleForDynamicProviders(payload, model.provider)
         prevOnPayload?.(payload)
       },
     }

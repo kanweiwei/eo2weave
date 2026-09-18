@@ -221,6 +221,17 @@ export function getProviderMeta(type: LLMProviderType): ProviderMeta | null {
   return (PROVIDER_META as Record<string, ProviderMeta>)[type] ?? null
 }
 
+/**
+ * True for built-in providers classified as Chinese (deepseek, glm,
+ * glm-coding, kimi, minimax-cn, qwen, volcengine-coding). Their
+ * OpenAI-compatible endpoints reject role:"developer" with 400 even though
+ * they are otherwise OpenAI-compatible — callers must never emit developer
+ * role for them (see pi-ai-model-resolver's compat.supportsDeveloperRole).
+ */
+export function isChineseProviderType(type: string): boolean {
+  return getProviderMeta(type)?.category === 'chinese'
+}
+
 /** Provider metadata registry for UI display and grouping */
 export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
   openai: {
