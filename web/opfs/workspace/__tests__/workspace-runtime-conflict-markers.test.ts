@@ -227,28 +227,34 @@ describe('WorkspaceRuntime conflict marker materialization', () => {
       hasPendingPath: vi.fn(() => true),
       getAll: vi.fn(() => []),
     }
+    // Real callers (e.g. FileDiffViewer) invoke readFile without an explicit
+    // directoryHandle, so the path resolves to a disk root and the
+    // prefer_native fast path (readFromDiskRoot) can trigger.
+    runtime.getNativeDirectoryHandleForPath = vi.fn(async () => null)
+    runtime.resolvePath = vi.fn(async () => ({ relativePath: 'src/a.ts', rootId: 'root-1' }))
+    runtime.readFromDiskRoot = vi.fn(async () => ({
+      content: 'fresh disk content',
+      metadata: {
+        path: 'src/a.ts',
+        mtime: 200,
+        size: 17,
+        contentType: 'text' as const,
+      },
+    }))
     runtime.readFromFilesDir = vi.fn(async () => ({
       content: `${CONFLICT_MARKER_START}\nleft\n${CONFLICT_MARKER_MIDDLE}\nright\n${CONFLICT_MARKER_END}\n`,
       mtime: 101,
       size: 42,
       contentType: 'text',
     }))
-    runtime.readFromNativeFS = vi.fn(async () => ({
-      content: 'fresh disk content',
-      metadata: {
-        path: 'src/a.ts',
-        mtime: 200,
-        size: 17,
-        contentType: 'text',
-      },
-    }))
 
-    const result = await runtime.readFile('src/a.ts', {} as FileSystemDirectoryHandle, {
+    const result = await runtime.readFile('src/a.ts', undefined, {
       policy: 'prefer_native',
     })
 
     expect(result.content).toBe('fresh disk content')
     expect(result.source).toBe('native')
+    expect(runtime.readFromDiskRoot).toHaveBeenCalledWith('root-1', 'src/a.ts')
     expect(runtime.readFromFilesDir).not.toHaveBeenCalled()
   })
 })

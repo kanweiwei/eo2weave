@@ -155,6 +155,10 @@ describe('WorkspaceRuntime discard behavior', () => {
       getAll: vi.fn(() => [createPending('p1', 'src/deleted.ts', 'delete')]),
       removeByPath: vi.fn(async () => {}),
     }
+    // A baseline file exists, so the ghost-delete fast path does not trigger
+    // and the discard flow attempts a real restore.
+    runtime.hasBaselineFile = vi.fn(async () => true)
+    runtime.deleteFromBaselineDirIfExists = vi.fn(async () => {})
     runtime.restorePendingModifyFromNative = vi.fn(async () => false)
     runtime.restorePendingModifyFromBaseline = vi.fn(async () => true)
     runtime.saveMetadata = vi.fn(async () => {})
@@ -191,6 +195,10 @@ describe('WorkspaceRuntime discard behavior', () => {
       getAll: vi.fn(() => [createPending('p1', 'src/deleted.ts', 'delete')]),
       removeByPath: vi.fn(async () => {}),
     }
+    // A baseline file exists, so the ghost-delete fast path does not trigger
+    // and the failed restore correctly rejects instead of silently dropping
+    // the pending delete.
+    runtime.hasBaselineFile = vi.fn(async () => true)
     runtime.restorePendingModifyFromNative = vi.fn(async () => false)
     runtime.restorePendingModifyFromBaseline = vi.fn(async () => false)
     runtime.saveMetadata = vi.fn(async () => {})

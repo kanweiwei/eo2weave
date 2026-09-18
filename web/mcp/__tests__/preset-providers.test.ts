@@ -160,10 +160,16 @@ describe('Preset Providers', () => {
       const provider = getProviderById('figma')
       expect(provider).toBeDefined()
 
-      const result = validateProviderConfig(provider!)
+      // Figma authenticates with a token pasted into the Auth Token field
+      // (where: 'token'), not an OS env var — validateProviderConfig only
+      // reports missing *env* vars, so the config itself is valid.
+      const tokenVar = provider!.requiredEnvVars.find((v) => v.name === 'FIGMA_TOKEN')
+      expect(tokenVar).toBeDefined()
+      expect(tokenVar!.where).toBe('token')
 
-      expect(result.missingVars).toContain('FIGMA_TOKEN')
-      expect(result.valid).toBe(false)
+      const result = validateProviderConfig(provider!)
+      expect(result.missingVars).not.toContain('FIGMA_TOKEN')
+      expect(result.valid).toBe(true)
     })
 
     it('should validate Slack provider', () => {

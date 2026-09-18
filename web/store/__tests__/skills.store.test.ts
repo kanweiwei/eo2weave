@@ -22,6 +22,21 @@ vi.mock('@/skills/skill-storage', () => ({
   getSkillsByCategory: vi.fn(() => Promise.resolve([])),
 }))
 
+// Mock the user-skills-scanner module. The store's user-skill paths
+// (importSkillMd / deleteSkill / createSkillSkeleton) write to OPFS via
+// this module; tests must not touch real OPFS.
+const { mockUserSkillsScanner } = vi.hoisted(() => ({
+  mockUserSkillsScanner: {
+    writeUserSkillMd: vi.fn(() => Promise.resolve()),
+    deleteUserSkillDir: vi.fn(() => Promise.resolve()),
+    userSkillDirExists: vi.fn(() => Promise.resolve(false)),
+  },
+}))
+
+vi.mock('@/skills/user-skills-scanner', () => ({
+  ...mockUserSkillsScanner,
+}))
+
 // Mock the skill-parser module
 vi.mock('@/skills/skill-parser', () => ({
   parseSkillMd: vi.fn(() => ({
@@ -217,7 +232,13 @@ describe('useSkillsStore', () => {
       const result = await importSkillMd(markdown)
 
       expect(result.success).toBe(true)
-      expect(storage.saveSkill).toHaveBeenCalled()
+      // User skills are written to OPFS via the user-skills-scanner, not
+      // through the SQLite-era storage.saveSkill.
+      expect(mockUserSkillsScanner.writeUserSkillMd).toHaveBeenCalledWith(
+        'test-skill',
+        markdown
+      )
+      expect(storage.saveSkill).not.toHaveBeenCalled()
       // Imported skills must be tagged 'user' so they appear under the user
       // skills group in SkillsManager (project / user / builtin). Using
       // 'import' here would make the skill invisible after import.
@@ -262,6 +283,24 @@ describe('useSkillsStore', () => {
     it('should toggle skill enabled state', async () => {
       const initialSkills: SkillMetadata[] = [
         createMockMetadata({ id: 'skill-1', enabled: true }),
+      ]
+
+      useSkillsStore.setState({ skills: initialSkills })
+
+      const { toggleSkill } = useSkillsStore.getState()
+      await toggleSkill('skill-1', false)
+
+      // The mock skill uses the default `source: 'user'`, and user skills
+      // live in OPFS: the store routes through SkillManager and updates the
+      // in-memory cache directly instead of calling the SQLite-era
+      // storage.toggleSkill.
+      expect(mockManager.setUserSkillEnabled).toHaveBeenCalledWith('skill-1', false)
+      expect(useSkillsStore.getState().skills[0].enabled).toBe(false)
+    })
+
+    it('should route persistent (non-user) skills through storage.toggleSkill', async () => {
+      const initialSkills: SkillMetadata[] = [
+        createMockMetadata({ id: 'skill-1', enabled: true, source: 'builtin' }),
       ]
 
       useSkillsStore.setState({ skills: initialSkills })
