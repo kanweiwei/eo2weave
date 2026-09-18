@@ -7,7 +7,7 @@ import path from 'node:path';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, '..');
-const extensionPackagePath = path.join(projectRoot, 'browser-extension/package.json');
+const rootPackagePath = path.join(projectRoot, 'package.json');
 const changelogPath = path.join(projectRoot, 'CHANGELOG.md');
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -52,9 +52,9 @@ async function main() {
 
   process.chdir(projectRoot);
 
-  const extensionPackageContent = await readFile(extensionPackagePath, 'utf8');
-  const extensionPackage = JSON.parse(extensionPackageContent);
-  const currentVersion = extensionPackage.version;
+  const rootPackageContent = await readFile(rootPackagePath, 'utf8');
+  const rootPackage = JSON.parse(rootPackageContent);
+  const currentVersion = rootPackage.version;
 
   if (!isNewerVersion(currentVersion, nextVersion)) {
     fail(`version ${nextVersion} must be newer than the current version ${currentVersion}.`);
@@ -66,11 +66,11 @@ async function main() {
     fail(`tag ${tag} already exists.`);
   }
 
-  console.log(`Preparing release ${tag} from browser-extension ${currentVersion}.`);
+  console.log(`Preparing EO2Weave release ${tag} from ${currentVersion}.`);
 
   if (dryRun) {
     console.log('Dry run passed. The script would:');
-    console.log(`  1. Set browser-extension/package.json to ${nextVersion}`);
+    console.log(`  1. Set the root package.json to ${nextVersion}`);
     console.log(`  2. Generate CHANGELOG.md with git-cliff for ${tag}`);
     console.log(`  3. Commit the release as "chore(release): ${tag}"`);
     console.log(`  4. Create annotated tag ${tag}`);
@@ -82,18 +82,18 @@ async function main() {
     fail('the working tree must be clean before creating a release.');
   }
 
-  const updatedExtensionPackageContent = extensionPackageContent.replace(
+  const updatedRootPackageContent = rootPackageContent.replace(
     `"version": "${currentVersion}"`,
     `"version": "${nextVersion}"`,
   );
 
-  if (updatedExtensionPackageContent === extensionPackageContent) {
-    fail('could not update browser-extension/package.json version.');
+  if (updatedRootPackageContent === rootPackageContent) {
+    fail('could not update the root package.json version.');
   }
 
-  await writeFile(extensionPackagePath, updatedExtensionPackageContent);
+  await writeFile(rootPackagePath, updatedRootPackageContent);
   await $`pnpm dlx git-cliff --tag ${tag} -o ${changelogPath}`;
-  await $`git add -- browser-extension/package.json CHANGELOG.md`;
+  await $`git add -- package.json CHANGELOG.md`;
   await $`git commit -m ${`chore(release): ${tag}`}`;
   await $`git tag -a ${tag} -m ${tag}`;
 
