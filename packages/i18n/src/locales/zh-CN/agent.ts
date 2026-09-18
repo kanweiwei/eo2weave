@@ -80,7 +80,7 @@ export const agent = {
         grantsCount: "当前共记住 {count} 条授权",
         clearMemory: "清除授权记忆",
         cleared: "已清除全部授权记忆",
-        settingsHint: "外部工具（MCP/WebMCP）的授权粒度为 server+工具；来自不受信内容页的工具每次都会询问、永不记忆。",
+        settingsHint: "外部工具（MCP/WebMCP）的授权粒度为 server+工具。返回可能含不受信内容的工具不做调用侧拦截——其输出会被隔离，写入操作仍需另行确认。",
         describeSyncToDisk: "将把 {count} 个待同步文件变更写入真实磁盘目录。",
         describeSyncToDiskGeneric: "将把待同步的文件变更写入真实磁盘目录。",
         describeSyncToDiskDelete: "将把 {count} 个删除操作应用到真实磁盘：{paths}。磁盘删除不可恢复——列出的文件将被移除（仍可通过快照回滚）。",

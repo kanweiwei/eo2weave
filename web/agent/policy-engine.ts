@@ -13,8 +13,7 @@
  *   1. forbidden                        → deny
  *   2. session memory hit               → allow   ("always allow this convo")
  *   3. yolo mode on                     → allow   (never for forbidden)
- *   3.5 trusted source (settings)       → allow   (plan AND act; never
- *                                                 untrusted-content tools)
+ *   3.5 trusted source (settings)       → allow   (plan AND act)
  *   4. level === 'auto'                 → allow
  *   5. otherwise                        → prompt via tool-auth.store
  *
@@ -54,8 +53,8 @@ export interface ToolPolicy {
   /**
    * Session-memory key generator. A non-null key enables the "Always allow
    * for this conversation" button and the session-allow short-circuit.
-   * Return null for tools that must ask every single time (e.g. untrusted
-   * external tools).
+   * Return null for tools that must ask every single time (e.g. destructive
+   * rollbacks like snapshot_restore).
    */
   memoryKey?: (args: unknown) => string | null
 }
@@ -144,17 +143,18 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
   }
 
   // 3.5 user-marked trusted origin — persistent, cross-conversation,
-  // cross-mode (plan AND act). isToolSourceTrusted() itself rejects
-  // untrusted-content tools, so the human gate on prompt-injection surface
-  // survives even a blanket "trust this site" grant. Mode-independence is
-  // the feature: settings-granted trust is not an in-conversation approval.
+  // cross-mode (plan AND act). Mode-independence is the feature:
+  // settings-granted trust is not an in-conversation approval.
+  // NOTE: `untrustedContentHint` is deliberately NOT a trust criterion. It
+  // describes the tool's RETURN channel (output isolation via
+  // wrapUntrustedContent + the tool-catalog untrusted-content warning), not
+  // the call's side effects — gating the call on it neither reduced injection
+  // risk (Allow still delivers the content) nor stayed usable (Deny made the
+  // tool permanently unusable). Authorization follows call-side side effects
+  // only; untrusted RETURN values hit the downstream write gates regardless.
   if (
     req.trustedSource &&
-    isToolSourceTrusted(
-      req.trustedSource.kind,
-      req.trustedSource.sourceId,
-      { untrustedContent: (req.args as { untrusted?: boolean } | null)?.untrusted === true }
-    )
+    isToolSourceTrusted(req.trustedSource.kind, req.trustedSource.sourceId)
   ) {
     return { decision: 'allow', via: 'trusted-source' }
   }
@@ -272,9 +272,10 @@ function createPolicyTable(): Map<string, ToolPolicy> {
   })
 
   // call_tool: first invocation of a server+tool combination always prompts;
-  // "always allow" whitelists it for the conversation. Tools coming from
-  // untrusted-content pages never get a memory key — they must be approved
-  // every single time (prompt-injection surface).
+  // "always allow" whitelists it for the conversation. The global
+  // default-trust switch (trusted-source) short-circuits the modal when ON.
+  // `untrustedContentHint` is not a call-side signal — annotated tools follow
+  // the same rules; their RETURN values stay isolated (wrapUntrustedContent).
   set('call_tool', {
     level: 'prompt',
     describe: (args) => {
@@ -284,11 +285,7 @@ function createPolicyTable(): Map<string, ToolPolicy> {
         : { key: 'describeCallToolGeneric' }
     },
     memoryKey: (args) => {
-      const a = args as { full_tool_name?: string; untrusted?: boolean } | null
-      // Untrusted-content tools (annotated pages) are never remembered —
-      // every single call must be explicitly approved.
-      if (a?.untrusted) return null
-      const fullName = a?.full_tool_name?.trim()
+      const fullName = (args as { full_tool_name?: string } | null)?.full_tool_name?.trim()
       if (!fullName) return null // unusable name → cannot build a safe key
       return `call_tool::${fullName}`
     },

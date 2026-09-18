@@ -113,7 +113,7 @@ export const agent = {
         grantsCount: "{count} 件の承認を記憶中",
         clearMemory: "承認メモリを削除",
         cleared: "すべての承認メモリを削除しました",
-        settingsHint: "外部ツール（MCP/WebMCP）の承認は server+ツール単位。信頼できないコンテンツページのツールは毎回確認され、記憶されません。",
+        settingsHint: "外部ツール（MCP/WebMCP）の承認は server+ツール単位。信頼できないコンテンツを返す可能性のあるツールは呼び出し側でゲートされません——出力は隔離され、書き込みには別途承認が必要です。",
         describeSyncToDisk: "{count} 件の未同期変更を実際のディスクに書き込みます。",
         describeSyncToDiskGeneric: "未同期の変更を実際のディスクに書き込みます。",
         describeSyncToDiskDelete: "{count} 件の削除を実際のディスクに適用します：{paths}。ディスク上の削除は元に戻せません —— 表示されたファイルは削除されます（スナップショットでの復元は可能）。",

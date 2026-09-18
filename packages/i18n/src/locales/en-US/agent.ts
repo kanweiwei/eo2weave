@@ -80,7 +80,7 @@ export const agent = {
         grantsCount: "{count} grant(s) remembered",
         clearMemory: "Clear authorization memory",
         cleared: "All authorization memory cleared",
-        settingsHint: "External tool (MCP/WebMCP) grants are scoped per server+tool; tools from untrusted-content pages are asked every time and never remembered.",
+        settingsHint: "External tool (MCP/WebMCP) grants are scoped per server+tool. Tools whose results may contain untrusted content are not gated here — their output is isolated and write operations still require separate approval.",
         describeSyncToDisk: "Will write {count} pending file change(s) to the real disk directory.",
         describeSyncToDiskGeneric: "Will write pending file changes to the real disk directory.",
         describeSyncToDiskDelete: "Will apply {count} pending DELETION(S) to the real disk: {paths}. Deletion on disk is irreversible — the listed file(s) will be removed (rollback still possible via snapshots).",

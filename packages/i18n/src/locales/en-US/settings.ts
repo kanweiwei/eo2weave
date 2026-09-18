@@ -117,7 +117,7 @@ export const settings = {
     externalTrustToggle: "Trust external tools by default",
     externalTrustOnShort: "Trusted",
     externalTrustOffShort: "Prompts",
-    externalTrustOn: "On: tools from every discovered MCP server and WebMCP site run automatically (plan/act mode) without approval prompts. Untrusted-content tools still ask every time.",
+    externalTrustOn: "On: tools from every discovered MCP server and WebMCP site run automatically (plan/act mode) without approval prompts. Tools whose results may contain untrusted content are still isolated and cannot trigger writes without approval.",
     externalTrustOff: "Off: external tool calls prompt for approval before running.",
     webMCPExtensionRequired: "Browser extension required",
     webMCPExtensionRequiredHint: "WebMCP requires the eo2weave browser extension to be installed and active. Click the button below to start the installation.",

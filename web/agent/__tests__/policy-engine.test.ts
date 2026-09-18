@@ -253,11 +253,11 @@ describe('policy table', () => {
     })
   })
 
-  it('untrusted call_tool targets never get a memory key', () => {
+  it('untrusted-annotated call_tool targets get a normal memory key (annotation is return-channel only)', () => {
     const policy = getToolPolicy('call_tool')
     expect(
       policy.memoryKey?.({ full_tool_name: 'page_tool', untrusted: true }),
-    ).toBeNull()
+    ).toBe('call_tool::page_tool')
   })
 
   it('switch_agent_mode is forbidden', () => {
@@ -508,18 +508,17 @@ describe('policy-engine: trusted source (global default-trust switch)', () => {
     expect((await pending).decision).toBe('deny')
   })
 
-  it('untrusted-content tools NEVER qualify, even with default trust ON', async () => {
-    const pending = authorize({
+  it('untrusted-annotated tools DO qualify with default trust ON (annotation is return-channel only)', async () => {
+    const result = await authorize({
       toolName: 'call_tool',
       args: { ...callToolArgs, untrusted: true },
       trustedSource: { kind: 'webmcp', sourceId: 'workspace.jianguoyun.com' },
       conversationId: 'conv-1',
       mode: 'act',
     })
-    // The prompt-injection surface keeps its human gate.
-    expect(useToolAuthStore.getState().queue).toHaveLength(1)
-    useToolAuthStore.getState().deny()
-    expect((await pending).decision).toBe('deny')
+    // The annotation gates the RETURN value (output isolation), not the call.
+    expect(result).toEqual({ decision: 'allow', via: 'trusted-source' })
+    expect(useToolAuthStore.getState().queue).toHaveLength(0)
   })
 
   it('missing trustedSource falls through to the modal (no behavior change for other tools)', async () => {

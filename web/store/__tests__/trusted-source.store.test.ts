@@ -36,23 +36,12 @@ describe('trusted-source.store', () => {
     expect(isToolSourceTrusted('webmcp', null)).toBe(true)
   })
 
-  it('untrusted-content tools never match, regardless of the switch', () => {
-    // Default ON.
-    expect(
-      isToolSourceTrusted('webmcp', 'example.com', { untrustedContent: true })
-    ).toBe(false)
-    expect(
-      isToolSourceTrusted('webmcp', 'example.com', { untrustedContent: false })
-    ).toBe(true)
-
-    // And with the switch OFF they stay denied-by-trust either way.
-    useTrustedSourceStore.getState().setDefaultTrustExternal(false)
-    expect(
-      isToolSourceTrusted('webmcp', 'example.com', { untrustedContent: true })
-    ).toBe(false)
-    expect(
-      isToolSourceTrusted('webmcp', 'example.com', { untrustedContent: false })
-    ).toBe(false)
+  it('untrustedContent option was removed: annotation never affected the answer', () => {
+    // The annotation is a RETURN-channel signal, not a call-side one — the
+    // signature no longer even accepts it (compile-time guarantee).
+    // Default ON: annotated or not, every discovered source qualifies.
+    expect(isToolSourceTrusted('webmcp', 'example.com')).toBe(true)
+    expect(isToolSourceTrusted('mcp', 'example.com')).toBe(true)
   })
 
   it('persists the switch via zustand persist', () => {

@@ -12,11 +12,15 @@
  *    every discovered MCP server / WebMCP page run without the approval
  *    modal in plan AND act mode. When OFF, every call prompts again.
  *
- * Hard invariant kept across every iteration: tools annotated
- * `untrustedContentHint` NEVER qualify — the prompt-injection surface keeps
- * its human gate regardless of this switch. Forbidden tools are still denied
- * first (enforced in policy-engine). Only settings UI mutates this store;
- * the LLM has no tool that touches it.
+ * Hard invariant kept across every iteration: authorization is driven by the
+ * CALL's side effects only — `untrustedContentHint` is deliberately NOT a
+ * trust criterion here. It describes the tool's RETURN channel, which is
+ * handled by output isolation (wrapUntrustedContent), the tool-catalog
+ * untrusted-content warning (injected into the model's tool list), and the
+ * downstream write gates (sync-to-disk/exec/page-write keep their own human
+ * approval). Forbidden tools are still denied first (enforced in
+ * policy-engine). Only settings UI mutates this store; the LLM has no tool
+ * that touches it.
  */
 
 import { create } from 'zustand'
@@ -56,15 +60,18 @@ export const useTrustedSourceStore = create<TrustedSourceState>()(
  * `kind` / `sourceId` identify the origin (WebMCP hostname / MCP serverId).
  * They are part of the signature so the call sites in external-tool-bridge
  * stay future-proof, but under the global-only model the origin itself does
- * not affect the answer — EXCEPT for untrusted-content tools, which never
- * qualify: the annotation exists precisely because the page content cannot
- * be trusted, so the human gate on the injection surface is unconditional.
+ * not affect the answer.
+ *
+ * Deliberately NOT consulted here: `untrustedContentHint`. It is a RETURN-
+ * channel signal (content may contain prompt injection), not a call-side
+ * side-effect signal — gating the call on it neither reduced injection risk
+ * (approving still delivered the content to the model) nor stayed usable
+ * (denying made the tool permanently unusable). Untrusted RETURN values are
+ * contained by output isolation + the downstream write gates instead.
  */
 export function isToolSourceTrusted(
   _kind: ToolSourceKind,
-  _sourceId: string | null | undefined,
-  opts?: { untrustedContent?: boolean }
+  _sourceId: string | null | undefined
 ): boolean {
-  if (opts?.untrustedContent) return false
   return useTrustedSourceStore.getState().defaultTrustExternal
 }

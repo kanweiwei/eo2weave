@@ -118,7 +118,7 @@ export const settings = {
     externalTrustToggle: "默认信任外部工具",
     externalTrustOnShort: "已信任",
     externalTrustOffShort: "逐次询问",
-    externalTrustOn: "已开启：所有已发现的 MCP 服务器和 WebMCP 站点的工具自动执行（plan/act 模式），不再弹授权确认。返回不受信内容的工具仍会逐次询问。",
+    externalTrustOn: "已开启：所有已发现的 MCP 服务器和 WebMCP 站点的工具自动执行（plan/act 模式），不再弹授权确认。返回可能含不受信内容的工具仍会被输出隔离，且写入操作需另行确认。",
     externalTrustOff: "已关闭：外部工具调用前会弹授权确认。",
     webMCPExtensionRequired: "需要安装浏览器扩展",
     webMCPExtensionRequiredHint: "WebMCP 需要安装 怡氧知知 浏览器扩展才能使用。点击下方按钮开始安装。",

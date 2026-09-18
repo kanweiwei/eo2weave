@@ -18,7 +18,9 @@ interface ExternalTrustCardProps {
  * and behaves the same wherever the user meets it:
  * ON (default) → tools from every discovered MCP server / WebMCP site run
  * without the approval modal (plan/act); OFF → per-call prompts return.
- * Untrusted-content tools always ask regardless of this switch.
+ * `untrustedContentHint` is not a call-side criterion — annotated tools follow
+ * the same rules; their RETURN values stay isolated (wrapUntrustedContent)
+ * and downstream write gates keep their own approval.
  */
 export function ExternalTrustCard({ t }: ExternalTrustCardProps) {
   const defaultTrustExternal = useTrustedSourceStore(

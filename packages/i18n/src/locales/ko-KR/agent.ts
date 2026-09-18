@@ -113,7 +113,7 @@ export const agent = {
         grantsCount: "{count}개의 승인이 기억되고 있습니다",
         clearMemory: "승인 기억 지우기",
         cleared: "모든 승인 기억을 지웠습니다",
-        settingsHint: "외부 도구(MCP/WebMCP) 승인은 server+도구 단위입니다. 신뢰할 수 없는 콘텐츠 페이지의 도구는 매번 확인되며 기억되지 않습니다.",
+        settingsHint: "외부 도구(MCP/WebMCP) 승인은 server+도구 단위입니다. 신뢰할 수 없는 콘텐츠를 반환할 수 있는 도구는 호출 시 게이트하지 않습니다——출력은 격리되며, 쓰기 작업은 별도의 승인이 필요합니다.",
         describeSyncToDisk: "{count}개의 대기 중인 변경 사항을 실제 디스크에 기록합니다.",
         describeSyncToDiskGeneric: "대기 중인 파일 변경 사항을 실제 디스크에 기록합니다.",
         describeSyncToDiskDelete: "{count}개의 삭제를 실제 디스크에 적용합니다: {paths}. 디스크 삭제는 되돌릴 수 없습니다 — 나열된 파일이 제거됩니다(스냅샷으로 복원 가능).",

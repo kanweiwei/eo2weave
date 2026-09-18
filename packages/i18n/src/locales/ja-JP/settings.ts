@@ -115,7 +115,7 @@ export const settings = {
     externalTrustToggle: "外部ツールをデフォルトで信頼",
     externalTrustOnShort: "信頼済み",
     externalTrustOffShort: "都度確認",
-    externalTrustOn: "オン：検出されたすべての MCP サーバーと WebMCP サイトのツールは（plan/act モードで）承認モーダルなしに自動実行されます。信頼できないコンテンツのツールは毎回確認されます。",
+    externalTrustOn: "オン：検出されたすべての MCP サーバーと WebMCP サイトのツールは（plan/act モードで）承認モーダルなしに自動実行されます。信頼できないコンテンツを返す可能性のあるツールは出力が隔離され、書き込みには別途承認が必要です。",
     externalTrustOff: "オフ：外部ツールの呼び出し前に承認を求めます。",
     webMCPExtensionRequired: "ブラウザ拡張機能が必要です",
     webMCPExtensionRequiredHint: "WebMCP を使用するには eo2weave ブラウザ拡張機能をインストールして有効にする必要があります。下のボタンからインストールを開始してください。",
