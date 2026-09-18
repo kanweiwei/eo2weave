@@ -1,4 +1,4 @@
-## [unreleased]
+## [1.1.7] - 2026-09-18
 
 ### 🚀 Features
 
@@ -34,6 +34,10 @@
 - *(settings)* Wire temperature into the main agent loop
 - *(agent)* Add proactive image reading handoff
 - *(i18n)* Localize proactive image reading
+- *(web)* Auto-refresh OpenRouter model reference with manual override
+- *(extension)* Query live Codex usage from /backend-api/codex/usage
+- *(agent)* Inject per-root AGENTS.md beacon into system prompt
+- *(welcome)* Persistent rich input with draft persistence and send gate
 
 ### 🐛 Bug Fixes
 
@@ -58,11 +62,15 @@
 - *(layout)* Constrain model switcher width
 - *(agent)* Intercept workspace-relative markdown links to open file preview
 - *(file-viewer)* Render OPFS-only directories in file tree for native-host roots
+- *(extension)* Detect DuckDuckGo bot-challenge and throttle to Baidu
+- *(llm)* Never emit developer role for Chinese and dynamic providers
+- Preserve original content in format diffs
 
 ### 🚜 Refactor
 
 - *(web)* Remove FolderTipBubble folder-mount onboarding bubble
 - *(skills)* Drop word-editor skill, move nol-editor to skill store
+- *(agent)* Drop untrustedContentHint from call-side authorization
 
 ### 📚 Documentation
 
@@ -82,11 +90,14 @@
 
 - *(web)* Use unprefixed i18n key in ToolAuthModal lazy-diff test
 - Cover StreamingQueue batching (#20)
+- Fix stale mocks and assertions after OPFS and multi-root evolution
 
 ### ⚙️ Miscellaneous Tasks
 
 - Add root check script (#21)
 - *(skill-store)* Rebrand CreatorWeave references to EO2Weave
+- Consolidate changelog and generate from conventional commits
+- Add automated release script
 ## [1.1.6] - 2026-09-01
 
 ### 🚀 Features
