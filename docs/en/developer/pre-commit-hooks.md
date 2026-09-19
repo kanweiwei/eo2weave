@@ -55,11 +55,9 @@ npx husky init
 
 # 4. Create pre-commit hook
 cat > web/.husky/pre-commit << 'EOF'
-#!/bin/bash
-. "$(dirname "$0")/_/husky.sh"
-
+# Run the shared pre-commit checks from the repo root
 cd "$(git rev-parse --show-toplevel)"
-bash scripts/pre-commit.sh
+node scripts/pre-commit.mjs
 EOF
 
 chmod +x web/.husky/pre-commit
@@ -73,7 +71,7 @@ chmod +x web/.husky/pre-commit
 Git Commit Triggered
          ↓
 ┌─────────────────────────────────────────┐
-│  Rust Checks (scripts/pre-commit-rust.sh)│
+│  Rust Checks (scripts/pre-commit-rust.mjs)│
 │  1. cargo fmt --check                  │
 │  2. cargo clippy -D warnings           │
 └─────────────────────────────────────────┘
@@ -176,7 +174,7 @@ git push --no-verify
 # Reinstall hooks
 make setup-hooks
 # or
-bash scripts/setup-hooks.sh
+node scripts/setup-hooks.mjs
 ```
 
 ### Issue: Hook permission denied
@@ -185,7 +183,7 @@ bash scripts/setup-hooks.sh
 # Fix hook permissions
 chmod +x web/.husky/pre-commit
 chmod +x web/.husky/pre-push
-chmod +x scripts/pre-commit*.sh
+chmod +x scripts/pre-commit*.mjs
 ```
 
 ### Issue: Linter fails but you're confident
@@ -206,7 +204,7 @@ chmod +x scripts/pre-commit*.sh
 If hooks are taking too long:
 
 1. **Disable tests in pre-commit** (already disabled by default)
-   - Edit `scripts/pre-commit-rust.sh`
+   - Edit `scripts/pre-commit-rust.mjs`
    - Comment out the `cargo test` section
 
 2. **Only check staged files** (already configured)

@@ -126,7 +126,7 @@ make lint
 make typecheck
 
 # Or run the pre-commit hook manually
-bash scripts/pre-commit.sh
+node scripts/pre-commit.mjs
 ```
 
 ### 2. Keep Dependencies Updated

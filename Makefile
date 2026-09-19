@@ -32,10 +32,10 @@ help: ## Show help message
 	@echo '  make test-web      - Run frontend tests'
 
 setup: ## First-time setup (install all dependencies)
-	@bash scripts/setup.sh
+	@node scripts/setup.mjs
 
 setup-hooks: ## Install git pre-commit hooks
-	@bash scripts/setup-hooks.sh
+	@node scripts/setup-hooks.mjs
 
 install: install-deps ## Alias for install-deps
 
@@ -46,10 +46,10 @@ install-deps: ## Install pnpm dependencies
 	@echo '$(GREEN)✅ Dependencies installed!$(NC)'
 
 dev: ## Start development server
-	@bash scripts/dev.sh
+	@node scripts/dev.mjs
 
 build: ## Build all projects (extension + frontend)
-	@bash scripts/build.sh
+	@node scripts/build.mjs
 
 
 build-web: ## Build frontend only
@@ -63,7 +63,7 @@ build-extension: ## Build browser extension only
 	@echo '$(GREEN)✅ Browser extension built!$(NC)'
 
 test: ## Run all tests
-	@bash scripts/test.sh
+	@node scripts/test.mjs
 
 
 test-web: ## Run frontend tests
@@ -107,7 +107,7 @@ typecheck: ## Run TypeScript type check
 	@echo '$(GREEN)✅ Type check passed!$(NC)'
 
 clean: ## Clean build artifacts
-	@bash scripts/clean.sh
+	@node scripts/clean.mjs
 
 hooks: ## Alias for setup-hooks
 	@$(MAKE) setup-hooks
