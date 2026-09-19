@@ -698,7 +698,11 @@ function updateAutoTitleAfterMessageDelete(conv: Conversation): void {
  * the current turn messages). Guard against destructive regressions by
  * merging fragments with the previous in-memory snapshot.
  */
-function reconcileMessageSnapshot(previous: Message[], incoming: Message[]): Message[] {
+/**
+ * Merge an incoming message snapshot into the previous one.
+ * Exported for unit testing (pure function, no store access).
+ */
+export function reconcileMessageSnapshot(previous: Message[], incoming: Message[]): Message[] {
   if (incoming.length === 0) return previous
   if (previous.length === 0) return incoming
 
