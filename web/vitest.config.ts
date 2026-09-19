@@ -18,7 +18,10 @@ export default defineConfig({
     setupFiles: ['./test-setup.ts'],
     css: true,
     include: ['**/*.{test,spec}.{ts,tsx}'],
-    exclude: ['node_modules/**', '.next/**'],
+    // Playwright E2E specs live in tests/e2e/ (see playwright.config.ts testDir)
+    // and must only be collected by `playwright test`, not by vitest — vitest
+    // cannot run @playwright/test's test.describe and fails collection.
+    exclude: ['node_modules/**', '.next/**', 'tests/e2e/**'],
     includeSource: ['**/*.{ts,tsx}'],
     coverage: {
       provider: 'v8',
