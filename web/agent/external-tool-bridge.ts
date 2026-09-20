@@ -1362,7 +1362,7 @@ export const unifiedExternalToolsPromptDoc: ToolPromptDoc = {
   category: 'external-tools',
   section: '### External Tools (MCP + WebMCP)',
   lines: [
-    '- `search_tools(query?, intent?, limit?)` — **Always search first** before using any external tool. Returns matching tools with full parameter schemas. query: keywords (BM25, fast). intent: natural language description (slower but smarter). At least one required. Prefer intent when unsure.',
+    '- `search_tools(query?, intent?, limit?)` — **Always search first** before using any external tool. Returns matching tools with full parameter schemas. query: keywords (BM25, fast). intent: natural language description (slower but smarter). At least one required. Prefer intent when unsure. This ALSO covers EO2Weave itself: searching e.g. "project", "conversation", "send message", "provider" surfaces the self-control tools (create projects, manage conversations, read history, drive the agent, manage models).',
     '- `call_tool(full_tool_name, args)` — Execute an external tool discovered via search_tools. Use the fullName and inputSchema from search_tools results. Do NOT call this directly without searching first.',
   ],
 }
@@ -1371,6 +1371,21 @@ export const unifiedExternalToolsPromptDoc: ToolPromptDoc = {
  * Build a compact summary of available external tools for the system prompt.
  * Only lists service names and tool counts — the LLM uses search_tools for details.
  */
+
+/**
+ * True when the hostname is EO2Weave's own web origin — i.e. WebMCP tools
+ * registered by that page are the app's SELF-control tools.
+ */
+function isOwnAppHost(hostname: string): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const own = new URL(window.location.origin).hostname
+    return hostname.trim().toLowerCase() === own
+  } catch {
+    return false
+  }
+}
+
 export function buildCompactExternalToolsSummary(): string {
   const tools = collectAllExternalTools()
 
@@ -1399,7 +1414,19 @@ export function buildCompactExternalToolsSummary(): string {
     }
     lines.push(`**WebMCP Pages** (${webmcpTools.length} tools):`)
     for (const [hostname, count] of hosts) {
-      lines.push(`  - ${hostname}: ${count} tools`)
+      if (isOwnAppHost(hostname)) {
+        // EO2Weave's own page: these tools operate EO2Weave ITSELF — surface
+        // the capabilities explicitly so the LLM knows self-automation exists
+        // without needing to search first.
+        lines.push(
+          `  - ${hostname}: ${count} tools — **EO2Weave itself**: create/list projects, ` +
+          'list/search conversations, read message history, send messages and drive ' +
+          'the agent on any conversation (send_message/wait/cancel/progress), read ' +
+          'and write files in a conversation workspace, manage LLM providers and models',
+        )
+      } else {
+        lines.push(`  - ${hostname}: ${count} tools`)
+      }
     }
   }
 
