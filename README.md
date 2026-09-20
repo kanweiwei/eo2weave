@@ -227,7 +227,6 @@ pnpm -C web run test:e2e
 ## Roadmap
 
 - [ ] **SubAgent Orchestration (Planned)**: Add native subagent dispatching, parallel execution scheduling, result aggregation, and guardrails for cross-agent context isolation and handoff quality.
-- [ ] **LLM Wiki (Pending)**: Build an evolving knowledge-base workflow for `ingest` / `query` / `lint`, with structured claims and source traceability.
 
 ## Browser Compatibility
 
