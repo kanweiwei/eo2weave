@@ -1,5 +1,5 @@
 /**
- * App-tools schemas — the 16 WebMCP tools EO2Weave's own page registers so
+ * App-tools schemas — the 19 WebMCP tools EO2Weave's own page registers so
  * agents (in-app or external via the extension bridge) can operate the app:
  * projects, folders (mounted roots), conversations, runs, files, providers.
  *
@@ -188,6 +188,7 @@ export const APP_TOOLS: AppToolDefinition[] = [
       properties: { runId: str('Run id from send_message') },
       required: ['runId'],
     },
+    annotations: { destructiveHint: true },
   },
 
   // ── Files (inside the conversation’s mounted folder workspace) ─────────
@@ -223,11 +224,12 @@ export const APP_TOOLS: AppToolDefinition[] = [
       },
       required: ['conversationId', 'path', 'content'],
     },
+    annotations: { destructiveHint: true },
   },
   {
     name: 'list_folder_files',
     description:
-      'List files/directories under a path in the conversation’s workspace. ' +
+      'List files under a path in the conversation’s workspace. ' +
       'Paths are relative to the folder root. depth 0 = direct children only.',
     inputSchema: {
       type: 'object',

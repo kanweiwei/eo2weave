@@ -80,10 +80,13 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
       listSnapshotFiles: async () => [{ path: 'src/a.ts', opType: 'upsert', createdAt: 1 }],
     }),
     validatePath: (path: string) => {
+      if (!path || !path.trim()) throw new Error('empty path')
       if (path.split('/').some((seg) => seg === '..' || seg === '.')) {
         throw new Error(`Invalid path: ${path}`)
       }
-      return path
+      // mirror real contract: requires leading '/' then strips it
+      if (!path.startsWith('/')) throw new Error('must start with /')
+      return path.replace(/^\/+/, '')
     },
     wait: async () => {},
     ...overrides,
@@ -155,6 +158,10 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
+      getRuntimeStore: () => ({
+        runtimes: new Map(),
+        enqueueMessage: vi.fn(() => ({ enqueued: true, position: 1 })),
+      }),
       getConversationStore: () => {
         const s = d2.getConversationStore()
         s.isConversationRunning = () => true

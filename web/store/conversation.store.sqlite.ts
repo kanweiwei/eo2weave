@@ -219,7 +219,8 @@ interface ConversationState {
     modelName: string,
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
-    agentOverrideId?: string | null
+    agentOverrideId?: string | null,
+    options?: { background?: boolean }
   ) => Promise<void>
   cancelAgent: (conversationId: string) => void
 
@@ -1291,7 +1292,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       modelName: string,
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
-      agentOverrideId?: string | null
+      agentOverrideId?: string | null,
+      options?: { background?: boolean }
     ) =>
       runAgentImpl(
         { handleSubagentStepNotification } as unknown as ConversationAgentRunInternals,
@@ -1302,7 +1304,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         modelName,
         maxTokens,
         directoryHandle,
-        agentOverrideId
+        agentOverrideId,
+        options
       ),
 
     cancelAgent: (conversationId: string) => {

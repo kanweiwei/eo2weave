@@ -408,7 +408,10 @@ export const handlers: Record<string, Handler> = {
     // Busy → queue. The queue position is remembered so cancel_run removes
     // exactly this entry instead of killing the conversation's active run.
     if (store.isConversationRunning(conversationId)) {
-      const result = store.enqueueMessage(conversationId, { text: content })
+      // enqueueMessage lives on the RUNTIME store (the conversation store never
+      // implemented it) — same call the UI send path uses when busy.
+      const runtimeStore = d().getRuntimeStore()
+      const result = runtimeStore.enqueueMessage(conversationId, { text: content })
       if (!result?.enqueued) {
         return err('Conversation is running and its queue is full')
       }
@@ -518,10 +521,12 @@ export const handlers: Record<string, Handler> = {
     if (rec.status === 'queued') {
       // A queued run has no loop to cancel — remove exactly this queued entry
       // instead of killing whatever run IS active on the conversation (M2).
+      // enqueueMessage returns a 1-based position (array length after push);
+      // removeQueuedMessage takes a 0-based index.
       const pos = (rec as any).queuePosition
-      if (typeof pos === 'number' && pos >= 0) {
+      if (typeof pos === 'number' && pos >= 1) {
         const runtimeStore = d().getRuntimeStore()
-        runtimeStore?.removeQueuedMessage?.(rec.conversationId, pos)
+        runtimeStore?.removeQueuedMessage?.(rec.conversationId, pos - 1)
       }
       rec.status = 'cancelled'
       rec.finishedAt = Date.now()
@@ -543,7 +548,10 @@ export const handlers: Record<string, Handler> = {
     if (!conversationId || !path) return err('conversationId and path are required')
     let safePath: string
     try {
-      safePath = d().validatePath(path)
+      // The schema documents RELATIVE paths ("src/App.tsx"). validatePath
+      // expects "/src/App.tsx" — normalize before validating, strip after.
+      safePath = d().validatePath(path.startsWith('/') ? path : `/${path}`)
+      safePath = safePath.replace(/^\/+/, '')
     } catch (e) {
       return err(e instanceof Error ? e.message : `Invalid path: ${path}`)
     }
@@ -567,7 +575,10 @@ export const handlers: Record<string, Handler> = {
     if (!conversationId || !path) return err('conversationId and path are required')
     let safePath: string
     try {
-      safePath = d().validatePath(path)
+      // The schema documents RELATIVE paths ("src/App.tsx"). validatePath
+      // expects "/src/App.tsx" — normalize before validating, strip after.
+      safePath = d().validatePath(path.startsWith('/') ? path : `/${path}`)
+      safePath = safePath.replace(/^\/+/, '')
     } catch (e) {
       return err(e instanceof Error ? e.message : `Invalid path: ${path}`)
     }
