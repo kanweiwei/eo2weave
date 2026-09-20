@@ -77,6 +77,15 @@ export interface WorkspaceModelOverride {
   // activeCustomProviderId removed — providerType IS the custom provider id now
 }
 
+/**
+ * Shape of persisted overrides from BEFORE the activeCustomProviderId removal.
+ * onRehydrateStorage migrates these forward: the legacy field becomes
+ * providerType and is deleted from the persisted record.
+ */
+interface ModelOverrideWithLegacyCustom extends WorkspaceModelOverride {
+  activeCustomProviderId?: string
+}
+
 interface SettingsState {
   // LLM settings
   providerType: LLMProviderType
@@ -1018,11 +1027,11 @@ export const useSettingsStore = create<SettingsState>()(
       version: 2,
       // Migrate older persisted states forward. v1 state doesn't have
       // agentLoopNotifications — backfill defaults on load.
-      migrate: (persistedState: any, version: number) => {
-        if (!persistedState) return persistedState
+      migrate: (persistedState: unknown, version: number) => {
+        if (!persistedState || typeof persistedState !== 'object') return persistedState
         if (version < 2) {
           return {
-            ...persistedState,
+            ...(persistedState as Record<string, unknown>),
             agentLoopNotifications: {
               enabled: true,
               onlyWhenHidden: true,
@@ -1073,10 +1082,10 @@ export const useSettingsStore = create<SettingsState>()(
           // Migrate old activeCustomProviderId in workspace overrides
           const overrides = state.modelOverridesByWorkspace
           for (const wsId of Object.keys(overrides)) {
-            const o = overrides[wsId]
-            if ((o.providerType as string) === 'custom' && (o as any).activeCustomProviderId) {
-              o.providerType = (o as any).activeCustomProviderId
-              delete (o as any).activeCustomProviderId
+            const o = overrides[wsId] as ModelOverrideWithLegacyCustom
+            if ((o.providerType as string) === 'custom' && o.activeCustomProviderId) {
+              o.providerType = o.activeCustomProviderId
+              delete o.activeCustomProviderId
             }
           }
           // Register all custom providers into dynamic registry

@@ -49,8 +49,16 @@ interface ExecPolicyState {
   moveRule: (index: number, direction: 'up' | 'down') => void
 }
 
-async function callNativeHost(action: string, params?: Record<string, unknown>): Promise<any> {
-  const w = window as unknown as { __agentWeb?: { nativeHostCall?: (p: Record<string, unknown>) => Promise<any> } }
+/** Native-host responses follow the common { ok, error?, ...payload } envelope. */
+interface NativeHostResponse {
+  ok?: boolean
+  error?: string
+  policy?: ExecPolicy
+  [key: string]: unknown
+}
+
+async function callNativeHost(action: string, params?: Record<string, unknown>): Promise<NativeHostResponse> {
+  const w = window as unknown as { __agentWeb?: { nativeHostCall?: (p: Record<string, unknown>) => Promise<NativeHostResponse> } }
   if (!w.__agentWeb?.nativeHostCall) {
     throw new Error('Native Host not available')
   }

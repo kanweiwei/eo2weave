@@ -714,7 +714,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         const { getProjectRootRepository } = await import('@/sqlite/repositories/project-root.repository')
         const repo = getProjectRootRepository()
         const roots = await repo.findByProject(projectId)
-        const nativeHostRoots = roots.filter((r: any) => r.backend === 'native-host')
+        const nativeHostRoots = roots.filter((r) => r.backend === 'native-host')
         if (nativeHostRoots.length === 0) return []
 
         // Use WorkspaceManager to access diskExec
@@ -726,7 +726,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           paths.push(root.name)
           // Find a workspace for this project to access the runtime
           const workspaces = manager.getAllWorkspaces()
-          const projectWs = workspaces.find((ws: any) => ws.projectId === projectId)
+          const projectWs = workspaces.find((ws) => ws.projectId === projectId)
           if (!projectWs) continue
           const workspace = await manager.getWorkspace(projectWs.workspaceId)
           if (!workspace) continue

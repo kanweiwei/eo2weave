@@ -58,10 +58,26 @@ function compareVersions(a: string, b: string): number {
   return 0
 }
 
+/** Minimal view of the extension bridge used by this store. */
+interface ExtensionWebBridge {
+  getVersion?: () => Promise<{ ok?: boolean; version?: string }>
+  codexGetStatus?: () => Promise<{
+    ok?: boolean
+    data?: {
+      authorized?: boolean
+      models?: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>
+    }
+  }>
+}
+
+function getWebBridge(): ExtensionWebBridge | undefined {
+  return (window as unknown as { __agentWeb?: ExtensionWebBridge }).__agentWeb
+}
+
 /** Fetch installed extension version via the bridge API. */
 async function fetchInstalledVersion(): Promise<string | null> {
   try {
-    const bridge = (window as any).__agentWeb
+    const bridge = getWebBridge()
     if (!bridge?.getVersion) return null
     const resp = await bridge.getVersion()
     return resp?.ok && resp?.version ? resp.version : null
@@ -261,7 +277,7 @@ export const useExtensionStore = create<ExtensionState>()(
               return
             }
 
-            const bridge = (window as any).__agentWeb
+            const bridge = getWebBridge()
             if (!bridge?.codexGetStatus) {
               // Bridge not ready (extension page might still be initializing).
               // Flush with `flush: true` so the deferred checkHasApiKey doesn't
@@ -284,7 +300,7 @@ export const useExtensionStore = create<ExtensionState>()(
                 try {
                   const { useSettingsStore } = await import('@/store/settings.store')
                   const settings = useSettingsStore.getState()
-                  const modelIds = (resp.data.models || []).map((m: any) => m.id as string)
+                  const modelIds = (resp.data.models || []).map((m) => m.id)
                   const existing = settings.pinnedModelsByProvider['codex-oauth']
                   if (!existing || existing.length === 0) {
                     if (modelIds.length > 0) {
