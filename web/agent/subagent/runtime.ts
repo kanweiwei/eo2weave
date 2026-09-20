@@ -980,6 +980,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       systemPrompt: finalSystemPrompt,
       toolContext: taskContext,
       mode: task.mode,
+      // Forward the workspace session id so codex-oauth requests carry
+      // prompt_cache_key (see pi-core-runner onPayload). Without it, every
+      // subagent request pays full-price input tokens and may land on a
+      // different cache shard than the parent conversation.
+      sessionId: taskContext.workspaceId ?? undefined,
       beforeToolCall: ({ toolName }) => {
         if (task.running_notification_armed) {
           task.running_notification_armed = false
