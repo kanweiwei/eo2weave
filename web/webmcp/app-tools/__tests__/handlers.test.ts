@@ -74,7 +74,17 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
     getMessageRepository: () => ({
       findByConversation: async () => conversations[0].messages,
     }),
-    searchConversations: async (args) => ({ results: [{ conversationId: 'c_1', title: 'Fix login timeout' }], args }),
+    searchConversations: async (args) => JSON.stringify({ results: [{ conversationId: 'c_1', title: 'Fix login timeout' }], args }),
+    getRuntimeStore: () => ({ runtimes: new Map() }),
+    getFSOverlayRepository: () => ({
+      listSnapshotFiles: async () => [{ path: 'src/a.ts', opType: 'upsert', createdAt: 1 }],
+    }),
+    validatePath: (path: string) => {
+      if (path.split('/').some((seg) => seg === '..' || seg === '.')) {
+        throw new Error(`Invalid path: ${path}`)
+      }
+      return path
+    },
     wait: async () => {},
     ...overrides,
   }
@@ -131,7 +141,11 @@ describe('app-tools handlers', () => {
   it('send_message errors without api key', async () => {
     initAppToolDeps({
       ...deps,
-      getSettingsStore: () => ({ ...deps.getSettingsStore(), hasApiKey: false }),
+      getSettingsStore: () => ({
+        ...deps.getSettingsStore(),
+        hasApiKey: false,
+        hasApiKeyLoaded: true,
+      }),
     })
     const r = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'x' })).content)
     expect(r.error).toMatch(/No API key/)
@@ -180,6 +194,7 @@ describe('app-tools handlers', () => {
   it('read_folder_file errors when no workspace', async () => {
     initAppToolDeps({
       ...deps,
+      getRuntimeStore: () => ({ runtimes: new Map() }),
       getWorkspaceManager: async () => ({ getWorkspace: async () => undefined }),
     })
     const r = JSON.parse((await handlers.read_folder_file({ conversationId: 'ghost', path: 'x' })).content)

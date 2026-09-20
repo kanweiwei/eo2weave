@@ -109,7 +109,6 @@ export const APP_TOOLS: AppToolDefinition[] = [
       type: 'object',
       properties: {
         title: str('Conversation title (auto-generated later if omitted)'),
-        projectId: str('Project to file the conversation under'),
       },
     },
   },

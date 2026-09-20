@@ -1,6 +1,5 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
- * App-tools handlers — the execute() implementations behind the 16 schemas.
+ * App-tools handlers — the execute() implementations behind the 19 schemas.
  *
  * Every handler goes through the app's OWN public surfaces (zustand stores,
  * repositories, WorkspaceManager, WorkspaceRuntime) — the same code paths the
@@ -10,6 +9,12 @@
  * dynamic zustand store snapshots and repository classes whose concrete types
  * live across the app. Typing them precisely would couple this module to half
  * the codebase; tests inject mocks instead. All other `any`s flow from these.
+ *
+ * Run lifecycle: the ONLY terminal signal for a run is the runAgent promise
+ * resolving/rejecting (`.then`/`.catch` in send_message). isConversationRunning()
+ * is used solely for progress/queue display — a run whose loop never started
+ * (early failure, status 'error') still resolves the promise, and the `.then`
+ * branch reads the conversation's terminal status to map 'error' → 'failed'.
  */
 
 import { APP_TOOLS } from './schemas'
@@ -21,12 +26,21 @@ import { createUserMessage } from '@/agent/message-types'
 export interface AppRunRecord {
   runId: string
   conversationId: string
-  status: 'started' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled'
+  status:
+    | 'started' // accepted, agent loop not yet observed running
+    | 'queued' // conversation busy — message parked in the queue
+    | 'running' // loop observed running
+    | 'completed'
+    | 'failed'
+    | 'timeout'
+    | 'cancelled'
   startedAt: number
   finishedAt?: number
+  /** Set when the run finishes; scoped to THIS run (messages after startedAt). */
   result?: {
     summary: string
     changedFiles: string[]
+    error?: string
     usage?: { inputTokens?: number; outputTokens?: number }
   }
   error?: string
@@ -44,12 +58,18 @@ export function newRunId(): string {
 function recordRun(rec: AppRunRecord): void {
   runRegistry.set(rec.runId, rec)
   if (runRegistry.size > RUN_REGISTRY_MAX) {
+    // Evict the oldest entry (finished first if any); bounded memory beats
+    // unbounded growth — the conversation keeps the authoritative history.
+    let oldestKey: string | null = null
+    let oldestTime = Infinity
     for (const [id, r] of runRegistry) {
-      if (r.status !== 'running' && r.status !== 'queued' && r.status !== 'started') {
-        runRegistry.delete(id)
-        break
+      const t = r.finishedAt ?? r.startedAt
+      if (t < oldestTime) {
+        oldestTime = t
+        oldestKey = id
       }
     }
+    if (oldestKey) runRegistry.delete(oldestKey)
   }
 }
 
@@ -61,12 +81,15 @@ export function getRunRecord(runId: string): AppRunRecord | undefined {
 
 export interface AppToolDeps {
   getConversationStore: () => any
+  getRuntimeStore: () => any
   getSettingsStore: () => any
   getAgentStore: () => any
   getWorkspaceManager: () => Promise<any>
   getProjectRepository: () => any
   getMessageRepository: () => any
-  searchConversations: (args: Record<string, unknown>) => Promise<unknown>
+  getFSOverlayRepository: () => any
+  searchConversations: (args: Record<string, unknown>) => Promise<string>
+  validatePath: (path: string) => string
   wait: (ms: number) => Promise<void>
 }
 
@@ -86,6 +109,8 @@ function d(): AppToolDeps {
 const POLL_INTERVAL_MS = 500
 const HARD_WAIT_CAP_MS = 300_000
 const MAX_MESSAGE_CHARS = 32 * 1024
+const MAX_SEND_CHARS = 256 * 1024
+const LIST_FILES_LIMIT = 500
 
 function ok(value: unknown): { content: string } {
   return { content: JSON.stringify(value) }
@@ -106,6 +131,28 @@ function findConv(store: any, conversationId: string): any | null {
   return store.conversations.find((c: any) => c.id === conversationId) ?? null
 }
 
+/**
+ * Assistant summary scoped to THIS run: only messages appended after the run
+ * started (timestamp >= startedAt - 1s slack). Falls back to the newest
+ * assistant message when the run produced none (e.g. instant failure — the
+ * error is surfaced via rec.error instead).
+ */
+function summaryForRun(store: any, rec: AppRunRecord): string {
+  const conv = findConv(store, rec.conversationId)
+  const msgs: Message[] = conv?.messages ?? []
+  let scoped = ''
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if ((m.timestamp ?? 0) < rec.startedAt - 1000) break
+    if (m.role === 'assistant' && typeof m.content === 'string' && m.content) {
+      scoped = m.content
+      break
+    }
+  }
+  if (scoped) return scoped
+  return lastAssistantSummary(store, rec.conversationId)
+}
+
 function lastAssistantSummary(store: any, conversationId: string): string {
   const conv = findConv(store, conversationId)
   const msgs: Message[] = conv?.messages ?? []
@@ -116,43 +163,85 @@ function lastAssistantSummary(store: any, conversationId: string): string {
   return ''
 }
 
-/** Files changed by the latest finished run (from the run's snapshot summary). */
-function changedFilesForRun(store: any, rec: AppRunRecord): string[] {
+/**
+ * Find the run_changes card created by THIS run (kind === 'run_changes',
+ * timestamp >= startedAt) and read its snapshotId. Null when the run produced
+ * no snapshot (pure chat / read-only run / auto-apply skipped).
+ */
+function snapshotIdForRun(store: any, rec: AppRunRecord): string | null {
   const conv = findConv(store, rec.conversationId)
-  const msgs: Message[] = conv?.messages ?? []
-  // find the newest runChanges marker at/below the run start time
+  const msgs: any[] = conv?.messages ?? []
   for (let i = msgs.length - 1; i >= 0; i--) {
-    const meta = (msgs[i] as any)?._meta ?? (msgs[i] as any)?.meta
-    const snapshotId = meta?.runChanges?.snapshotId ?? (msgs[i] as any)?.runChanges?.snapshotId
-    if (snapshotId && (msgs[i].timestamp ?? 0) >= rec.startedAt - 1000) {
-      // The snapshot summary file list lives in fs-overlay; simplest reliable
-      // source is the run-change summary card data cached on the message meta.
-      const files = meta?.runChangesFiles ?? meta?.files
-      if (Array.isArray(files)) return files as string[]
-      return []
-    }
+    const m = msgs[i]
+    if (m.kind !== 'run_changes') continue
+    if ((m.timestamp ?? 0) < rec.startedAt - 1000) continue
+    return m.runChanges?.snapshotId ?? null
   }
-  return []
+  return null
 }
 
+/**
+ * Changed files for a run: resolved from the run's snapshot via
+ * FsOverlayRepository.listSnapshotFiles (authoritative path + op list).
+ * Empty array when no snapshot exists — NOT an error.
+ */
+async function changedFilesForRun(rec: AppRunRecord): Promise<string[]> {
+  const store = d().getConversationStore()
+  const snapshotId = snapshotIdForRun(store, rec)
+  if (!snapshotId) return []
+  const overlay = d().getFSOverlayRepository()
+  const files = await overlay.listSnapshotFiles(snapshotId)
+  return (files ?? []).map((f: any) => f.path)
+}
+
+/** Conversation-level terminal status ('error' etc.) for a finished run. */
+function conversationError(store: any, rec: AppRunRecord): string | null {
+  const conv = findConv(store, rec.conversationId)
+  if (conv?.status === 'error') return conv.error ?? 'Agent run failed'
+  return null
+}
+
+/** Finalize a finished run: map the conversation terminal status to run status. */
+function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
+  const errMsg = conversationError(store, rec)
+  if (errMsg) {
+    rec.status = 'failed'
+    rec.error = errMsg
+  } else if (rec.status !== 'cancelled' && rec.status !== 'timeout') {
+    rec.status = 'completed'
+  }
+  rec.finishedAt = rec.finishedAt ?? Date.now()
+  rec.result = {
+    summary: summaryForRun(store, rec),
+    changedFiles: [], // filled async by withChangedFiles
+    ...(errMsg ? { error: errMsg } : {}),
+  }
+  return rec
+}
+
+/** Wait until the runAgent promise resolution flips rec into a terminal state. */
 async function waitForRun(rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
-  const cstore = d().getConversationStore()
   const deadline = Date.now() + Math.min(Math.max(timeoutMs, 1000), HARD_WAIT_CAP_MS)
   while (Date.now() < deadline) {
     await d().wait(POLL_INTERVAL_MS)
-    if (!cstore.isConversationRunning(rec.conversationId)) {
-      rec.status = rec.status === 'cancelled' ? 'cancelled' : 'completed'
-      rec.finishedAt = Date.now()
-      rec.result = {
-        summary: lastAssistantSummary(cstore, rec.conversationId),
-        changedFiles: changedFilesForRun(cstore, rec),
-      }
+    if (['completed', 'failed', 'cancelled', 'timeout'].includes(rec.status)) {
       return rec
     }
   }
   rec.status = 'timeout'
   rec.finishedAt = Date.now()
   rec.error = `wait=true timed out after ${timeoutMs}ms — poll get_run_status / get_run_progress instead`
+  return rec
+}
+
+/** Attach changedFiles to a finalized record (async overlay read). */
+async function withChangedFiles(rec: AppRunRecord): Promise<AppRunRecord> {
+  if (!rec.result) return rec
+  try {
+    rec.result.changedFiles = await changedFilesForRun(rec)
+  } catch {
+    rec.result.changedFiles = []
+  }
   return rec
 }
 
@@ -210,26 +299,19 @@ export const handlers: Record<string, Handler> = {
     let list: any[] = store.conversations ?? []
     if (args.projectId) list = list.filter((c: any) => c.projectId === args.projectId)
     if (args.folderId) {
-      // folderId = "projectId:rootName" (from list_mounted_folders). Resolve the
-      // project's workspaces for that root, then keep conversations bound to them.
-      const [projectId, rootName] = String(args.folderId).split(':')
-      const { useFolderAccessStore } = await import('@/store/folder-access.store')
-      const records = (useFolderAccessStore.getState() as any).records ?? {}
-      const rec = Object.values(records as Record<string, any>).find(
-        (r) => r.projectId === projectId && (r.rootName ?? r.projectId) === (rootName ?? projectId),
+      // folderId = "projectId:rootName" (from list_mounted_folders). Each
+      // conversation maps 1:1 to a workspace whose id IS the conversation id;
+      // scope to the project's workspaces (the project's roots share one OPFS
+      // files/ tree per conversation workspace).
+      const projectId = String(args.folderId).split(':')[0]
+      const manager = await d().getWorkspaceManager()
+      const wsIds = new Set(
+        manager
+          .getAllWorkspaces()
+          .filter((w: any) => w.projectId === projectId)
+          .map((w: any) => w.workspaceId),
       )
-      if (rec) {
-        const manager = await d().getWorkspaceManager()
-        const wsIds = new Set(
-          manager
-            .getAllWorkspaces()
-            .filter((w: any) => w.projectId === projectId)
-            .map((w: any) => w.workspaceId),
-        )
-        list = list.filter((c: any) => wsIds.has(c.id))
-      } else {
-        list = []
-      }
+      list = list.filter((c: any) => wsIds.has(c.id))
     }
     list = [...list].sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const page = list.slice(offset, offset + limit)
@@ -246,13 +328,25 @@ export const handlers: Record<string, Handler> = {
   },
 
   search_conversations: async (args) => {
-    const result = await d().searchConversations(args)
-    return { content: JSON.stringify(result) }
+    // Map camelCase schema params to the executor's snake_case args (M1).
+    const mapped: Record<string, unknown> = {
+      query: args.query,
+      limit: args.limit,
+    }
+    if (args.projectId) mapped.project = String(args.projectId)
+    if (args.updatedAfter != null) mapped.updated_after = Number(args.updatedAfter)
+    if (args.updatedBefore != null) mapped.updated_before = Number(args.updatedBefore)
+    // The executor returns a JSON string — pass it through verbatim; double
+    // encoding here would corrupt the tool result (M1).
+    const raw = await d().searchConversations(mapped)
+    return { content: raw }
   },
 
   create_conversation: async (args) => {
     const store = d().getConversationStore()
     const conv = store.createNew(args.title ? String(args.title) : undefined)
+    // v3.1: projectId is not persisted on conversations (schema has no column);
+    // the parameter was removed from the schema so agents don't expect it.
     return ok({ conversation: { id: conv.id, title: conv.title } })
   },
 
@@ -263,10 +357,13 @@ export const handlers: Record<string, Handler> = {
     const pageSize = Math.min(Math.max(1, Number(args.pageSize ?? 50)), 200)
     const repo = d().getMessageRepository()
     const all = await repo.findByConversation(conversationId)
-    const total = all.length
+    // Skip UI-only cards (run_changes has no text content) — they would show
+    // up as empty assistant entries and skew pagination density.
+    const readable = all.filter((m: Message) => m.kind !== 'run_changes')
+    const total = readable.length
     const end = Math.max(0, total - (page - 1) * pageSize)
     const start = Math.max(0, end - pageSize)
-    const slice = all.slice(start, end)
+    const slice = readable.slice(start, end)
     return ok({
       messages: slice.map((m: Message) => {
         const raw = typeof m.content === 'string' ? m.content : ''
@@ -287,44 +384,54 @@ export const handlers: Record<string, Handler> = {
     const timeoutMs = Math.min(Math.max(Number(args.timeoutMs ?? 120_000), 1000), HARD_WAIT_CAP_MS)
     if (!conversationId) return err('conversationId is required')
     if (!content.trim()) return err('content is required')
+    if (content.length > MAX_SEND_CHARS) {
+      return err(`content too large: ${content.length} chars (max ${MAX_SEND_CHARS})`)
+    }
 
     const D = d()
     const store = D.getConversationStore()
     const settings = D.getSettingsStore()
-    if (!settings.hasApiKey) {
+    // Guard the startup race: hasApiKey is false until the async key check
+    // completes; only treat it as "missing" once that check has run.
+    if (settings.hasApiKeyLoaded && !settings.hasApiKey) {
       return err('No API key configured — set up a provider in EO2Weave settings first')
     }
     const conv = findConv(store, conversationId)
     if (!conv) return err(`Conversation not found: ${conversationId}`)
 
-    const runId = newRunId()
-    const rec: AppRunRecord = { runId, conversationId, status: 'started', startedAt: Date.now() }
-    recordRun(rec)
-
     const agentStore = D.getAgentStore()
     const directoryHandle = agentStore?.directoryHandle ?? null
 
+    const runId = newRunId()
+    const rec: AppRunRecord = { runId, conversationId, status: 'started', startedAt: Date.now() }
+
+    // Busy → queue. The queue position is remembered so cancel_run removes
+    // exactly this entry instead of killing the conversation's active run.
     if (store.isConversationRunning(conversationId)) {
       const result = store.enqueueMessage(conversationId, { text: content })
-      if (result?.enqueued) {
-        rec.status = 'queued'
-        return ok({ runId, status: 'queued' })
+      if (!result?.enqueued) {
+        return err('Conversation is running and its queue is full')
       }
-      return err('Conversation is running and its queue is full')
+      rec.status = 'queued'
+      ;(rec as any).queuePosition = result.position
+      recordRun(rec)
+      return ok({ runId, status: 'queued', queuePosition: result.position })
     }
+
+    // All validations passed — only now publish the run record (M3: failure
+    // paths above must not leave orphan records that later read as completed).
+    recordRun(rec)
 
     const userMsg = createUserMessage(content)
     store.updateMessages(conversationId, [...(conv.messages ?? []), userMsg])
-    // Fire-and-forget: runAgent resolves when the loop ends.
+    // Fire-and-forget: the promise resolution is THE terminal signal for this
+    // run (C1). runAgentImpl resolves even on early failure (it sets
+    // status='error' instead of throwing), so `.then` inspects the terminal
+    // conversation status to map failure correctly.
     void store
       .runAgent(conversationId, settings.providerType, settings.modelName, settings.maxTokens, directoryHandle)
       .then(() => {
-        rec.status = rec.status === 'cancelled' ? 'cancelled' : 'completed'
-        rec.finishedAt = Date.now()
-        rec.result = {
-          summary: lastAssistantSummary(store, conversationId),
-          changedFiles: changedFilesForRun(store, rec),
-        }
+        finalizeFromStore(store, rec)
       })
       .catch((e: unknown) => {
         rec.status = 'failed'
@@ -335,7 +442,7 @@ export const handlers: Record<string, Handler> = {
 
     if (!wait) return ok({ runId, status: 'started' })
 
-    const final = await waitForRun(rec, timeoutMs)
+    const final = await withChangedFiles(await waitForRun(rec, timeoutMs))
     return ok({
       runId: final.runId,
       status: final.status,
@@ -349,13 +456,20 @@ export const handlers: Record<string, Handler> = {
     if (!rec) return err(`Unknown runId: ${args.runId}`)
     const store = d().getConversationStore()
     const running = store.isConversationRunning(rec.conversationId)
-    if (!running && (rec.status === 'running' || rec.status === 'started' || rec.status === 'queued')) {
-      rec.status = 'completed'
-      rec.finishedAt = rec.finishedAt ?? Date.now()
-      rec.result = {
-        summary: lastAssistantSummary(store, rec.conversationId),
-        changedFiles: changedFilesForRun(store, rec),
-      }
+    // Terminal transitions only come from the runAgent promise (.then/.catch).
+    // 'started' means the loop has not registered itself yet (startup race) —
+    // NEVER treat it as finished (C1). 'queued' → 'running' when the loop starts
+    // consuming the queue.
+    if (rec.status === 'queued' && running) {
+      rec.status = 'running'
+    }
+    if (
+      !running &&
+      rec.status !== 'started' &&
+      rec.status !== 'queued' &&
+      !['completed', 'failed', 'cancelled', 'timeout'].includes(rec.status)
+    ) {
+      finalizeFromStore(store, rec)
     }
     return ok({
       runId: rec.runId,
@@ -373,13 +487,18 @@ export const handlers: Record<string, Handler> = {
     if (!running) {
       return ok({ status: rec.status, elapsedMs: (rec.finishedAt ?? Date.now()) - rec.startedAt })
     }
-    const conv = findConv(store, rec.conversationId)
-    const current = conv?.currentToolCall ?? null
-    const streaming: string = conv?.streamingContent ?? ''
+    // Streaming content lives in the RUNTIME store (M5) — the main store's
+    // conversation field is legacy and is not written by the agent loop.
+    const runtimeStore = d().getRuntimeStore()
+    const rt = runtimeStore?.runtimes?.get?.(rec.conversationId) ?? null
+    const mainConv = findConv(store, rec.conversationId)
+    const current = rt?.currentToolCall ?? mainConv?.currentToolCall ?? null
+    const streaming: string = rt?.streamingContent ?? mainConv?.streamingContent ?? ''
+    const activeToolCalls: any[] = rt?.activeToolCalls ?? mainConv?.activeToolCalls ?? []
     return ok({
       status: 'running',
       elapsedMs: Date.now() - rec.startedAt,
-      toolCallsDone: (conv?.activeToolCalls ?? []).length,
+      toolCallsDone: activeToolCalls.length,
       ...(current
         ? {
             currentTool: {
@@ -396,6 +515,21 @@ export const handlers: Record<string, Handler> = {
     const rec = getRunRecord(String(args.runId ?? ''))
     if (!rec) return err(`Unknown runId: ${args.runId}`)
     const store = d().getConversationStore()
+    if (rec.status === 'queued') {
+      // A queued run has no loop to cancel — remove exactly this queued entry
+      // instead of killing whatever run IS active on the conversation (M2).
+      const pos = (rec as any).queuePosition
+      if (typeof pos === 'number' && pos >= 0) {
+        const runtimeStore = d().getRuntimeStore()
+        runtimeStore?.removeQueuedMessage?.(rec.conversationId, pos)
+      }
+      rec.status = 'cancelled'
+      rec.finishedAt = Date.now()
+      return ok({ cancelled: true, removedFromQueue: true })
+    }
+    if (rec.status !== 'running' && rec.status !== 'started') {
+      return err(`Run ${rec.runId} already finished (${rec.status})`)
+    }
     store.cancelAgent(rec.conversationId)
     rec.status = 'cancelled'
     rec.finishedAt = Date.now()
@@ -407,16 +541,22 @@ export const handlers: Record<string, Handler> = {
     const conversationId = String(args.conversationId ?? '')
     const path = String(args.path ?? '')
     if (!conversationId || !path) return err('conversationId and path are required')
+    let safePath: string
+    try {
+      safePath = d().validatePath(path)
+    } catch (e) {
+      return err(e instanceof Error ? e.message : `Invalid path: ${path}`)
+    }
     const manager = await d().getWorkspaceManager()
     const runtime = await manager.getWorkspace(conversationId)
     if (!runtime) return err(`No workspace bound to conversation ${conversationId}`)
     try {
-      const result = await runtime.readFile(path)
+      const result = await runtime.readFile(safePath)
       const content = typeof result.content === 'string' ? result.content : ''
       const t = truncateContent(content)
-      return ok({ path, content: t.content, truncated: t.truncated, size: result.metadata?.size ?? t.content.length })
-    } catch {
-      return err(`File not found in workspace: ${path}`)
+      return ok({ path: safePath, content: t.content, truncated: t.truncated, size: result.metadata?.size ?? t.content.length })
+    } catch (e) {
+      return err(`Failed to read ${safePath}: ${e instanceof Error ? e.message : String(e)}`)
     }
   },
 
@@ -425,12 +565,18 @@ export const handlers: Record<string, Handler> = {
     const path = String(args.path ?? '')
     const content = String(args.content ?? '')
     if (!conversationId || !path) return err('conversationId and path are required')
+    let safePath: string
+    try {
+      safePath = d().validatePath(path)
+    } catch (e) {
+      return err(e instanceof Error ? e.message : `Invalid path: ${path}`)
+    }
     const manager = await d().getWorkspaceManager()
     const runtime = await manager.getWorkspace(conversationId)
     if (!runtime) return err(`No workspace bound to conversation ${conversationId}`)
     try {
-      await runtime.writeFile(path, content)
-      return ok({ path, written: true, size: content.length })
+      await runtime.writeFile(safePath, content)
+      return ok({ path: safePath, written: true, size: content.length })
     } catch (e) {
       return err(`Write failed: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -446,18 +592,13 @@ export const handlers: Record<string, Handler> = {
     if (!runtime) return err(`No workspace bound to conversation ${conversationId}`)
     const scan = await runtime.scanFiles()
     const prefix = path ? `${path.replace(/\/+$/, '')}/` : ''
+    const depthLimit = prefix ? depth + 1 : depth
     const files = [...scan.values()]
-      .filter((f) => (prefix ? f.path.startsWith(prefix) : true))
-      .filter((f) => {
-        if (!prefix) {
-          // depth limiting at root: count slashes in the remaining path
-          return f.path.split('/').length <= depth + 1
-        }
-        const rest = f.path.slice(prefix.length)
-        return rest.split('/').length <= depth + 1
-      })
+      .filter((f) => (prefix ? f.path.startsWith(prefix) : f.path.split('/').length <= depthLimit))
       .map((f) => ({ path: f.path, type: 'file' as const, size: f.size }))
-    return ok({ files, truncated: false })
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .slice(0, LIST_FILES_LIMIT)
+    return ok({ files, truncated: files.length >= LIST_FILES_LIMIT })
   },
 
   // ── Providers & models ──
@@ -472,6 +613,7 @@ export const handlers: Record<string, Handler> = {
           id: type,
           name: meta.displayName,
           isCurrent: type === settings.providerType,
+          hasApiKey: type === settings.providerType ? settings.hasApiKey : undefined,
           pinnedModels: settings.pinnedModelsByProvider[type] ?? [],
         })
       }
@@ -526,6 +668,18 @@ export const handlers: Record<string, Handler> = {
     const modelId = String(args.modelId ?? '')
     if (!providerId || !modelId) return err('providerId and modelId are required')
     const settings = d().getSettingsStore()
+    // Enforce the documented precondition: only switch to a provider that has
+    // credentials or usage records. hasApiKey reflects the CURRENT provider;
+    // for others the pinned list / custom-provider records are the signal.
+    const isCurrent = providerId === settings.providerType
+    const known =
+      isCurrent ||
+      (settings.pinnedModelsByProvider[providerId]?.length ?? 0) > 0 ||
+      (settings as any).customProviders?.some?.((cp: any) => cp.id === providerId) ||
+      ['openai', 'anthropic', 'deepseek', 'openrouter', 'codex-oauth'].includes(providerId)
+    if (!known) {
+      return err(`Provider ${providerId} is not configured — set it up in EO2Weave settings first`)
+    }
     settings.switchProviderAndModel(providerId, modelId)
     return ok({ providerId, modelId })
   },

@@ -40,10 +40,21 @@ export async function registerAppTools(): Promise<void> {
     const { getMessageRepository } = await import('@/sqlite/repositories/message.repository')
     const { searchConversationsExecutor } = await import('@/agent/tools/search-conversations.tool')
 
+    const { useConversationRuntimeStore } = await import('@/store/conversation-runtime.store')
+    const { getFSOverlayRepository } = await import('@/sqlite/repositories/fs-overlay.repository')
+    const { validatePathImpl } = await import('@/opfs/workspace/workspace-file-ops')
+
     initAppToolDeps({
       getConversationStore: () => useConversationStore.getState(),
+      getRuntimeStore: () => useConversationRuntimeStore.getState(),
       getSettingsStore: () => useSettingsStore.getState(),
       getAgentStore: () => useAgentStore.getState(),
+      getFSOverlayRepository: () => getFSOverlayRepository(),
+      validatePath: (path: string) => {
+        // validatePathImpl is a pure path normalizer over the runtime bridge —
+        // call it with a minimal stub since it only reads rt for project roots.
+        return validatePathImpl({} as any, path)
+      },
       getWorkspaceManager: async () => {
         const manager = await getWorkspaceManager()
         return manager
