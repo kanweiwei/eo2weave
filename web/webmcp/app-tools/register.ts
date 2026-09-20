@@ -1,0 +1,105 @@
+/**
+ * register.ts — registers the app-tools onto this page's WebMCP model context
+ * (`document.modelContext`), making EO2Weave operable by agents as an ordinary
+ * set of WebMCP tools.
+ *
+ * - Uses @mcp-b/webmcp-polyfill (side-effect import installs
+ *   document.modelContext on browsers without the native API; no-op on
+ *   Chrome 140+ where the native API exists).
+ * - Idempotent: safe to call multiple times (tracks registration state).
+ * - Wires the real store/service dependencies into handlers once.
+ */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// document.modelContext is a runtime-injected API (native Chrome 140+ or the
+// @mcp-b polyfill) — its shape can't be imported statically, hence the casts.
+import '@mcp-b/webmcp-polyfill'
+import { APP_TOOLS } from './schemas'
+import { buildToolExecutors, initAppToolDeps } from './handlers'
+
+let registered = false
+let registerPromise: Promise<void> | null = null
+
+export function isAppToolsRegistered(): boolean {
+  return registered
+}
+
+export async function registerAppTools(): Promise<void> {
+  if (registered) return
+  if (registerPromise) return registerPromise
+
+  registerPromise = (async () => {
+    // Browser-only guard (SSR / non-browser test envs)
+    if (typeof document === 'undefined' || typeof window === 'undefined') return
+
+    const { useConversationStore } = await import('@/store/conversation.store')
+    const { useSettingsStore } = await import('@/store/settings.store')
+    const { useAgentStore } = await import('@/store/agent.store')
+    const { getWorkspaceManager } = await import('@/opfs')
+    const { getProjectRepository } = await import('@/sqlite/repositories/project.repository')
+    const { getMessageRepository } = await import('@/sqlite/repositories/message.repository')
+    const { searchConversationsExecutor } = await import('@/agent/tools/search-conversations.tool')
+
+    initAppToolDeps({
+      getConversationStore: () => useConversationStore.getState(),
+      getSettingsStore: () => useSettingsStore.getState(),
+      getAgentStore: () => useAgentStore.getState(),
+      getWorkspaceManager: async () => {
+        const manager = await getWorkspaceManager()
+        return manager
+      },
+      getProjectRepository: () => getProjectRepository(),
+      getMessageRepository: () => getMessageRepository(),
+      searchConversations: async (args) => {
+        const result = await searchConversationsExecutor(args, {
+          directoryHandle: null,
+        } as any)
+        return result
+      },
+      wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    })
+
+    const executors = buildToolExecutors()
+    const modelContext = (document as any)?.modelContext
+    if (!modelContext?.registerTool) {
+      console.warn('[app-tools] document.modelContext unavailable — app tools not registered')
+      return
+    }
+
+    for (const def of APP_TOOLS) {
+      const execute = executors.get(def.name)!
+      try {
+        await modelContext.registerTool(
+          {
+            name: def.name,
+            description: def.description,
+            inputSchema: def.inputSchema,
+            annotations: def.annotations,
+            execute: async (args: Record<string, any>) => {
+              try {
+                const out = await execute(args ?? {})
+                return out.content
+              } catch (e) {
+                return JSON.stringify({ error: e instanceof Error ? e.message : String(e) })
+              }
+            },
+          },
+          // Re-registering the same name throws in the polyfill — tolerate that
+          // on hot-reload by ignoring the specific error.
+        )
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!msg.includes('already registered')) throw e
+      }
+    }
+
+    registered = true
+    console.info(`[app-tools] registered ${APP_TOOLS.length} WebMCP tools on this page`)
+  })()
+
+  try {
+    await registerPromise
+  } finally {
+    registerPromise = null
+  }
+}

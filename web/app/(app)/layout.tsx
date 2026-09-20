@@ -9,6 +9,10 @@ import { APP_BUILD_ID, IS_DEVELOPMENT } from '@/app-build'
 // side-panel launch query parameters before child route effects can redirect
 // `/` to `/projects`. A useEffect import is too late under the App Router.
 import '@/agent/workspace-assistant-context'
+// Register the app-control WebMCP tools (self-automation surface). Fire-and-
+// forget: registration is idempotent and logs its own warnings if the
+// modelContext API is unavailable.
+import { registerAppTools } from '@/webmcp/app-tools/register'
 
 // The whole app is browser-only (OPFS, web workers, monaco-editor...). Load it
 // via dynamic(ssr:false) so the server/prerender pass never evaluates the
@@ -37,6 +41,8 @@ export default function AppGroupLayout({ children }: { children: React.ReactNode
     setMounted(true)
     document.documentElement.dataset.creatorweave = 'true'
     if (IS_DEVELOPMENT) void import('react-grab')
+
+    void registerAppTools()
 
     registerServiceWorker({
       buildId: APP_BUILD_ID,
