@@ -8,6 +8,9 @@
 [![React](https://img.shields.io/badge/React-18%2B-blue.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5%2B-blue.svg)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Chrome 应用商店](https://img.shields.io/chrome-web-store/v/canpcddlognjbengiodekfbbfnjafeml?logo=googlechrome&logoColor=white&label=Chrome%20%E5%BA%94%E7%94%A8%E5%95%86%E5%BA%97)](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml)
+[![用户数](https://img.shields.io/chrome-web-store/users/canpcddlognjbengiodekfbbfnjafeml?logo=googlechrome&logoColor=white&label=%E7%94%A8%E6%88%B7%E6%95%B0)](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml)
+[![Edge 加载项](https://img.shields.io/badge/Edge%20%E5%8A%A0%E8%BD%BD%E9%A1%B9-v1.1.6-0C7BBB?logo=microsoftedge&logoColor=white)](https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm)
 
 [English](./README.md) | 简体中文
 
@@ -37,6 +40,18 @@ EO2Weave 是一款 **本地优先的 AI 原生创作平台**。它将本地文�
 - **WebMCP 支持**：任何网站都能通过标准 WebMCP API 把能力暴露成 agent 可调用的工具，配套浏览器扩展自动发现与授权
 - **无后端、不收集**：文件、对话、配置全部存于浏览器本地（OPFS）；AI 请求由浏览器直连你配置的模型服务商（BYOK），不经手我们的服务器
 - **数据与可视化**：支持表格、图表、导出等数据分析流程
+
+## 浏览器扩展
+
+EO2Weave 扩展把 AI 助手装进浏览器侧边栏：感知当前页面内容、联网搜索与网页阅读、按 WebMCP 标准自动发现网站工具。同时通过 OAuth 桥接你的 ChatGPT / Codex 订阅，无需配置 API Key 即可调用 GPT 系列模型。
+
+| 渠道 | 安装方式 |
+|------|----------|
+| Chrome / Chromium | [从 Chrome 应用商店安装](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml) |
+| Edge | [从 Edge 加载项安装](https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm) |
+| 手动安装（任意 Chromium 浏览器） | EO2Weave →「设置 → 浏览器扩展」下载安装包，按页面内向导加载 |
+
+凭证不出本机：OAuth 令牌保存在扩展本地存储中，请求由浏览器直连服务商，EO2Weave 服务器不经手。
 
 ## 快速开始
 

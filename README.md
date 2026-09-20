@@ -8,6 +8,9 @@
 [![React](https://img.shields.io/badge/React-18%2B-blue.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5%2B-blue.svg)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/canpcddlognjbengiodekfbbfnjafeml?logo=googlechrome&logoColor=white&label=Chrome%20Web%20Store)](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml)
+[![Users](https://img.shields.io/chrome-web-store/users/canpcddlognjbengiodekfbbfnjafeml?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml)
+[![Edge Add-ons](https://img.shields.io/badge/Edge%20Add%C2%AD-ons-v1.1.6-0C7BBB?logo=microsoftedge&logoColor=white)](https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm)
 
 English | [简体中文](./README.zh.md)
 
@@ -101,6 +104,18 @@ The project is also exploring multi-agent collaboration workflows for content cr
 | `Ctrl/Cmd + 1/2/3` | Switch resource tabs |
 | `Shift + ?` | Show keyboard shortcuts |
 | `Escape` | Close panels/dialogs |
+
+## Browser Extension
+
+The EO2Weave extension puts an AI assistant in your browser sidebar — page-aware Q&A, web search & reading, and WebMCP tool discovery. It also bridges your ChatGPT / Codex subscription via OAuth, so you can call GPT models without managing API keys.
+
+| Store | Install |
+|-------|---------|
+| Chrome / Chromium | [Install from Chrome Web Store](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml) |
+| Edge | [Install from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm) |
+| Manual (any Chromium browser) | EO2Weave → **Settings → Browser Extension** to download the package and follow the in-app guide |
+
+Credentials stay on your device: OAuth tokens are stored in the extension's local storage and requests go directly from your browser to the provider — EO2Weave servers never see them.
 
 ## Getting Started
 
