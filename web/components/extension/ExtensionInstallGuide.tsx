@@ -51,7 +51,8 @@ import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID } from '@/app-build'
 import {
-  CHROME_WEB_STORE_URL,
+  getPreferredStoreUrl,
+  isEdgeBrowser,
   isMobileDeviceForExtension,
   type GuideMethod,
 } from '@/lib/extension-distribution'
@@ -174,8 +175,8 @@ function StepIntro({ onPick }: { onPick: (m: GuideMethod) => void }) {
         <p className="text-xs font-medium text-tertiary">{t('extension.methodChoose')}</p>
         <MethodCard
           icon={<Store className="h-4 w-4" />}
-          title={t('extension.methodStoreTitle')}
-          desc={t('extension.methodStoreDesc')}
+          title={isEdgeBrowser() ? t('extension.methodEdgeStoreTitle') : t('extension.methodStoreTitle')}
+          desc={isEdgeBrowser() ? t('extension.methodEdgeStoreDesc') : t('extension.methodStoreDesc')}
           badge={t('extension.methodStoreBadge')}
           recommended
           onClick={() => onPick('store')}
@@ -222,23 +223,23 @@ function StepStoreOpen() {
       </p>
 
       <a
-        href={CHROME_WEB_STORE_URL}
+        href={getPreferredStoreUrl()}
         target="_blank"
         rel="noreferrer"
         className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 dark:bg-primary-500 dark:hover:bg-primary-600"
       >
         <ExternalLink className="h-4 w-4" />
-        {t('extension.storeOpenButton')}
+        {isEdgeBrowser() ? t('extension.edgeStoreOpenButton') : t('extension.storeOpenButton')}
       </a>
 
       <p className="text-center text-xs text-tertiary">
-        {CHROME_WEB_STORE_URL}
+        {getPreferredStoreUrl()}
       </p>
 
       <div className="flex items-start gap-2 rounded-xl border border-border bg-tertiary px-3 py-2.5">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary-600 dark:text-primary-400" />
         <p className="text-xs text-secondary">
-          {t('extension.storeOpenHint')}
+          {isEdgeBrowser() ? t('extension.edgeStoreOpenHint') : t('extension.storeOpenHint')}
         </p>
       </div>
 
@@ -266,7 +267,7 @@ function StepStoreInstall() {
       </div>
 
       <h3 className="text-center text-sm font-medium text-secondary">
-        {t('extension.storeInstallDesc')}
+        {isEdgeBrowser() ? t('extension.edgeStoreInstallDesc') : t('extension.storeInstallDesc')}
       </h3>
 
       {/* Step A — click "Add to Chrome" */}
@@ -276,11 +277,11 @@ function StepStoreInstall() {
             A
           </span>
           <span className="text-sm font-medium text-secondary">
-            {t('extension.storeInstallStepA')}
+            {isEdgeBrowser() ? t('extension.edgeStoreInstallStepA') : t('extension.storeInstallStepA')}
           </span>
         </div>
         <div className="ml-7 text-xs text-tertiary">
-          {t('extension.storeInstallStepADesc')}
+          {isEdgeBrowser() ? t('extension.edgeStoreInstallStepADesc') : t('extension.storeInstallStepADesc')}
         </div>
       </div>
 
@@ -291,11 +292,11 @@ function StepStoreInstall() {
             B
           </span>
           <span className="text-sm font-medium text-secondary">
-            {t('extension.storeInstallStepB')}
+            {isEdgeBrowser() ? t('extension.edgeStoreInstallStepB') : t('extension.storeInstallStepB')}
           </span>
         </div>
         <div className="ml-7 text-xs text-tertiary">
-          {t('extension.storeInstallStepBDesc')}
+          {isEdgeBrowser() ? t('extension.edgeStoreInstallStepBDesc') : t('extension.storeInstallStepBDesc')}
         </div>
       </div>
 
@@ -670,8 +671,8 @@ export function ExtensionInstallGuide({ open, onOpenChange }: ExtensionInstallGu
       : storeFlow
         ? [
             t('extension.stepIntro'),
-            t('extension.stepStoreOpen'),
-            t('extension.stepStoreInstall'),
+            isEdgeBrowser() ? t('extension.edgeStepStoreOpen') : t('extension.stepStoreOpen'),
+            isEdgeBrowser() ? t('extension.edgeStepStoreInstall') : t('extension.stepStoreInstall'),
             t('extension.stepRefresh'),
           ]
         : [

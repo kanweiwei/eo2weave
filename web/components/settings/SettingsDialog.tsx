@@ -62,7 +62,11 @@ import { useSettingsStore } from '@/store/settings.store'
 import { useTheme, type ThemeMode } from '@/store/theme.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, APP_VERSION, EXTENSION_LATEST_VERSION } from '@/app-build'
-import { CHROME_WEB_STORE_URL, isMobileDeviceForExtension } from '@/lib/extension-distribution'
+import {
+  getPreferredStoreUrl,
+  isEdgeBrowser,
+  isMobileDeviceForExtension,
+} from '@/lib/extension-distribution'
 import { useWebContainerStore } from '@/store/webcontainer.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import {
@@ -431,18 +435,19 @@ function ExtensionSettingsPanel() {
         </div>
       </div>
 
-      {/* Install from Chrome Web Store — one-click install + auto-updates.
-          Always visible: the store serves every Chromium browser and users
-          without store access can fall back to the zip button below.
-          Hidden on mobile, where extensions cannot be installed at all. */}
+      {/* Install from the browser's native store — one-click install +
+          auto-updates. On Edge this opens the Edge Add-ons listing, on every
+          other Chromium browser the Chrome Web Store. Users without store
+          access can fall back to the zip button below. Hidden on mobile,
+          where extensions cannot be installed at all. */}
       {!isMobileDevice && (
         <BrandButton
           variant="primary"
           className="w-full"
-          onClick={() => window.open(CHROME_WEB_STORE_URL, '_blank')}
+          onClick={() => window.open(getPreferredStoreUrl(), '_blank')}
         >
           <Store className="mr-2 h-4 w-4" />
-          {t('extension.settingsStoreButton')}
+          {isEdgeBrowser() ? t('extension.settingsEdgeStoreButton') : t('extension.settingsStoreButton')}
         </BrandButton>
       )}
 

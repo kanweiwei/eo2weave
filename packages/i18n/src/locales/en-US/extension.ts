@@ -20,6 +20,8 @@ export const extension = {
   methodStoreTitle: "Install from Chrome Web Store",
   methodStoreDesc: "One-click install with automatic updates. Requires access to chromewebstore.google.com.",
   methodStoreBadge: "Auto-updates",
+  methodEdgeStoreTitle: "Install from Edge Add-ons",
+  methodEdgeStoreDesc: "One-click install with automatic updates. The Edge-native store, directly accessible from mainland-China networks.",
   methodZipTitle: "Manual install (download package)",
   methodZipDesc: "Download the extension package and load it manually. Works even if the store is unreachable.",
   methodZipBadge: "Works offline from store",
@@ -41,6 +43,18 @@ export const extension = {
   storeInstallStepB: "Confirm by clicking “Add extension” in the browser dialog",
   storeInstallStepBDesc: "No developer mode needed — the extension installs and updates automatically",
   storeInstallHint: "Once installed, “EO2Weave” appears in your extensions list",
+
+  // Edge Add-ons flow (Edge browser users)
+  edgeStepStoreOpen: "Open Edge Add-ons",
+  edgeStepStoreInstall: "Get",
+  edgeStoreOpenDesc: "The extension is published on Edge Add-ons — installing takes one click and updates are automatic.",
+  edgeStoreOpenButton: "Open Edge Add-ons",
+  edgeStoreOpenHint: "The store page opens in a new tab. Click “Get” there, then come back and click Next.",
+  edgeStoreInstallDesc: "Complete the installation on the Edge Add-ons page",
+  edgeStoreInstallStepA: "Click “Get” on the store page",
+  edgeStoreInstallStepADesc: "The button is in the top-right corner of the store listing",
+  edgeStoreInstallStepB: "Confirm adding the extension in the browser dialog",
+  edgeStoreInstallStepBDesc: "No developer mode needed — the extension installs and updates automatically",
 
   // Steps
   stepIntro: "Introduction",
@@ -119,6 +133,7 @@ export const extension = {
   settingsNotInstalled: "Not Installed",
   settingsInstallButton: "Install Extension",
   settingsStoreButton: "Install from Chrome Web Store",
+  settingsEdgeStoreButton: "Install from Edge Add-ons",
   settingsVersion: "Version",
   settingsDescription: "The browser extension provides web search and content reading capabilities for the AI assistant",
   settingsCapabilities: "Extension Capabilities",
@@ -134,6 +149,7 @@ export const extension = {
   outdatedBannerTitle: "Extension Update Available",
   outdatedBannerDescription: "Your extension (v{current}) is outdated. Latest: v{latest}",
   outdatedBannerStoreAction: "Update from Store",
+  storeButtonEdgeTitle: "Opens the Edge Add-ons listing",
   outdatedBannerZipAction: "Download Package",
 
   // Newer-than-web banner

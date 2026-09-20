@@ -20,6 +20,8 @@ export const extension = {
   methodStoreTitle: "从 Chrome 应用商店安装",
   methodStoreDesc: "一键安装，自动更新。需要能访问 chromewebstore.google.com。",
   methodStoreBadge: "自动更新",
+  methodEdgeStoreTitle: "从 Edge 加载项安装",
+  methodEdgeStoreDesc: "一键安装，自动更新。Edge 浏览器专属商店，国内网络可直接访问。",
   methodZipTitle: "手动安装（下载安装包）",
   methodZipDesc: "下载插件包后手动加载，商店无法访问时也能安装。",
   methodZipBadge: "不依赖商店",
@@ -41,6 +43,18 @@ export const extension = {
   storeInstallStepB: "在浏览器弹窗中点击“添加扩展程序”确认",
   storeInstallStepBDesc: "无需开启开发者模式，插件会自动安装并自动更新",
   storeInstallHint: "安装成功后，扩展列表中会出现“怡氧知知”",
+
+  // Edge 加载项流程（Edge 浏览器用户）
+  edgeStepStoreOpen: "打开 Edge 加载项",
+  edgeStepStoreInstall: "获取",
+  edgeStoreOpenDesc: "插件已发布到 Edge 加载项商店，一键安装，自动更新。",
+  edgeStoreOpenButton: "打开 Edge 加载项",
+  edgeStoreOpenHint: "商店页面会在新标签页打开，点击“获取”，然后回到本页点击“下一步”。",
+  edgeStoreInstallDesc: "在 Edge 加载项页面完成安装",
+  edgeStoreInstallStepA: "在商店页面点击“获取”",
+  edgeStoreInstallStepADesc: "按钮位于商店页面右上角",
+  edgeStoreInstallStepB: "在浏览器弹窗中确认添加",
+  edgeStoreInstallStepBDesc: "无需开启开发者模式，插件会自动安装并自动更新",
 
   // Steps
   stepIntro: "介绍与准备",
@@ -119,6 +133,7 @@ export const extension = {
   settingsNotInstalled: "未安装",
   settingsInstallButton: "安装插件",
   settingsStoreButton: "从 Chrome 应用商店安装",
+  settingsEdgeStoreButton: "从 Edge 加载项安装",
   settingsVersion: "版本",
   settingsDescription: "浏览器扩展为 AI 助手提供网页搜索和内容读取能力",
   settingsCapabilities: "插件能力",
@@ -134,6 +149,7 @@ export const extension = {
   outdatedBannerTitle: "插件有新版本",
   outdatedBannerDescription: "你的插件版本 (v{current}) 已过期，最新版本为 v{latest}",
   outdatedBannerStoreAction: "到商店更新",
+  storeButtonEdgeTitle: "将在 Edge 加载项打开",
   outdatedBannerZipAction: "下载安装包",
 
   // 插件版本高于网页端提示横幅

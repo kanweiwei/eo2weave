@@ -16,7 +16,11 @@ import { AlertTriangle, Store, Download, Sparkles, RefreshCw, X } from 'lucide-r
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, EXTENSION_LATEST_VERSION } from '@/app-build'
-import { CHROME_WEB_STORE_URL, isMobileDeviceForExtension } from '@/lib/extension-distribution'
+import {
+  getPreferredStoreUrl,
+  isEdgeBrowser,
+  isMobileDeviceForExtension,
+} from '@/lib/extension-distribution'
 
 export function ExtensionOutdatedBanner() {
   const t = useT()
@@ -61,10 +65,13 @@ export function ExtensionOutdatedBanner() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {/* Store first — one-click install + auto-updates */}
+          {/* Store first — one-click install + auto-updates. On Edge the
+              button targets the Edge Add-ons listing; the fixed label is
+              "Update from Store", with an Edge-specific title tooltip. */}
           <button
             type="button"
-            onClick={() => window.open(CHROME_WEB_STORE_URL, '_blank')}
+            onClick={() => window.open(getPreferredStoreUrl(), '_blank')}
+            title={isEdgeBrowser() ? t('extension.storeButtonEdgeTitle') : undefined}
             className="flex items-center gap-1.5 rounded-md bg-warning px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-warning-500 focus:outline-none focus:ring-2 focus:ring-warning focus:ring-offset-2"
           >
             <Store className="h-3.5 w-3.5" />

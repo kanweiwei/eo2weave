@@ -38,3 +38,28 @@ export function isMobileDeviceForExtension(): boolean {
 /** Chrome Web Store listing for EO2Weave. */
 export const CHROME_WEB_STORE_URL =
   'https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml'
+
+/** Microsoft Edge Add-ons listing for EO2Weave. */
+export const EDGE_ADDONS_URL =
+  'https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm'
+
+/**
+ * True when the current browser is Microsoft Edge (UA contains the "Edg/"
+ * token — the shortened form Edge ships on all platforms to avoid UA-sniffing
+ * collisions with the legacy "Edge" token). SSR-safe (returns false).
+ */
+export function isEdgeBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return navigator.userAgent.includes('Edg/')
+}
+
+/**
+ * The store listing that best matches the current browser:
+ * Edge users get the Edge Add-ons listing (native store, auto-updates,
+ * reachable from mainland-China networks), everyone else gets the Chrome
+ * Web Store. The zip download remains available as a universal fallback —
+ * callers should keep offering it alongside this URL.
+ */
+export function getPreferredStoreUrl(): string {
+  return isEdgeBrowser() ? EDGE_ADDONS_URL : CHROME_WEB_STORE_URL
+}
