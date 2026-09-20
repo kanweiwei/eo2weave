@@ -119,8 +119,42 @@ jobs:
       - name: List artifacts
         run: ls -la dist/
 
+      - name: Extract CHANGELOG section for this tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # CHANGELOG.md sections look like "## [1.2.3] - 2026-09-26" (generated
+          # by git-cliff in `pnpm release <version>`). Extract the section whose
+          # version matches the pushed tag and pass it as the release body.
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            const md = fs.readFileSync("CHANGELOG.md", "utf8");
+            const lines = md.split("\n");
+            const start = lines.findIndex(l => l.startsWith(`## [${version}]`));
+            if (start < 0) {
+              console.log(`No CHANGELOG section for ${version} — leaving notes to auto-generation`);
+              process.exit(0);
+            }
+            let end = lines.length;
+            for (let i = start + 1; i < lines.length; i++) {
+              if (lines[i].startsWith("## [")) { end = i; break; }
+            }
+            fs.writeFileSync("/tmp/release-notes.md", lines.slice(start, end).join("\n").trim() + "\n");
+          ' "$VERSION"
+
+          if [ -f /tmp/release-notes.md ]; then
+            echo "body_path=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
+          fi
+        id: notes
+
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           fail_on_unmatched_files: true
+          body_path: /tmp/release-notes.md
+          # When CHANGELOG has no section for the tag (e.g. manual tag without
+          # `pnpm release`), fall back to GitHub's auto-generated notes.
+          generate_release_notes: true
+          append_body: true
