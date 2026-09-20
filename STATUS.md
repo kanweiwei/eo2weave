@@ -14,7 +14,7 @@
 | Authorization UI (Cable badge, scope management) | ✅ Shipped |
 | Command execution (`exec_sync` + `ExecAuthModal` + `ExecPolicy`) | ✅ Shipped |
 | Background processes (`exec_start` / `logs` / `status` / `stop`) + pre-exec auto-flush | ✅ Shipped |
-| Installers: macOS zip (per-user), macOS pkg (system), Windows 7z SFX (per-user) | ✅ Shipped |
+| Installers: macOS zip (per-user), macOS pkg (system), Windows via install.ps1 (per-user) | ✅ Shipped |
 | Next.js App Router migration | ✅ Shipped (2026-08-26) |
 | Agent Bridge (MCP) for external CLIs | ✅ Shipped (2026-08-21) |
 | Conversation sharing (ticket #480096) | 🔵 Tracking — see §3 |
@@ -39,7 +39,7 @@
 
 ### Blocked on real hardware
 - [ ] **Windows 真机 e2e** — pick_folder → 读写 → exec → exec_start/stop on an
-      actual Windows machine. Code and 7z SFX installer are done; cross-compiled
+      actual Windows machine. Code and install.ps1 flow are done; cross-compiled
       exe builds clean. Just need a real host.
 - [ ] **CI: add Windows target** to the build matrix (`x86_64-pc-windows-gnu`
       or `-msvc`). Protect today's green Windows compile from regressing.

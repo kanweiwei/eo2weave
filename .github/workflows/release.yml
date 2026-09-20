@@ -1,0 +1,126 @@
+name: Release
+
+# Build browser-extension zip and native-host binaries when a release tag
+# (v*) is pushed, then attach the artifacts to the GitHub Release.
+#
+# Prerelease check: run this workflow manually via workflow_dispatch —
+# artifacts are uploaded but no release is modified unless the tag exists.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extension:
+    name: Browser extension zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # reads packageManager from package.json (pnpm@10.21.0)
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pack self-distribution zip (Codex OAuth kept, stable ID)
+        run: pnpm --filter browser-extension pack:release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser-extension
+          path: browser-extension/dist/eo2weave-chrome-v*.zip
+          if-no-files-found: error
+
+  native-host-macos:
+    name: Native host (macOS universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: browser-extension/native-host
+
+      - name: Build universal binary + distribution zip
+        working-directory: browser-extension/native-host
+        run: ./installer/build-dist-mac.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-host-macos
+          path: browser-extension/native-host/installer/EO2Weave-NativeHost-*-macos.zip
+          if-no-files-found: error
+
+  native-host-windows:
+    name: Native host (Windows x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: browser-extension/native-host
+
+      - name: Install mingw-w64 cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build release binary
+        working-directory: browser-extension/native-host
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Collect Windows package (exe + installers)
+        working-directory: browser-extension/native-host
+        run: |
+          mkdir -p pkg/cw-native-host-windows
+          cp target/x86_64-pc-windows-gnu/release/cw-native-host.exe pkg/cw-native-host-windows/
+          cp install.ps1 uninstall.ps1 pkg/cw-native-host-windows/
+          cd pkg
+          zip -r ../cw-native-host-windows-${GITHUB_REF_NAME#v}.zip cw-native-host-windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-host-windows
+          path: browser-extension/native-host/cw-native-host-windows-*.zip
+          if-no-files-found: error
+
+  attach-release:
+    name: Attach artifacts to GitHub Release
+    needs: [extension, native-host-macos, native-host-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

@@ -25,22 +25,6 @@ This creates the Chrome NM manifest at:
 
 ## Install (Windows)
 
-### Option 1: Installer (recommended for end users)
-
-Build a single-file setup exe (works on any host OS — needs `cargo`, `7z`, `curl`):
-
-```bash
-./installer/build-installer.sh
-```
-
-Output: `installer/EO2Weave-Host-Setup-<ver>.exe` (~460 KB). Double-click on
-Windows → consent prompt → copies the host to
-`%LOCALAPPDATA%\EO2Weave\NativeMessagingHosts\`, registers the Chrome NM
-manifest (HKCU, no admin), registers Edge too, and adds an Add/Remove-Programs
-uninstall entry. Fully restart Chrome afterwards.
-
-### Option 2: Manual (PowerShell)
-
 Build the Windows binary (natively on Windows with the MSVC toolchain, or
 cross-compile from another OS), then run the PowerShell installer:
 

@@ -266,7 +266,7 @@ codex mcp add eo2weave-webmcp -- "$HOME/Library/Application Support/EO2Weave Nat
 claude mcp add eo2weave-webmcp -- "$HOME/Library/Application Support/EO2Weave NativeHost/NativeMessagingHosts/cw-native-host" --mcp-stdio
 ```
 
-Tool names follow the provider-safe `host__tool` convention; the per-host/per-group authorization switches apply to external agents exactly as they do in-app (disabled sites simply don't exist in `tools/list`). Bridge state file: `~/.eo2weave/webmcp-bridge.json` (port + pid). Build the distribution zip with `native-host/installer/build-dist-mac.sh` (Windows: `build-installer.sh` SFX).
+Tool names follow the provider-safe `host__tool` convention; the per-host/per-group authorization switches apply to external agents exactly as they do in-app (disabled sites simply don't exist in `tools/list`). Bridge state file: `~/.eo2weave/webmcp-bridge.json` (port + pid). Build the distribution zip with `native-host/installer/build-dist-mac.sh` (Windows: `cargo build --release` + `install.ps1`).
 
 ## Codex OAuth Proxy (Open-Source Community Version)
 
