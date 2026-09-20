@@ -71,7 +71,8 @@ type StoreGet = () => {
     modelName: string,
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
-    agentOverrideId?: string | null
+    agentOverrideId?: string | null,
+    options?: { background?: boolean }
   ): Promise<void>
   generateTitle(
     id: string,
@@ -112,9 +113,13 @@ export async function runAgentImpl(
       modelName: string,
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
-      agentOverrideId?: string | null
+      agentOverrideId?: string | null,
+      options?: { background?: boolean }
 ): Promise<void> {
   const { handleSubagentStepNotification } = store
+  // Background runs (external agents driving EO2Weave) must NOT steal the
+  // user's active workspace — they only ensure the workspace exists.
+  const background = options?.background === true
 
       const state = get()
       const conv = state.conversations.find((c) => c.id === conversationId)
@@ -136,11 +141,28 @@ export async function runAgentImpl(
       }
 
       try {
-        // Ensure workspace exists and is active before the agent starts.
-        // This avoids write/edit/delete tools failing with "No active workspace"
-        // on first-turn chats where workspace creation/switch is still in-flight.
+        // Ensure the workspace exists before the agent starts. This avoids
+        // write/edit/delete tools failing with "No active workspace" on
+        // first-turn chats where workspace creation/switch is still in-flight.
+        //
+        // Foreground (UI-initiated) runs activate the workspace, which switches
+        // the whole UI. Background runs (external agents via WebMCP) must NOT
+        // steal the user's view — they only ensure the workspace OPFS/SQLite
+        // records exist, then drive the loop against the per-conversation
+        // runtime. Tool routing is unaffected either way: ToolContext carries
+        // the conversationId as its workspaceId explicitly.
         const workspaceStore = useConversationContextStore.getState()
-        if (workspaceStore.activeWorkspaceId !== conversationId) {
+        if (background) {
+          // Ensure the workspace record/OPFS dirs exist without switching.
+          const manager = await (async () => {
+            const m = await import('@/opfs')
+            return m.getWorkspaceManager()
+          })()
+          const existing = manager.getWorkspaceByRoot(`workspaces/${conversationId}`)
+          if (!existing || existing.workspaceId !== conversationId) {
+            await manager.getOrCreateWorkspace(`workspaces/${conversationId}`)
+          }
+        } else if (workspaceStore.activeWorkspaceId !== conversationId) {
           await workspaceStore.switchWorkspace(conversationId)
         }
 

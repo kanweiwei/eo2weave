@@ -429,7 +429,7 @@ export const handlers: Record<string, Handler> = {
     // status='error' instead of throwing), so `.then` inspects the terminal
     // conversation status to map failure correctly.
     void store
-      .runAgent(conversationId, settings.providerType, settings.modelName, settings.maxTokens, directoryHandle)
+      .runAgent(conversationId, settings.providerType, settings.modelName, settings.maxTokens, directoryHandle, null, { background: true })
       .then(() => {
         finalizeFromStore(store, rec)
       })
