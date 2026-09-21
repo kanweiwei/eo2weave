@@ -1,5 +1,5 @@
 /**
- * App-tools handlers — the execute() implementations behind the 19 schemas.
+ * App-tools handlers — the execute() implementations behind the 20 schemas.
  *
  * Every handler goes through the app's OWN public surfaces (zustand stores,
  * repositories, WorkspaceManager, WorkspaceRuntime) — the same code paths the
@@ -36,6 +36,8 @@ export interface AppRunRecord {
     | 'cancelled'
   startedAt: number
   finishedAt?: number
+  /** First N chars of the sent message — queue-entry identity check on cancel. */
+  messageText?: string
   /** Set when the run finishes; scoped to THIS run (messages after startedAt). */
   result?: {
     summary: string
@@ -58,11 +60,15 @@ export function newRunId(): string {
 function recordRun(rec: AppRunRecord): void {
   runRegistry.set(rec.runId, rec)
   if (runRegistry.size > RUN_REGISTRY_MAX) {
-    // Evict the oldest entry (finished first if any); bounded memory beats
-    // unbounded growth — the conversation keeps the authoritative history.
+    // Evict the oldest TERMINATED entry; bounded memory beats unbounded
+    // growth — the conversation keeps the authoritative history. Non-terminal
+    // records (queued/running/started) are never evicted: losing a live runId
+    // would blind the agent to an active run.
+    const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'timeout'])
     let oldestKey: string | null = null
     let oldestTime = Infinity
     for (const [id, r] of runRegistry) {
+      if (!TERMINAL.has(r.status)) continue
       const t = r.finishedAt ?? r.startedAt
       if (t < oldestTime) {
         oldestTime = t
@@ -107,7 +113,7 @@ function d(): AppToolDeps {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const POLL_INTERVAL_MS = 500
-const HARD_WAIT_CAP_MS = 300_000
+const WAIT_CAP_MS = 55_000 // under the extension relay’s 60s invoke timeout (M-2)
 const MAX_MESSAGE_CHARS = 32 * 1024
 const MAX_SEND_CHARS = 256 * 1024
 const LIST_FILES_LIMIT = 500
@@ -140,7 +146,26 @@ function findConv(store: any, conversationId: string): any | null {
 function summaryForRun(store: any, rec: AppRunRecord): string {
   const conv = findConv(store, rec.conversationId)
   const msgs: Message[] = conv?.messages ?? []
+  // m-6: prefer message-ORDER scoping. The run's user message is the last user
+  // message in the array; everything before it belongs to earlier runs. This is
+  // immune to clock skew (timestamps only serve as a sanity check).
+  let lastUserIdx = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') {
+      lastUserIdx = i
+      break
+    }
+  }
   let scoped = ''
+  for (let i = msgs.length - 1; i > lastUserIdx; i--) {
+    const m = msgs[i]
+    if (m.role === 'assistant' && typeof m.content === 'string' && m.content) {
+      scoped = m.content
+      break
+    }
+  }
+  if (scoped) return scoped
+  // Clock-skew fallback: the timestamp window (unchanged semantics).
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if ((m.timestamp ?? 0) < rec.startedAt - 1000) break
@@ -221,7 +246,7 @@ function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
 
 /** Wait until the runAgent promise resolution flips rec into a terminal state. */
 async function waitForRun(rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
-  const deadline = Date.now() + Math.min(Math.max(timeoutMs, 1000), HARD_WAIT_CAP_MS)
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await d().wait(POLL_INTERVAL_MS)
     if (['completed', 'failed', 'cancelled', 'timeout'].includes(rec.status)) {
@@ -294,10 +319,12 @@ export const handlers: Record<string, Handler> = {
   // ── Conversations ──
   list_conversations: async (args) => {
     const store = d().getConversationStore()
+    // loadFromDB is triggered after workspace readiness — before that the list
+    // is legitimately empty, which agents would misread as "no conversations".
+    if (!store.loaded) return ok({ loading: true, conversations: [], hasMore: false })
     const limit = Math.min(Math.max(1, Number(args.limit ?? 20)), 100)
     const offset = Math.max(0, Number(args.offset ?? 0))
     let list: any[] = store.conversations ?? []
-    if (args.projectId) list = list.filter((c: any) => c.projectId === args.projectId)
     if (args.folderId) {
       // folderId = "projectId:rootName" (from list_mounted_folders). Each
       // conversation maps 1:1 to a workspace whose id IS the conversation id;
@@ -319,7 +346,6 @@ export const handlers: Record<string, Handler> = {
       conversations: page.map((c: any) => ({
         id: c.id,
         title: c.title,
-        projectId: c.projectId ?? null,
         status: c.status ?? 'idle',
         updatedAt: c.updatedAt ?? null,
       })),
@@ -344,10 +370,25 @@ export const handlers: Record<string, Handler> = {
 
   create_conversation: async (args) => {
     const store = d().getConversationStore()
-    const conv = store.createNew(args.title ? String(args.title) : undefined)
+    const conv = store.createNew(args.title ? String(args.title) : undefined, {
+      activate: false, // background creation — never yank the user's current view
+    })
     // v3.1: projectId is not persisted on conversations (schema has no column);
     // the parameter was removed from the schema so agents don't expect it.
     return ok({ conversation: { id: conv.id, title: conv.title } })
+  },
+
+  rename_conversation: async (args) => {
+    const conversationId = String(args.conversationId ?? '')
+    const title = String(args.title ?? '').trim()
+    if (!conversationId) return err('conversationId is required')
+    if (!title) return err('title is required')
+    if (title.length > 200) return err('title must be at most 200 characters')
+    const store = d().getConversationStore()
+    const conv = store.conversations?.find((c: any) => c.id === conversationId)
+    if (!conv) return err(`Conversation not found: ${conversationId}`)
+    store.updateTitle(conversationId, title)
+    return ok({ conversationId, title })
   },
 
   get_messages: async (args) => {
@@ -381,7 +422,7 @@ export const handlers: Record<string, Handler> = {
     const conversationId = String(args.conversationId ?? '')
     const content = String(args.content ?? '')
     const wait = Boolean(args.wait ?? false)
-    const timeoutMs = Math.min(Math.max(Number(args.timeoutMs ?? 120_000), 1000), HARD_WAIT_CAP_MS)
+    const timeoutMs = Math.min(Math.max(Number(args.timeoutMs ?? 50_000), 1000), WAIT_CAP_MS)
     if (!conversationId) return err('conversationId is required')
     if (!content.trim()) return err('content is required')
     if (content.length > MAX_SEND_CHARS) {
@@ -403,20 +444,40 @@ export const handlers: Record<string, Handler> = {
     const directoryHandle = agentStore?.directoryHandle ?? null
 
     const runId = newRunId()
-    const rec: AppRunRecord = { runId, conversationId, status: 'started', startedAt: Date.now() }
+    const rec: AppRunRecord = {
+      runId,
+      conversationId,
+      status: 'started',
+      startedAt: Date.now(),
+      messageText: content.slice(0, 200),
+    }
 
     // Busy → queue. The queue position is remembered so cancel_run removes
     // exactly this entry instead of killing the conversation's active run.
     if (store.isConversationRunning(conversationId)) {
       // enqueueMessage lives on the RUNTIME store (the conversation store never
       // implemented it) — same call the UI send path uses when busy.
+      // background:true makes the eventual dequeue-run stay in the background
+      // (no UI workspace steal). The queue itself is in-memory: the message is
+      // ALSO persisted below so a refresh cannot silently lose it.
       const runtimeStore = d().getRuntimeStore()
-      const result = runtimeStore.enqueueMessage(conversationId, { text: content })
+      const result = runtimeStore.enqueueMessage(conversationId, { text: content, background: true })
       if (!result?.enqueued) {
         return err('Conversation is running and its queue is full')
       }
       rec.status = 'queued'
       ;(rec as any).queuePosition = result.position
+      // Persist durably: on refresh the queue is lost but the message survives
+      // in SQLite and shows up in the conversation history (no silent loss).
+      try {
+        const msgRepo = d().getMessageRepository()
+        const userMsg = createUserMessage(content)
+        const seq = (conv.messages?.length ?? 0) + 1
+        await msgRepo.insert(conversationId, userMsg, seq)
+        store.updateMessages(conversationId, [...(conv.messages ?? []), userMsg])
+      } catch (e) {
+        console.warn('[app-tools] queued message persist failed:', e)
+      }
       recordRun(rec)
       return ok({ runId, status: 'queued', queuePosition: result.position })
     }
@@ -464,12 +525,26 @@ export const handlers: Record<string, Handler> = {
     // NEVER treat it as finished (C1). 'queued' → 'running' when the loop starts
     // consuming the queue.
     if (rec.status === 'queued' && running) {
-      rec.status = 'running'
+      // Ambiguous: the loop may be running THIS message (after dequeue) or a
+      // PREVIOUS one. Disambiguate by checking whether our message is still in
+      // the queue: still present → still queued; gone → it was dequeued and is
+      // the run now executing.
+      const runtimeStore = d().getRuntimeStore()
+      const pos = (rec as any).queuePosition
+      const stillQueued =
+        typeof pos === 'number' && runtimeStore?.getQueuedMessage?.(rec.conversationId, pos - 1)
+      if (!stillQueued) rec.status = 'running'
+    }
+    if (rec.status === 'queued' && !running) {
+      // Conversation went idle while queued: the in-memory queue is gone but the
+      // message was durably persisted (queued path writes to SQLite), so it is
+      // NOT lost — it is part of the history. Finalize with the scoped summary
+      // instead of leaving the run stuck at "queued" forever (C-1).
+      finalizeFromStore(store, rec)
     }
     if (
       !running &&
       rec.status !== 'started' &&
-      rec.status !== 'queued' &&
       !['completed', 'failed', 'cancelled', 'timeout'].includes(rec.status)
     ) {
       finalizeFromStore(store, rec)
@@ -487,6 +562,17 @@ export const handlers: Record<string, Handler> = {
     if (!rec) return err(`Unknown runId: ${args.runId}`)
     const store = d().getConversationStore()
     const running = store.isConversationRunning(rec.conversationId)
+    // m-7: a queued rec whose message is still parked must NOT be reported as
+    // running (the active run belongs to a previous message; elapsedMs would
+    // silently count from enqueue time).
+    if (rec.status === 'queued') {
+      const pos = (rec as any).queuePosition
+      const entry =
+        typeof pos === 'number' ? d().getRuntimeStore()?.getQueuedMessage?.(rec.conversationId, pos - 1) : null
+      if (entry) {
+        return ok({ status: 'queued', queuePosition: pos, elapsedMs: Date.now() - rec.startedAt })
+      }
+    }
     if (!running) {
       return ok({ status: rec.status, elapsedMs: (rec.finishedAt ?? Date.now()) - rec.startedAt })
     }
@@ -524,13 +610,21 @@ export const handlers: Record<string, Handler> = {
       // enqueueMessage returns a 1-based position (array length after push);
       // removeQueuedMessage takes a 0-based index.
       const pos = (rec as any).queuePosition
+      const runtimeStore = d().getRuntimeStore()
+      let removed = false
       if (typeof pos === 'number' && pos >= 1) {
-        const runtimeStore = d().getRuntimeStore()
-        runtimeStore?.removeQueuedMessage?.(rec.conversationId, pos - 1)
+        const idx = pos - 1
+        const entry = runtimeStore?.getQueuedMessage?.(rec.conversationId, idx)
+        // Indices drift when the user reorders/deletes other queued messages —
+        // only remove when the entry still matches this run's message (m-5).
+        if (!entry || entry.text === rec.messageText) {
+          runtimeStore?.removeQueuedMessage?.(rec.conversationId, idx)
+          removed = true
+        }
       }
       rec.status = 'cancelled'
       rec.finishedAt = Date.now()
-      return ok({ cancelled: true, removedFromQueue: true })
+      return ok({ cancelled: true, removedFromQueue: removed })
     }
     if (rec.status !== 'running' && rec.status !== 'started') {
       return err(`Run ${rec.runId} already finished (${rec.status})`)
@@ -605,7 +699,15 @@ export const handlers: Record<string, Handler> = {
     const prefix = path ? `${path.replace(/\/+$/, '')}/` : ''
     const depthLimit = prefix ? depth + 1 : depth
     const files = [...scan.values()]
-      .filter((f) => (prefix ? f.path.startsWith(prefix) : f.path.split('/').length <= depthLimit))
+      .filter((f) => {
+        if (prefix) {
+          // m-1: depth applies within the prefix too (relative segment count).
+          const rel = f.path.slice(prefix.length)
+          if (!rel) return false
+          return rel.split('/').length <= depthLimit
+        }
+        return f.path.split('/').length <= depthLimit
+      })
       .map((f) => ({ path: f.path, type: 'file' as const, size: f.size }))
       .sort((a, b) => a.path.localeCompare(b.path))
       .slice(0, LIST_FILES_LIMIT)

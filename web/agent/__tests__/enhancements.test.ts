@@ -58,6 +58,40 @@ function makeInput(overrides: Partial<Parameters<typeof buildRuntimeEnhancedProm
   }
 }
 
+describe('buildRuntimeEnhancedPrompt — self-context block', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    enhanceSystemPromptMock.mockImplementation(async (prompt: string) => ({
+      systemPrompt: prompt,
+      recommendedTools: [],
+      agentInfo: null,
+      todayLog: null,
+    }))
+  })
+
+  it('injects conversationId and projectId when available', async () => {
+    const prompt = await buildRuntimeEnhancedPrompt(
+      makeInput({ toolContext: { workspaceId: 'conv_123', projectId: 'proj_9' } as ToolContext }),
+    )
+    expect(prompt).toContain('## This Conversation')
+    expect(prompt).toContain('conversationId: conv_123')
+    expect(prompt).toContain('projectId: proj_9')
+  })
+
+  it('omits projectId line when absent', async () => {
+    const prompt = await buildRuntimeEnhancedPrompt(
+      makeInput({ toolContext: { workspaceId: 'conv_123' } as ToolContext }),
+    )
+    expect(prompt).toContain('conversationId: conv_123')
+    expect(prompt).not.toContain('projectId:')
+  })
+
+  it('injects nothing when no workspaceId', async () => {
+    const prompt = await buildRuntimeEnhancedPrompt(makeInput())
+    expect(prompt).not.toContain('## This Conversation')
+  })
+})
+
 describe('buildRuntimeEnhancedPrompt — Project Instructions beacon', () => {
   beforeEach(() => {
     vi.clearAllMocks()

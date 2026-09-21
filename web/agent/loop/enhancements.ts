@@ -216,6 +216,30 @@ export async function buildRuntimeEnhancedPrompt(input: InjectEnhancementsInput)
     enhancedPrompt += '\n\n# 今日日志\n\n' + todayLog.trim()
   }
 
+  // ⑧.7: Self-context — this conversation's own ids, so the agent can target
+  // WebMCP app-tools (rename_conversation, list_conversations by project,
+  // send_message follow-ups) at itself or query sibling conversations without
+  // guessing. Changes per conversation; lives in the DYNAMIC section.
+  const selfWorkspaceId = input.toolContext.workspaceId
+  if (selfWorkspaceId) {
+    const lines = [
+      '',
+      '',
+      '## This Conversation',
+      `conversationId: ${selfWorkspaceId}`,
+    ]
+    if (input.toolContext.projectId) {
+      lines.push(`projectId: ${input.toolContext.projectId}`)
+    }
+    lines.push(
+      'Use these ids with the EO2Weave self-control tools (rename_conversation, ' +
+        'list_conversations, search_conversations, send_message, get_messages) — ' +
+        'e.g. to rename THIS conversation or search sibling conversations in the ' +
+        'same project.',
+    )
+    enhancedPrompt += lines.join('\n')
+  }
+
   // ⑨: Current date only (day-level variability, appended at the bottom)
   const now = new Date()
   const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`

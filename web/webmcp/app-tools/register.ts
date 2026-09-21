@@ -104,6 +104,15 @@ export async function registerAppTools(): Promise<void> {
       }
     }
 
+    // The polyfill's getTools() projection drops `annotations` (upstream gap,
+    // M-4). Publish them on a well-known global so the browser extension's
+    // injected agent can merge them back into its tool snapshot. Native
+    // modelContext (Chrome 140+) forwards annotations itself; this global is
+    // then simply redundant.
+    (window as any).__eo2weaveToolAnnotations = Object.fromEntries(
+      APP_TOOLS.map((t) => [t.name, t.annotations ?? {}]),
+    )
+
     registered = true
     console.info(`[app-tools] registered ${APP_TOOLS.length} WebMCP tools on this page`)
   })()

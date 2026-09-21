@@ -53,6 +53,11 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
   }
   const conversationStore = {
     conversations,
+    loaded: true,
+    updateTitle: vi.fn((id: string, title: string) => {
+      const c = conversations.find((x: any) => x.id === id)
+      if (c) c.title = title
+    }),
     isConversationRunning: () => false,
     enqueueMessage: vi.fn(() => ({ enqueued: true })),
     updateMessages: vi.fn(),
@@ -123,6 +128,15 @@ describe('app-tools handlers', () => {
     const r = JSON.parse((await handlers.list_conversations({ folderId: 'p_1:p_1' })).content)
     expect(r.conversations.map((c: any) => c.id)).toContain('c_1')
     vi.doUnmock('@/store/folder-access.store')
+  })
+
+  it('rename_conversation validates and renames', async () => {
+    const bad = JSON.parse((await handlers.rename_conversation({ conversationId: 'c_1', title: '  ' })).content)
+    expect(bad.error).toMatch(/title is required/)
+    const missing = JSON.parse((await handlers.rename_conversation({ conversationId: 'c_x', title: 'T' })).content)
+    expect(missing.error).toMatch(/not found/)
+    const r = JSON.parse((await handlers.rename_conversation({ conversationId: 'c_1', title: '  New title  ' })).content)
+    expect(r).toMatchObject({ conversationId: 'c_1', title: 'New title' })
   })
 
   it('get_messages paginates newest-first', async () => {

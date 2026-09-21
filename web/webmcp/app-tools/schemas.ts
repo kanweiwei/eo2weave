@@ -1,5 +1,5 @@
 /**
- * App-tools schemas — the 19 WebMCP tools EO2Weave's own page registers so
+ * App-tools schemas — the 20 WebMCP tools EO2Weave's own page registers so
  * agents (in-app or external via the extension bridge) can operate the app:
  * projects, folders (mounted roots), conversations, runs, files, providers.
  *
@@ -20,6 +20,7 @@ export interface AppToolDefinition {
     readOnlyHint?: boolean
     destructiveHint?: boolean
     idempotentHint?: boolean
+    untrustedContentHint?: boolean
   }
 }
 
@@ -32,8 +33,7 @@ export const APP_TOOLS: AppToolDefinition[] = [
   {
     name: 'list_projects',
     description:
-      'List all EO2Weave projects with their folder counts and last access time. ' +
-      'Use before create_conversation to pick a valid projectId.',
+      'List all EO2Weave projects with their folder counts and last access time.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
   },
@@ -71,7 +71,6 @@ export const APP_TOOLS: AppToolDefinition[] = [
       type: 'object',
       properties: {
         folderId: str('Only conversations bound to this mounted folder id (from list_mounted_folders)'),
-        projectId: str('Only conversations in this project'),
         limit: num('Max entries to return (default 20, max 100)'),
         offset: num('Offset for paging'),
       },
@@ -89,14 +88,13 @@ export const APP_TOOLS: AppToolDefinition[] = [
       type: 'object',
       properties: {
         query: str('Keyword or phrase to search for'),
-        projectId: str('Restrict to one project'),
         updatedAfter: num('Unix epoch ms lower bound on conversation updatedAt'),
         updatedBefore: num('Unix epoch ms upper bound'),
         limit: num('Max results (default 10, max 50)'),
       },
       required: ['query'],
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, untrustedContentHint: true },
   },
   {
     name: 'create_conversation',
@@ -113,6 +111,22 @@ export const APP_TOOLS: AppToolDefinition[] = [
     },
   },
   {
+    name: 'rename_conversation',
+    description:
+      'Rename a conversation. Marks the title as manual (auto-title generation ' +
+      'will not overwrite it).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        conversationId: str('Target conversation id'),
+        title: str('New title (trimmed, 1-200 chars)'),
+      },
+      required: ['conversationId', 'title'],
+    },
+    annotations: {},
+  },
+
+  {
     name: 'get_messages',
     description:
       'Read the message history of a conversation, newest page first. ' +
@@ -127,7 +141,7 @@ export const APP_TOOLS: AppToolDefinition[] = [
       },
       required: ['conversationId'],
     },
-    annotations: { readOnlyHint: true, idempotentHint: true },
+    annotations: { readOnlyHint: true, untrustedContentHint: true, idempotentHint: true },
   },
 
   // ── Runs ──────────────────────────────────────────────────────────────────
@@ -147,8 +161,8 @@ export const APP_TOOLS: AppToolDefinition[] = [
       properties: {
         conversationId: str('Conversation to send into'),
         content: str('Message text (the task for the agent)'),
-        wait: bool('Block until the run finishes (default false)'),
-        timeoutMs: num('Max wait when wait=true (default 120000, hard cap 300000)'),
+        wait: bool('Block until the run finishes (default false). Caps at 55s — for longer tasks use wait=false and poll get_run_status.'),
+        timeoutMs: num('Max wait when wait=true (default 50000, hard cap 55000 — the extension relay times out at 60s)'),
       },
       required: ['conversationId', 'content'],
     },
@@ -206,7 +220,7 @@ export const APP_TOOLS: AppToolDefinition[] = [
       },
       required: ['conversationId', 'path'],
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, untrustedContentHint: true },
   },
   {
     name: 'write_folder_file',
