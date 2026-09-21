@@ -30,6 +30,8 @@ export interface QueuedMessage {
   assets?: AssetMeta[]
   agentOverrideId?: string | null
   enqueuedAt: number
+  /** External-agent runs stay in the background (no UI workspace switch). */
+  background?: boolean
   /** Upstream page context captured at enqueue time (side-panel mode) */
   pageContext?: Message['pageContext']
   /** Persisted multimodal content for a synthetic follow-up user message. */

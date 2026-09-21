@@ -103,8 +103,19 @@ export default defineContentScript({
 
       try {
         const tools = await api.getTools()
-        if (toolsFingerprint(tools) !== lastFingerprint) {
-          emit('snapshot', tools)
+        // The polyfill's getTools() projection drops `annotations`; the app
+        // publishes the authoritative map on a page global (register.ts).
+        // Merge it back so readOnlyHint/untrustedContentHint survive discovery.
+        const annotations = (globalThis as any).__eo2weaveToolAnnotations as
+          | Record<string, Record<string, boolean>>
+          | undefined
+        const merged = annotations
+          ? tools.map((t) =>
+              annotations[t.name] ? { ...t, annotations: { ...annotations[t.name] } } : t,
+            )
+          : tools
+        if (toolsFingerprint(merged) !== lastFingerprint) {
+          emit('snapshot', merged)
         }
       } catch {
         // transient getTools() failure — next poll retries; don't flush

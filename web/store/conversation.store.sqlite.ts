@@ -159,7 +159,7 @@ interface ConversationState {
 
   // Actions
   loadFromDB: () => Promise<void>
-  createNew: (title?: string) => Conversation
+  createNew: (title?: string, options?: { activate?: boolean }) => Conversation
   setActive: (id: string | null) => Promise<void>
   addMessage: (conversationId: string, message: Message) => void
   updateMessages: (conversationId: string, messages: Message[]) => void
@@ -585,11 +585,14 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       })
     },
 
-    createNew: (title?: string) => {
+    createNew: (title?: string, options?: { activate?: boolean }) => {
       const conversation = createConversation(title)
+      // `activate: false` lets background creators (WebMCP app-tools) add a
+      // conversation without yanking the user's current view (m-2).
+      const activate = options?.activate !== false
       set((state) => {
         state.conversations.unshift(conversation)
-        state.activeConversationId = conversation.id
+        if (activate) state.activeConversationId = conversation.id
       })
       // Persist metadata (creates the conversation row) + empty messages
       const metaPersist = persistConversationMeta(conversation)

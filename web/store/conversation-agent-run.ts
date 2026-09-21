@@ -1991,6 +1991,7 @@ export async function runAgentImpl(
                 maxTokens,
                 null,
                 nextMsg.agentOverrideId ?? null,
+                nextMsg.background ? { background: true } : undefined,
               )
             })
           }

@@ -23,6 +23,33 @@ import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
 // take a while (navigation-triggering tools, downloads, …).
 const INVOKE_RELAY_TIMEOUT_MS = 60_000
 
+// runId → tabId affinity (M-3): run-scoped tools (get_run_status /
+// get_run_progress / cancel_run) must land on the SAME tab whose page holds
+// the in-memory run registry, even with multiple tabs of the same app open.
+const RUN_TAB_AFFINITY = new Map<string, { tabId: number; at: number }>()
+const RUN_TAB_AFFINITY_MAX = 200
+function rememberRunTab(runId: unknown, tabId: number): void {
+  if (typeof runId !== 'string' || runId.length === 0) return
+  if (RUN_TAB_AFFINITY.size >= RUN_TAB_AFFINITY_MAX) {
+    // drop oldest
+    let oldest: string | null = null
+    let oldestAt = Infinity
+    for (const [k, v] of RUN_TAB_AFFINITY) {
+      if (v.at < oldestAt) {
+        oldestAt = v.at
+        oldest = k
+      }
+    }
+    if (oldest) RUN_TAB_AFFINITY.delete(oldest)
+  }
+  RUN_TAB_AFFINITY.set(runId, { tabId, at: Date.now() })
+}
+function getRunTab(runId: unknown): number | null {
+  if (typeof runId !== 'string') return null
+  const hit = RUN_TAB_AFFINITY.get(runId)
+  return hit ? hit.tabId : null
+}
+
 /**
  * Invoke via the static content-script relay (mcp-b style):
  * background → tabs.sendMessage(webmcp_invoke_in_tab) → ISOLATED relay
@@ -179,6 +206,13 @@ async function pickTargetTabId(
     (await tabMatchesGroup(request.preferredTabId, groupKey, hostname))
   ) {
     return request.preferredTabId
+  }
+
+  // Run-scoped tools stick to the tab that started the run (M-3): the run
+  // registry lives in that page's memory, other tabs return Unknown runId.
+  const runTab = getRunTab((request.args as any)?.runId)
+  if (runTab !== null && (await tabMatchesGroup(runTab, groupKey, hostname))) {
+    return runTab
   }
 
   const recentByTool = getRecentRoute(groupKey, request.fullToolName)
@@ -394,6 +428,14 @@ export async function invokeWebMCPTool(
       fullToolName: request.fullToolName,
       toolsetSignature: route.toolsetSignature,
     })
+
+    // Record run affinity so run-scoped follow-ups route back to this tab (M-3).
+    try {
+      const resultObj = JSON.parse(result.result)
+      rememberRunTab(resultObj?.runId, tabId)
+    } catch {
+      // non-JSON result — nothing to pin
+    }
 
     const plan = parsePluginDownloadPlan(result.result)
     return {
