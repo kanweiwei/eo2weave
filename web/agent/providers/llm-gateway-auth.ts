@@ -90,6 +90,15 @@ export interface RateLimitsResponse {
 const TOKEN_STORAGE_KEY = 'llm-gateway-tokens'
 
 /**
+ * Single source of truth for the api-key-store key holding the gateway
+ * access_token (llm-gateway-provider.ts re-exports this). Lives HERE because
+ * the auth layer must be able to purge a dead token without importing the
+ * provider module (which statically imports this file — a dynamic import from
+ * here would create a fragile cycle that silently breaks in test envs).
+ */
+export const LLM_GATEWAY_API_KEY_ID = '__llm_gateway_token__'
+
+/**
  * SQLite-backed storage key for the refresh_token.
  *
  * access_token lives in the api-key-store under __llm_gateway_token__
@@ -218,17 +227,34 @@ function isTokenInvalidError(e: unknown): boolean {
 
 function clearStoredTokens(): void {
   localStorage.removeItem(TOKEN_STORAGE_KEY)
-  // Also clear the SQLite backup
+  // Also purge both SQLite-side credentials with a SINGLE dynamic import.
+  // Fire-and-forget — localStorage is the primary sync store; SQLite is the
+  // backup. Do NOT split these into two separate import() calls: concurrent
+  // dynamic imports of the same module have been observed racing past the
+  // test mock registry, and semantically a dead session must purge both.
   void (async () => {
     try {
       const { deleteApiKey } = await import('@/security/api-key-store')
       await deleteApiKey(REFRESH_TOKEN_DB_KEY)
-    } catch {
-      // ignore
+      // The api-key-store also holds the stale access_token under the
+      // provider key. The settings card derives its logged-in badge from
+      // that key alone — leaving it behind shows "Logged in" UI with a
+      // logout button while every request 401s (user-reported bug).
+      await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
+    } catch (e) {
+      // Diagnostic log on purpose — a silent failure here would re-create
+      // the "logged-in badge on a dead session" state with no way to debug.
+      console.warn('[llm-gateway] failed to purge stored credentials:', e)
     }
   })()
 }
 
+//
+// NOTE: there is deliberately no separate "clear api-key shadow" helper.
+// clearStoredTokens() purges both SQLite keys (refresh-token backup + the
+// access_token shadow) through a single dynamic import — see the comment
+// inside it.
+//
 // ── API Calls ──
 
 async function gatewayFetch<T>(
@@ -551,6 +577,10 @@ export async function forceRefreshAccessToken(
     // they are transient and the user shouldn't have to re-login.
     if (isTokenInvalidError(e)) {
       console.warn('[llm-gateway] forceRefresh: token invalid, clearing stored tokens', e)
+      // The refresh_token is dead, so the login is unrecoverable.
+      // clearStoredTokens() also purges the api-key-store access_token
+      // shadow (the key the settings card's logged-in badge derives from),
+      // so the UI falls back to the logged-out state with a login button.
       clearStoredTokens()
     } else {
       console.warn('[llm-gateway] forceRefresh: transient error, keeping stored tokens', e)
@@ -599,6 +629,8 @@ export async function getValidAccessToken(
       // Transient errors (network, 5xx) should NOT wipe tokens.
       if (isTokenInvalidError(e)) {
         console.warn('[llm-gateway] getValidAccessToken: token invalid, clearing stored tokens', e)
+        // Same "logged-in badge on a dead session" trap as in
+        // forceRefreshAccessToken — clearStoredTokens() purges the shadow too.
         clearStoredTokens()
       } else {
         console.warn('[llm-gateway] getValidAccessToken: transient error, keeping stored tokens', e)
@@ -629,7 +661,10 @@ export function hasValidAccessToken(): boolean {
 }
 
 /**
- * Logout — clear all stored tokens
+ * Logout — clear all stored tokens.
+ *
+ * clearStoredTokens() also purges the api-key-store access_token shadow
+ * (the key the settings card's logged-in badge is derived from).
  */
 export function logoutGateway(): void {
   clearStoredTokens()

@@ -496,6 +496,7 @@ export const settings = {
       loggedOut: "未登录",
       serviceUrl: "服务地址",
       logout: "登出",
+      tokenInvalidLoginExpired: "坚果云 AI 登录已过期，请重新登录",
       creatingSession: "正在创建授权会话...",
       enterCodeHint: "请在授权页面输入以下代码",
       copy: "复制",

@@ -506,6 +506,7 @@ export const settings = {
       name: "Nutstore AI",
       login: "Nutstore AI にログイン",
       notLoggedInError: "Nutstore AI にログインしていません。先にログインしてください。",
+      tokenInvalidLoginExpired: "Nutstore AI のログインの有効期限が切れました。再度ログインしてください。",
       loggedIn: "ログイン済み",
       loggingIn: "ログイン中...",
       loggedOut: "未ログイン",

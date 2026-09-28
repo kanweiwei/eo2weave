@@ -22,7 +22,7 @@
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderMeta } from './types'
 import { registerDynamicProvider, unregisterDynamicProvider } from './types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getValidAccessToken, type RateLimitsResponse } from './llm-gateway-auth'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -30,7 +30,13 @@ import { useI18nStore } from '@/i18n/store'
 // ── Provider Identity ──
 
 export const LLM_GATEWAY_PROVIDER_TYPE: LLMProviderType = 'llm-gateway'
-const LLM_GATEWAY_API_KEY_ID = '__llm_gateway_token__'
+
+/**
+ * The api-key-store key holding the gateway access_token. Single source of
+ * truth lives in llm-gateway-auth.ts (the auth layer needs to purge dead
+ * tokens without importing this module); re-exported here for convenience.
+ */
+export { LLM_GATEWAY_API_KEY_ID }
 
 // ── Configuration ──
 
@@ -178,7 +184,15 @@ export async function fetchGatewayRateLimits(): Promise<RateLimitsResponse> {
       console.warn('[llm-gateway] rate-limits: 401, force-refreshing token...')
       token = await forceRefreshAccessToken(baseURL, clientId)
       if (!token) {
-        throw new Error('Token 已失效且无法刷新，请重新登录')
+        // Localized actionable message — a bare hardcoded zh string here
+        // leaked raw Chinese into other locales' error paths.
+        const locale = useI18nStore.getState().locale
+        const msg = translateStatic(locale, 'settings.gateway.tokenInvalidLoginExpired')
+        throw new Error(
+          msg !== 'settings.gateway.tokenInvalidLoginExpired'
+            ? msg
+            : 'Nutstore AI login has expired. Please log in again.'
+        )
       }
       return await fetchRateLimits(baseURL, token)
     }

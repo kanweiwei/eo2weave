@@ -503,6 +503,7 @@ export const settings = {
       name: "Nutstore AI",
       login: "Log in to Nutstore AI",
       notLoggedInError: "Not logged in to Nutstore AI. Please log in first.",
+      tokenInvalidLoginExpired: "Nutstore AI login has expired. Please log in again.",
       loggedIn: "Logged in",
       loggingIn: "Logging in...",
       loggedOut: "Not logged in",
