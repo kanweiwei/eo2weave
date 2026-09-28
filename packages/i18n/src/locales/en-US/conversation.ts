@@ -145,6 +145,11 @@ export const conversation = {
     error: {
       requestFailed: "Request failed:",
       retry: "Retry",
+      failed: "The model request failed. Please try again later.",
+      http: "The model provider returned an error (HTTP {status}).",
+      network: "Network error — could not reach the model provider. Check your connection and try again.",
+      aborted: "Generation stopped",
+      showDetails: "Show details",
     },
     // Iteration limit
     iterationLimit: {

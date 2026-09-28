@@ -149,6 +149,11 @@ export const conversation = {
     error: {
       requestFailed: "请求失败：",
       retry: "继续",
+      failed: "模型请求失败，请稍后重试",
+      http: "模型服务商返回错误（HTTP {status}）",
+      network: "网络连接失败，无法访问模型服务商，请检查网络后重试",
+      aborted: "已停止生成",
+      showDetails: "查看详细信息",
     },
     // 迭代次数限制
     iterationLimit: {

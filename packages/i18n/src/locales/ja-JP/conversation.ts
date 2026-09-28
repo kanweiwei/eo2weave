@@ -113,9 +113,15 @@ export const conversation = {
       messageQueued: "メッセージをキューに追加しました (位置 {position})",
       queueFull: "キューが満杯です。現在のタスクが完了するまでお待ちください。",
     },
+    // エラー
     error: {
       requestFailed: "リクエスト失敗：",
       retry: "再試行",
+      failed: "モデルリクエストが失敗しました。しばらくしてからもう一度お試しください。",
+      http: "モデルプロバイダーがエラーを返しました（HTTP {status}）。",
+      network: "ネットワークエラー — モデルプロバイダーに接続できません。接続を確認して再試行してください。",
+      aborted: "生成を停止しました",
+      showDetails: "詳細を表示",
     },
     // 反復回数制限
     iterationLimit: {

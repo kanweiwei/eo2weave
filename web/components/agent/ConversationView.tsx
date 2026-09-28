@@ -14,7 +14,8 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
 import { AlertTriangle, RefreshCw, WifiOff, KeyRound, ImageIcon, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useT } from '@/i18n'
+import { useT, useLocale } from '@/i18n'
+import { presentLlmError } from './llm-error'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
 import { ImageGenQuickChip } from './ImageGenQuickChip'
@@ -624,7 +625,8 @@ const colorClasses = {
 /**
  * Error banner — shows Codex-specific actionable UI when the current provider
  * is codex-oauth and the error matches a known code.  For all other providers
- * (or unrecognised errors), falls back to a generic red bar.
+ * (or unrecognised errors), shows a friendly classified message (localized
+ * title + raw details behind a collapsible block) via presentLlmError.
  */
 const ConversationErrorBanner = memo(function ConversationErrorBanner({
   error,
@@ -634,6 +636,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
   onRetry?: () => void
 }) {
   const t = useT()
+  const locale = useLocale()[0]
   const providerType = useSettingsStore((s) => s.providerType)
   const isCodex = (providerType as string) === 'codex-oauth'
 
@@ -645,18 +648,26 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
     ? CODEX_ERROR_PATTERNS.find((p) => p.codes.includes(errorCode))
     : null
 
-  // Fallback: generic error banner
+  // Fallback: friendly classified error banner for non-codex providers
   if (!pattern) {
+    const presentation = presentLlmError(error, locale)
     return (
       <div className="border-t border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
         <div className="mx-auto max-w-3xl">
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" />
             <div className="min-w-0 flex-1">
-              <p className="font-medium">{t('conversation.error.requestFailed')}</p>
-              <p className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap break-all pr-1 text-red-600 dark:text-red-400">
-                {error}
-              </p>
+              <p className="font-medium">{presentation.title}</p>
+              {presentation.details && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer select-none text-xs text-red-500 hover:text-red-600 dark:text-red-400/80 dark:hover:text-red-300">
+                    {t('conversation.error.showDetails')}
+                  </summary>
+                  <p className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all pr-1 text-xs text-red-600 dark:text-red-400">
+                    {presentation.details}
+                  </p>
+                </details>
+              )}
               {onRetry && (
                 <button
                   type="button"
