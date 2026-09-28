@@ -35,8 +35,9 @@ export const submitSearchResultsDefinition: ToolDefinition = {
               full_tool_name: {
                 type: 'string',
                 description:
-                  'The full tool name (e.g. "workspace_jianguoyun_com__message_send_text"). ' +
-                  'Must match a name from the Available Tools list exactly.',
+                  'The full tool name copied VERBATIM from the Available Tools list. ' +
+                  'Do NOT construct, shorten, or complete it from memory — the Available ' +
+                  'Tools list is the only source of valid names.',
               },
               relevance_reason: {
                 type: 'string',

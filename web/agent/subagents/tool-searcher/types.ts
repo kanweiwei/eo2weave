@@ -9,7 +9,7 @@
 
 /** A single tool result returned by the tool-searcher agent */
 export interface ToolSearcherResultItem {
-  /** Full tool name (e.g. "workspace_jianguoyun_com__message_send_text") */
+  /** Full tool name copied verbatim from the tool catalog — never a hand-built name */
   full_tool_name: string
   /** Why this tool was selected (for the main agent's understanding) */
   relevance_reason: string

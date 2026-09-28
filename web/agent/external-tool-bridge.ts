@@ -782,8 +782,10 @@ export const callToolDefinition: ToolDefinition = {
         full_tool_name: {
           type: 'string',
           description:
-            'The full tool name returned by search_tools ' +
-            '(e.g. "openpencil:get_node" or "workspace_jianguoyun_com__fetch_ticket_messages").',
+            'The fullName string copied VERBATIM from search_tools results. ' +
+            'MCP names are "serverId:toolName"; WebMCP names embed a page host and a ' +
+            'toolset signature, so they cannot be assembled or guessed — the search_tools ' +
+            'result is the only valid source. Never construct, shorten, or modify this name.',
         },
         args: {
           type: 'object',
@@ -1363,7 +1365,7 @@ export const unifiedExternalToolsPromptDoc: ToolPromptDoc = {
   section: '### External Tools (MCP + WebMCP)',
   lines: [
     '- `search_tools(query?, intent?, limit?)` — **Always search first** before using any external tool. Returns matching tools with full parameter schemas. query: keywords (BM25, fast). intent: natural language description (slower but smarter). At least one required. Prefer intent when unsure. This ALSO covers EO2Weave itself: searching e.g. "project", "conversation", "send message", "provider" surfaces the self-control tools (create projects, manage conversations, read history, drive the agent, manage models).',
-    '- `call_tool(full_tool_name, args)` — Execute an external tool discovered via search_tools. Use the fullName and inputSchema from search_tools results. Do NOT call this directly without searching first.',
+    '- `call_tool(full_tool_name, args)` — Execute an external tool discovered via search_tools. full_tool_name must be the fullName copied VERBATIM from search_tools results — never construct it from memory; WebMCP names embed a host and a toolset signature that cannot be guessed. If a call fails with TOOL_NOT_FOUND, run search_tools again and retry with the exact fullName from its results.',
   ],
 }
 
