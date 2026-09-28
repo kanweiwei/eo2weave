@@ -24,14 +24,18 @@ import type { FileChange } from '@/opfs/types/opfs-types'
 // basicStateReducer calls this function with `null` and the destructure below
 // throws — reproducing the original crash inside the test.
 vi.mock('@/components/sync/FileDiffViewer', () => ({
-  FileDiffViewer: ({ fileChange }: { fileChange: FileChange | null }) => {
+  FileDiffViewer: ({ fileChange, conversationId }: { fileChange: FileChange | null; conversationId?: string | null }) => {
     const { path } = fileChange ?? { fileChange: null }
     if (fileChange === null) {
       throw new Error(
         "Cannot destructure property 'fileChange' of 'param' as it is null."
       )
     }
-    return <div data-testid="diff-viewer-stub">diff:{path}</div>
+    return (
+      <div data-testid="diff-viewer-stub" data-conversation-id={conversationId ?? ''}>
+        diff:{path}
+      </div>
+    )
   },
 }))
 
@@ -45,6 +49,18 @@ function requestWithFileChange(partial?: Partial<FileChange>) {
         { type: 'modify', path: 'src/a.ts', ...partial },
       ],
       memoryKey: null,
+    })
+}
+
+function requestWithConversation(conversationId: string | null) {
+  return useToolAuthStore
+    .getState()
+    .request({
+      toolName: 'sync-to-disk',
+      description: { key: 'title' },
+      fileChanges: [{ type: 'modify', path: 'src/a.ts' }],
+      memoryKey: 'sync-to-disk',
+      conversationId,
     })
 }
 
@@ -95,6 +111,25 @@ describe('ToolAuthModal lazy FileDiffViewer', () => {
       rerender(<ToolAuthModal />)
     })
     expect(screen.getByTestId('diff-viewer-stub')).toBeInTheDocument()
+  })
+
+  it('passes the queued conversationId down to the diff viewer', async () => {
+    // Cross-conversation review: the auth queue's conversationId (the
+    // REQUESTING conversation) must reach FileDiffViewer so its reads are
+    // pinned to the right workspace, not whichever conversation is active.
+    const user = userEvent.setup()
+    void requestWithConversation('conv_requesting')
+    render(<ToolAuthModal />)
+
+    await user.click(screen.getByText('src/a.ts'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diff-viewer-stub')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('diff-viewer-stub')).toHaveAttribute(
+      'data-conversation-id',
+      'conv_requesting',
+    )
   })
 })
 

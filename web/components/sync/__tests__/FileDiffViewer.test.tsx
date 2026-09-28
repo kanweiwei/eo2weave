@@ -4,6 +4,8 @@ import { FileDiffViewer } from '../FileDiffViewer'
 
 const getActiveConversationMock = vi.fn()
 const getNativeDirectoryHandleMock = vi.fn()
+// 'mock'-prefixed so the vi.mock factory below can reference it (hoisting rule).
+const mockGetWorkspaceManager = vi.fn()
 
 const fileExistsInNativeFSMock = vi.fn()
 const readFileFromOPFSMock = vi.fn()
@@ -29,11 +31,21 @@ vi.mock('@/opfs', () => ({
   readFileFromNativeFS: (...args: unknown[]) => readFileFromNativeFSMock(...args),
   readBinaryFileFromOPFS: vi.fn(),
   readBinaryFileFromNativeFS: vi.fn(),
+  // Lazy-call wrapper: the factory is hoisted, so a direct reference would hit
+  // the TDZ before `mockGetWorkspaceManager` initializes.
+  getWorkspaceManager: (...args: unknown[]) => mockGetWorkspaceManager(...args),
 }))
 
 describe('FileDiffViewer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // mockReset first: mockResolvedValue implementations survive clearAllMocks
+    // (only calls/results are cleared) and would leak across tests.
+    mockGetWorkspaceManager.mockReset()
+    // Safe default: pinned lookups find nothing → viewer falls back to active.
+    mockGetWorkspaceManager.mockResolvedValue({
+      getWorkspace: vi.fn().mockResolvedValue(undefined),
+    })
     getNativeDirectoryHandleMock.mockResolvedValue({} as FileSystemDirectoryHandle)
     getActiveConversationMock.mockResolvedValue({
       conversationId: 'conv_1',
@@ -153,5 +165,85 @@ describe('FileDiffViewer', () => {
       await screen.findByText('New version content could not be loaded — diff hidden to avoid showing every line as deleted.'),
     ).toBeDefined()
     expect(screen.queryByTestId('lazy-diff-viewer')).toBeNull()
+  })
+
+  it('pins reads to the given conversationId instead of the active conversation', async () => {
+    // Tool-auth cross-conversation scenario: background conversation "conv_b"
+    // prompts for sync approval while "conv_a" is active. The viewer must
+    // read conv_b's workspace (via the manager), not the active one.
+    let convAReadFile: ReturnType<typeof vi.fn>
+    const convBReadFile = vi.fn(async (_path: string, _h: unknown, opts?: { policy?: string }) => {
+      if (opts?.policy === 'prefer_native') {
+        return { source: 'native', content: 'native body', metadata: {} }
+      }
+      return { source: 'opfs', content: 'conv B body', metadata: {} }
+    })
+    const convBReadCachedFile = vi.fn().mockResolvedValue(null)
+    mockGetWorkspaceManager.mockReset()
+    mockGetWorkspaceManager.mockResolvedValue({
+      getWorkspace: vi.fn(async (id: string) =>
+        id === 'conv_b'
+          ? { readFile: convBReadFile, readCachedFile: convBReadCachedFile }
+          : undefined,
+      ),
+    })
+    getActiveConversationMock.mockResolvedValue({
+      conversationId: 'conv_a',
+      conversation: {
+        getNativeDirectoryHandle: getNativeDirectoryHandleMock,
+        readFile: (convAReadFile = vi.fn().mockResolvedValue({
+          source: 'opfs',
+          content: 'ACTIVE conversation body',
+          metadata: {},
+        })),
+        readCachedFile: vi.fn().mockResolvedValue(null),
+      },
+    })
+    readFileFromOPFSMock.mockResolvedValue(null)
+
+    render(
+      <FileDiffViewer
+        fileChange={{ type: 'modify', path: 'src/pinned.ts', size: 64 }}
+        conversationId="conv_b"
+      />
+    )
+
+    expect(await screen.findByTestId('lazy-diff-viewer')).toBeDefined()
+    // Reads went through conv_b's runtime, NOT the active conversation's.
+    expect(convBReadFile).toHaveBeenCalled()
+    expect(convAReadFile).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the active conversation when the pinned workspace is gone', async () => {
+    mockGetWorkspaceManager.mockReset()
+    mockGetWorkspaceManager.mockResolvedValue({
+      getWorkspace: vi.fn().mockResolvedValue(undefined),
+    })
+    getActiveConversationMock.mockResolvedValue({
+      conversationId: 'conv_a',
+      conversation: {
+        getNativeDirectoryHandle: getNativeDirectoryHandleMock,
+        readFile: vi.fn(async (_path: string, _h: unknown, opts?: { policy?: string }) => {
+          if (opts?.policy === 'prefer_native') {
+            return { source: 'native', content: 'native body', metadata: {} }
+          }
+          return { source: 'opfs', content: 'active fallback body', metadata: {} }
+        }),
+        readCachedFile: vi.fn().mockResolvedValue(null),
+      },
+    })
+    readFileFromOPFSMock.mockResolvedValue(null)
+
+    render(
+      <FileDiffViewer
+        fileChange={{ type: 'modify', path: 'src/fallback.ts', size: 64 }}
+        conversationId="conv_gone"
+      />
+    )
+
+    expect(await screen.findByTestId('lazy-diff-viewer')).toBeDefined()
+    // Runtime path stayed empty; the runtime missing → no crash, diff renders
+    // through the active conversation fallback.
+    expect(getActiveConversationMock).toHaveBeenCalled()
   })
 })

@@ -117,7 +117,13 @@ const FILE_TYPE_BADGE: Record<FileChange['type'], string> = {
  * opens a near-fullscreen diff viewer overlay (large window — the auth modal
  * itself stays compact).
  */
-function FileChangeListBlock({ changes }: { changes: FileChange[] }) {
+function FileChangeListBlock({
+  changes,
+  conversationId,
+}: {
+  changes: FileChange[]
+  conversationId: string | null
+}) {
   const t = useT()
   const [selected, setSelected] = useState<FileChange | null>(null)
   const shown = changes.slice(0, FILE_LIST_LIMIT)
@@ -205,7 +211,7 @@ function FileChangeListBlock({ changes }: { changes: FileChange[] }) {
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              <LazyFileDiffViewer fileChange={selected} />
+              <LazyFileDiffViewer fileChange={selected} conversationId={conversationId} />
             </div>
           </div>
         </div>
@@ -221,11 +227,20 @@ function FileChangeListBlock({ changes }: { changes: FileChange[] }) {
  * renders nothing until the lazy module has loaded.
  */
 type FileDiffViewerModule = {
-  FileDiffViewer: React.ComponentType<{ fileChange: FileChange | null }>
+  FileDiffViewer: React.ComponentType<{
+    fileChange: FileChange | null
+    conversationId?: string | null
+  }>
 }
 
 let fileDiffViewerPromise: Promise<FileDiffViewerModule | null> | null = null
-function LazyFileDiffViewer({ fileChange }: { fileChange: FileChange | null }) {
+function LazyFileDiffViewer({
+  fileChange,
+  conversationId,
+}: {
+  fileChange: FileChange | null
+  conversationId: string | null
+}) {
   const [Comp, setComp] = useState<FileDiffViewerModule['FileDiffViewer'] | null>(null)
   useEffect(() => {
     if (!fileDiffViewerPromise) {
@@ -245,7 +260,7 @@ function LazyFileDiffViewer({ fileChange }: { fileChange: FileChange | null }) {
     }
   }, [])
   if (!Comp) return null
-  return <Comp fileChange={fileChange} />
+  return <Comp fileChange={fileChange} conversationId={conversationId} />
 }
 
 /**
@@ -346,7 +361,10 @@ export function ToolAuthModal() {
           )}
           {pending.toolArgs !== undefined && <ArgsBlock toolArgs={pending.toolArgs} />}
           {pending.fileChanges && pending.fileChanges.length > 0 && (
-            <FileChangeListBlock changes={pending.fileChanges} />
+            <FileChangeListBlock
+              changes={pending.fileChanges}
+              conversationId={pending.conversationId}
+            />
           )}
         </div>
 

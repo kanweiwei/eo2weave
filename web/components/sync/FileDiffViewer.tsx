@@ -6,6 +6,14 @@
  * For format-registered files (HTML, NOL, etc.), delegates rendering to
  * the format-registry preview component; user toggles between preview
  * and source/diff view via the format view mode button.
+ *
+ * `conversationId` (optional) pins content reads to a SPECIFIC conversation's
+ * workspace. The sync-to-disk authorization flow passes the requesting
+ * conversation's id down from the auth queue: the user may be viewing
+ * conversation A while conversation B's background run asks for approval,
+ * and binding reads to the ACTIVE conversation would diff B's files against
+ * the wrong workspace tree (empty changed-side, misleading placeholder).
+ * When omitted, falls back to the active conversation (previous behavior).
  */
 
 import React, { Suspense, useEffect, useRef, useState } from 'react'
@@ -102,6 +110,40 @@ async function readNativeFileViaConversation(
   }
 }
 
+/**
+ * Resolve the content source for this viewer instance.
+ *
+ * `conversationId` set → look up that workspace runtime DIRECTLY via the
+ * manager (same runtime the sync-to-disk tool flushes through, so what the
+ * user reviews here is exactly what will be written). This must NOT go
+ * through getActiveConversation(): while a background conversation's run
+ * prompts for sync approval, the active conversation may be a different
+ * one, and reading its tree yields empty bodies for the requesting
+ * conversation's paths (the "diff looks all-empty" bug).
+ *
+ * Falls back to the active conversation when no id is given or the
+ * workspace is gone (best-effort, never blocks the viewer).
+ */
+async function resolveContentSource(
+  conversationId?: string | null,
+): Promise<{
+  conversation: import('@/opfs').WorkspaceRuntime
+  conversationId: string
+} | null> {
+  if (conversationId) {
+    try {
+      const { getWorkspaceManager } = await import('@/opfs')
+      const manager = await getWorkspaceManager()
+      const workspace = await manager.getWorkspace(conversationId)
+      if (workspace) return { conversation: workspace, conversationId }
+    } catch (err) {
+      console.warn('[FileDiffViewer] pinned workspace lookup failed, falling back to active:', err)
+    }
+  }
+  const active = await getActiveConversation()
+  return active ?? null
+}
+
 function fileContentToText(content: unknown): string | null {
   if (typeof content === 'string') return content
   return null
@@ -173,6 +215,12 @@ import { type CommentSide, type LineComment } from './comment-types'
 
 interface FileDiffViewerProps {
   fileChange: FileChange | null
+  /**
+   * Pin reads to this conversation's workspace instead of the active one.
+   * Used by the tool-auth modal so cross-conversation approval diffs read the
+   * REQUESTING conversation's files. Undefined → active conversation.
+   */
+  conversationId?: string | null
   snapshotDiff?: {
     originalText: string
     modifiedText: string
@@ -239,7 +287,7 @@ function formatTime(timestamp?: number): string {
   }
 }
 
-export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snapshotDiff = null, commentsByPath: externalCommentsByPath, onCommentsChange }) => {
+export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, conversationId, snapshotDiff = null, commentsByPath: externalCommentsByPath, onCommentsChange }) => {
   const t = useT()
   const [isSplitView, setIsSplitView] = useState(false)
   const [useFullEditor, setUseFullEditor] = useState(false)
@@ -323,12 +371,12 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
       setContent((prev) => ({ ...prev, loading: true, error: null }))
 
       try {
-        const activeConversation = await getActiveConversation()
-        if (!activeConversation) {
+        const source = await resolveContentSource(conversationId)
+        if (!source) {
           throw new Error(t('sidebar.fileDiffViewer.noWorkspace'))
         }
 
-        const { conversation, conversationId } = activeConversation
+        const { conversation, conversationId: contentConversationId } = source
         const filePath = fileChange.path
         const isImage = isImageFile(filePath)
         const isOffice = isOfficeFile(filePath)
@@ -357,7 +405,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
 
           try {
             if (fileChange.type !== 'delete') {
-              const opfsBase64 = await readBinaryFileFromOPFS(conversationId, filePath)
+              const opfsBase64 = await readBinaryFileFromOPFS(contentConversationId, filePath)
               if (opfsBase64) {
                 opfsImageUrl = `data:${mimeType};base64,${opfsBase64}`
               }
@@ -398,7 +446,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           // DOCX file: read binary blob for local docx-preview rendering
           if (fileChange.type !== 'delete') {
             try {
-              const opfsBase64 = await readBinaryFileFromOPFS(conversationId, filePath)
+              const opfsBase64 = await readBinaryFileFromOPFS(contentConversationId, filePath)
               if (opfsBase64) {
                 const bytes = Uint8Array.from(atob(opfsBase64), c => c.charCodeAt(0))
                 const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
@@ -421,7 +469,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           // Office file: read binary blob for preview
           if (fileChange.type !== 'delete') {
             try {
-              const opfsBase64 = await readBinaryFileFromOPFS(conversationId, filePath)
+              const opfsBase64 = await readBinaryFileFromOPFS(contentConversationId, filePath)
               if (opfsBase64) {
                 const bytes = Uint8Array.from(atob(opfsBase64), c => c.charCodeAt(0))
                 const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
@@ -454,7 +502,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           let formatText: string | null = null
           if (fileChange.type !== 'delete') {
             try {
-              const opfsBase64 = await readBinaryFileFromOPFS(conversationId, filePath)
+              const opfsBase64 = await readBinaryFileFromOPFS(contentConversationId, filePath)
               if (opfsBase64) {
                 const bytes = Uint8Array.from(atob(opfsBase64), c => c.charCodeAt(0))
                 const blob = new Blob([bytes], { type: 'application/zip' })
@@ -483,7 +531,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           let opfsContent: string | null = null
           try {
             if (fileChange.type !== 'delete') {
-              opfsContent = await readFileFromOPFS(conversationId, filePath)
+              opfsContent = await readFileFromOPFS(contentConversationId, filePath)
               // Direct files/ navigation can miss cache-layer drafts (the
               // add-type diff in the sync-to-disk auth flow). Retry through
               // the runtime's routed reader + cache before showing the
@@ -543,7 +591,7 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
     }
 
     loadContents()
-  }, [fileChange, snapshotDiff])
+  }, [fileChange, snapshotDiff, conversationId])
 
   // Render docx into container (same approach as FilePreview)
   useEffect(() => {
