@@ -578,7 +578,14 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
         {/* Summary footer (only when not processing) */}
         {!isProcessing && !isWaiting && (
           <div className="flex items-center gap-2 text-xs text-neutral-400">
-            <span>
+            <span title={new Date(turn.timestamp).toLocaleString('zh-CN', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}>
               {new Date(turn.timestamp).toLocaleTimeString('zh-CN', {
                 hour: '2-digit',
                 minute: '2-digit',
