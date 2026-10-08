@@ -298,7 +298,7 @@ export const AssetsPopover = memo(function AssetsPopover({ convId, onPreviewAsse
       {open && (
         <div
           ref={panelRef}
-          className="absolute bottom-12 left-4 z-30 w-80 max-h-72 flex flex-col rounded-xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-700 dark:bg-neutral-800"
+          className="absolute bottom-20 left-4 z-30 w-80 max-h-72 flex flex-col rounded-xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-700 dark:bg-neutral-800"
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-700 px-3 py-2">

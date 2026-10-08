@@ -1,6 +1,6 @@
 /**
  * ProcessesPopover — a small floating button in the conversation view
- * (next to AssetsPopover) that expands to show background processes
+ * (stacked above AssetsPopover, bottom-left) that expands to show background processes
  * started via the exec tool (dev servers etc).
  *
  * Lists processes from the Native Host registry (exec_list), polls while
@@ -261,12 +261,12 @@ export const ProcessesPopover = memo(function ProcessesPopover() {
 
   return (
     <>
-      {/* Trigger button — floats above AssetsPopover (bottom-left stack) */}
+      {/* Trigger button — floats above AssetsPopover (bottom-left vertical stack) */}
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className={`absolute bottom-3 left-16 z-20 rounded-full p-1.5 shadow-sm backdrop-blur-sm transition-all ${
+        className={`absolute bottom-11 left-4 z-20 rounded-full p-1.5 shadow-sm backdrop-blur-sm transition-all ${
           open
             ? 'bg-primary-600/90 text-white hover:bg-primary-700/90'
             : 'bg-neutral-800/60 text-white hover:bg-neutral-700/70 dark:bg-neutral-200/60 dark:text-neutral-900 dark:hover:bg-neutral-200/80'
@@ -285,7 +285,7 @@ export const ProcessesPopover = memo(function ProcessesPopover() {
       {open && (
         <div
           ref={panelRef}
-          className="absolute bottom-12 left-16 z-30 w-96 max-h-80 flex flex-col rounded-xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-700 dark:bg-neutral-800"
+          className="absolute bottom-20 left-4 z-30 w-96 max-h-80 flex flex-col rounded-xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-700 dark:bg-neutral-800"
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-700 px-3 py-2">
