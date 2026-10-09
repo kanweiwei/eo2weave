@@ -70,6 +70,9 @@ export default defineContentScript({
       'requestPageBodyText',
       'runBoundPageAction',
       'captureBoundTab',
+      // Edge settle protocol (extension-page sender gated in background)
+      'cw_side_panel_settle',
+      'cw_side_panel_get_launch_metadata',
     ])
     // Streaming request types travel through a dedicated runtime port.
     const STREAMING_MESSAGE_TYPES = new Set([

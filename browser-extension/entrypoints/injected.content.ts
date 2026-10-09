@@ -856,6 +856,27 @@ export default defineContentScript({
       },
 
       /**
+       * Edge settle protocol: after the panel's URL was re-registered via
+       * setOptions (settle), a reload boots the app on a clean URL. Ask the
+       * extension for the launch metadata (binding + hostname) of the panel
+       * session. Only the side-panel document gets an answer; web pages and
+       * iframes get ok:false.
+       */
+      async getSidePanelLaunchMetadata() {
+        return sendToBridge('cw_side_panel_get_launch_metadata', {})
+      },
+
+      /**
+       * Edge settle protocol: report the app's final route so the extension
+       * re-registers it via setOptions. After this resolves, the live URL
+       * matches the registered path and Edge stops reloading the panel on
+       * tab switches. Only the side-panel document may settle.
+       */
+      async settleSidePanelPath(path: string) {
+        return sendToBridge('cw_side_panel_settle', { path })
+      },
+
+      /**
        * Pull readable body text from the upstream tab (page-mode slash
        * commands: /summary /titles when nothing is selected). Returns a
        * truncated plain-text string, or null on failure.

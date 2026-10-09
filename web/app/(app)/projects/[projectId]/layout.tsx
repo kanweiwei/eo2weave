@@ -1,6 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
+import { useSidePanelSettle } from '@/hooks/useSidePanelSettle'
 
 // The real workspace UI lives in the LAYOUT, not the leaf pages: Next.js
 // preserves a layout across navigations between its child pages, including
@@ -20,12 +21,17 @@ const WorkspaceRouteView = dynamic(() => import('@/components/workspace/Workspac
  * Matches three URL shapes (bare / canonical / legacy-singular-via-308);
  * WorkspaceRouteView reads the full route params via useParams() and keeps
  * the stores in sync (see useWorkspaceRouteSync).
+ *
+ * useSidePanelSettle re-arms the Edge side-panel URL settle on every route
+ * change (see the hook — Edge reloads the panel when live URL ≠ registered
+ * URL), covering every navigation this app performs.
  */
 export default function ProjectWorkspaceLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
+  useSidePanelSettle()
   return (
     <>
       <WorkspaceRouteView />

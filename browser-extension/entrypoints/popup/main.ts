@@ -3,6 +3,7 @@
 declare const __CW_CODEX_OAUTH__: boolean;
 
 import { getCwWebappBaseUrl, CW_WEBAPP_APP_PATH } from '../../lib/webapp-origins';
+import { shouldUseGlobalSidePanel } from '../../lib/side-panel-env';
 
 function t(key: string, substitutions?: string | string[]): string {
   return chrome.i18n.getMessage(key as any, substitutions) || key;
@@ -40,27 +41,60 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
   el.textContent = isDev ? 'DEV' : 'PROD';
 })();
 
-// ── L1 primary action: open the side-panel workbench ──
-// chrome.sidePanel.open() requires a user gesture, and that gesture does
-// NOT survive the popup → background message hop — so the popup calls
-// open() DIRECTLY, synchronously in its own click handler. The active tab
-// is cached at popup load time so the click handler stays synchronous.
-// Binding registration goes to the background fire-and-forget
-// (cw_side_panel_register_binding): storage writes settle in ~ms while the
-// panel web app resolves the binding much later, so the race is negligible.
-(function () {
-  var btn = document.getElementById('openWorkbenchBtn');
-  if (!btn) return;
+  // ── L1 primary action: open the side-panel workbench ──
+  // chrome.sidePanel.open() requires a user gesture, and that gesture does
+  // NOT survive the popup → background message hop — so the popup calls
+  // open() DIRECTLY, synchronously in its own click handler. The active tab
+  // is cached at popup load time so the click handler stays synchronous.
+  // Binding registration goes to the background fire-and-forget
+  // (cw_side_panel_register_binding): storage writes settle in ~ms while the
+  // panel web app resolves the binding much later, so the race is negligible.
+  //
+  // EXCEPTION (Edge global panel): if the panel is ALREADY open, opening must
+  // be a no-op — rebinding + swapping the setOptions path would NAVIGATE the
+  // panel's web app and wipe its conversation state. The state probe below is
+  // a background round-trip, but open() is only called when the panel is
+  // closed, and popup-initiated opens tolerate the round-trip (transient
+  // activation lasts a few seconds; the hop takes a few ms).
+  (function () {
+    var btn = document.getElementById('openWorkbenchBtn');
+    if (!btn) return;
 
-  // Cache the active tab once at popup load (async) so the click handler
-  // below runs fully synchronously — preserving the user gesture.
-  var activeTab: { id?: number; url?: string } | null = null;
-  chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-    var tab = tabs && tabs[0];
-    if (tab) activeTab = { id: tab.id, url: tab.url || '' };
-  });
+    // Cache the active tab once at popup load (async) so the click handler
+    // below runs fully synchronously — preserving the user gesture.
+    var activeTab: { id?: number; url?: string; windowId?: number } | null = null;
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      var tab = tabs && tabs[0];
+      if (tab) activeTab = { id: tab.id, url: tab.url || '', windowId: tab.windowId };
+    });
+
+    // Panel state snapshot, refreshed on popup open. The background HOLDS
+    // the response until its startup hydration completes, so globalOpen is
+    // truthful even when this query woke a recycled SW. The click handler
+    // branches on the LAST value received.
+    var globalOpen = false;
+    function refreshPanelState(): void {
+      chrome.runtime.sendMessage({ type: 'cw_side_panel_get_state' }, function (resp: any) {
+        if (chrome.runtime.lastError || !resp || !resp.ok) return;
+        globalOpen = resp.globalOpen === true;
+      });
+    }
+    refreshPanelState();
 
   btn.addEventListener('click', function () {
+    // Edge global panel already open → do NOTHING: keep the existing panel,
+    // its binding and its conversation state intact. (No open() call — the
+    // panel is open; no setOptions — a path swap would navigate it.)
+    //
+    // Note: the click handler runs BEFORE an in-flight refreshPanelState
+    // response can land, so it acts on the freshest value the background has
+    // already sent. That value is hydration-gated on the background side, so
+    // it is never the un-hydrated "closed" default.
+    if (globalOpen) {
+      window.close();
+      return;
+    }
+
     var tabId = activeTab && activeTab.id;
     if (typeof tabId !== 'number') {
       // No valid tab yet (very rare — popup opened before query resolved):
@@ -81,16 +115,44 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
       try { params.set('origin', new URL(pageUrl).origin); } catch {}
     }
     chrome.runtime.sendMessage(
-      { type: 'cw_side_panel_register_binding', bindingId: bindingId, tabId: tabId },
+      { type: 'cw_side_panel_register_binding', bindingId: bindingId, tabId: tabId, origin: pageUrl },
       function () { void chrome.runtime.lastError; }
     );
 
-    // 2) Configure the panel for this tab, then open it — directly from the
-    //    popup (user gesture intact). Same ordering contract as the floating
-    //    button's background handler: fire setOptions WITHOUT awaiting, then
-    //    call open() synchronously right after — Chrome processes both
+    // 2) Configure the panel, then open it — directly from the popup (user
+    //    gesture intact). Same ordering contract as the floating button's
+    //    background handler: fire setOptions WITHOUT awaiting, then call
+    //    open() synchronously right after — Chrome processes both
     //    browser-process calls in order, and open() stays on the gesture
     //    call stack instead of inside a promise callback.
+    //
+    //    Edge uses a WINDOW-scoped panel: per-tab panels are force-closed on
+    //    tab switch and never restored there (w3c/webextensions#588,
+    //    microsoft/MicrosoftEdge-Extensions#142). Content still follows the
+    //    opening tab via the binding registered above.
+    if (shouldUseGlobalSidePanel()) {
+      chrome.sidePanel.setOptions({
+        path: cwBase + CW_WEBAPP_APP_PATH + '?' + params.toString(),
+        enabled: true,
+      }).catch(function (err: any) {
+        // eslint-disable-next-line no-console
+        console.warn('[EO2Weave popup] sidePanel.setOptions failed:', err);
+      });
+      // OpenOptions requires tabId or windowId (typed union). activeTab is
+      // cached at popup load and always carries windowId; the { tabId }
+      // fallback is purely defensive and should not happen in practice.
+      var openArgs: chrome.sidePanel.OpenOptions =
+        activeTab && typeof activeTab.windowId === 'number'
+          ? { windowId: activeTab.windowId }
+          : { tabId: tabId };
+      chrome.sidePanel.open(openArgs).then(function () {
+        window.close();
+      }).catch(function (err: any) {
+        // eslint-disable-next-line no-console
+        console.warn('[EO2Weave popup] side panel open failed:', err);
+      });
+      return;
+    }
     chrome.sidePanel.setOptions({
       tabId: tabId,
       // Use a normal query for the Next.js App Router. A fragment launch URL

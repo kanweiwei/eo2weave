@@ -19,6 +19,7 @@ import { presentLlmError } from './llm-error'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
 import { ImageGenQuickChip } from './ImageGenQuickChip'
+import { ActiveTabIndicator } from './ActiveTabIndicator'
 import { AgentModeSelect } from './AgentModeSelect'
 import { RunEndPolicySelect } from './RunEndPolicySelect'
 import { useConversationLogic } from './useConversationLogic'
@@ -439,6 +440,9 @@ export function ConversationView({
             {/* Quick chip — shares the generate_image availability gate, so it
                 only ever promises what the current provider can deliver. */}
             <ImageGenQuickChip onPrefill={handleChipPrefill} />
+            {/* Side-panel mode: shows which tab the AI is currently reading.
+                Renders null outside side-panel mode. */}
+            <ActiveTabIndicator />
             <div className="relative">
               <AgentRichInput
                 ref={richInputRef}

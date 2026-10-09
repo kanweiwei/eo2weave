@@ -36,6 +36,7 @@ import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
+import { ActiveTabIndicator } from './agent/ActiveTabIndicator'
 import type { FileMentionItem } from './agent/FileMentionExtension'
 import { useGatewayLogin, isLLMGatewayConfigured } from '@/hooks/useGatewayLogin'
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
@@ -740,6 +741,9 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </p>
             )}
             <div className="relative mb-6" data-tour="welcome-input">
+              {/* Side-panel mode: shows which tab the AI is currently reading.
+                  Renders null outside side-panel mode. */}
+              <ActiveTabIndicator />
               <AgentRichInput
                 placeholder={t('welcome.placeholder')}
                 ariaLabel={t('conversation.input.ariaLabel')}
