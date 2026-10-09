@@ -158,7 +158,7 @@ export function RunEndPolicySelect({
             openMenu(POLICIES[POLICIES.length - 1])
           }
         }}
-        className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 rounded-full border-none px-2 text-[11px] font-medium transition-colors sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 ${triggerClass} ${
+        className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 rounded-full border-none px-2 text-[11px] font-medium transition-colors sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 sm:text-xs ${triggerClass} ${
           disabled
             ? 'cursor-not-allowed opacity-40'
             : 'hover:brightness-95 dark:hover:brightness-110'
