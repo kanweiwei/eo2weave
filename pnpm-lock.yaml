@@ -21,8 +21,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/shared
       '@mcp-b/webmcp-polyfill':
-        specifier: 4.0.0
-        version: 4.0.0
+        specifier: 6.0.0
+        version: 6.0.0
       '@mozilla/readability':
         specifier: ^0.5.0
         version: 0.5.0
@@ -1287,6 +1287,10 @@ packages:
   '@mcp-b/webmcp-polyfill@4.0.0':
     resolution: {integrity: sha512-7M6WS3IcxaIEhidbS9N7wrrGjtJf474Vi4Fn1hGkFkmYFT5EoFw/kS/4CSdUR/KmlInO1kyluHRY6t3avMQfFw==}
     engines: {node: '>=18'}
+
+  '@mcp-b/webmcp-polyfill@6.0.0':
+    resolution: {integrity: sha512-Z1wYbaYjwEM1FjxHFyw1oRgDAuLCjcQYeAOHtNNlqZ3n1aVA44Ci0kQrnpi7gySZbeiva2zMEU8XO6EG5MS8FA==}
+    engines: {node: '>=20'}
 
   '@mcp-b/webmcp-types@4.0.0':
     resolution: {integrity: sha512-CUBBmiut1UBsiD3FAF6xrLKeKAuJkzd6/BlL1C/uo8sVpwY42NW4mls9rLcTxmLF/8Cj5/ZOwJiLzXl/T3GIQg==}
@@ -7774,6 +7778,9 @@ packages:
   webidl-conversions@3.0.1:
     resolution: {integrity: sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ==}
 
+  webmcp-types@0.1.9:
+    resolution: {integrity: sha512-ibdkppgRDkQ/nvH541YS48kVt96OiuDr+d9JHnirAtI5k0coaFdo2QqCipbXyfwrteDC6xXwPoUGC9uS5ZGwfw==}
+
   webpack-virtual-modules@0.6.2:
     resolution: {integrity: sha512-66/V2i5hQanC51vBQKPH4aI8NMAcBW59FVBs+rC7eGHupMyfn34q7rZIE+ETlJ+XTevqfUhVVBgSUNSW2flEUQ==}
 
@@ -8768,6 +8775,10 @@ snapshots:
       '@cfworker/json-schema': 4.1.1
       '@mcp-b/webmcp-types': 4.0.0
       '@standard-schema/spec': 1.1.0
+
+  '@mcp-b/webmcp-polyfill@6.0.0':
+    dependencies:
+      webmcp-types: 0.1.9
 
   '@mcp-b/webmcp-types@4.0.0': {}
 
@@ -16850,6 +16861,8 @@ snapshots:
   webextension-polyfill@0.12.0: {}
 
   webidl-conversions@3.0.1: {}
+
+  webmcp-types@0.1.9: {}
 
   webpack-virtual-modules@0.6.2: {}
 

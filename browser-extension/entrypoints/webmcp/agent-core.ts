@@ -63,39 +63,27 @@ export function normalizeAgentTools(tools: unknown): WebMCPAgentToolMeta[] {
 }
 
 /**
- * Resolve the page's WebMCP surface:
- *   1. document.modelContext  (Chrome 140+ / polyfilled via @mcp-b/global)
- *   2. navigator.modelContext (earlier experimental shipping)
- *   3. navigator.modelContextTesting (test shim)
+ * Invoke without retrying: current/native contexts accept objects, while
+ * legacy v4 polyfills identify themselves and require serialized input.
  */
-/**
- * Invoke a tool on the resolved modelContext.
- *
- * Chrome 140+'s native ModelContext binding requires the tool input to be
- * an OBJECT; passing a JSON string fails the native type check with
- * "Failed to execute 'executeTool' on 'ModelContext': invalid input object".
- * Older @mcp-b/global polyfill builds, however, expect the JSON-string
- * signature. Try the object form first; only when the native binding
- * explicitly rejects it (the exact binding error) fall back to the string
- * form for polyfill-based pages.
- */
-async function callExecuteTool(
+function callExecuteTool(
   modelContext: any,
   targetTool: any,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  try {
-    return await modelContext.executeTool(targetTool, args || {})
-  } catch (error: any) {
-    const message = typeof error?.message === 'string' ? error.message : String(error)
-    if (message.includes('invalid input object')) {
-      // Polyfill page: its executeTool parses the JSON string internally.
-      return modelContext.executeTool(targetTool, JSON.stringify(args || {}))
-    }
-    throw error
-  }
+  const input =
+    modelContext?.__isWebMCPPolyfill === true
+      ? JSON.stringify(args || {})
+      : args || {}
+  return modelContext.executeTool(targetTool, input)
 }
 
+/**
+ * Resolve the page's WebMCP surface:
+ *   1. document.modelContext  (native or provided by @mcp-b/webmcp-polyfill)
+ *   2. navigator.modelContext (earlier experimental shipping)
+ *   3. navigator.modelContextTesting (test shim)
+ */
 export function resolveAgentApi(): ResolvedAgentApi | null {
   const createImperativeApi = (modelContext: any, mode: WebMCPApiMode) => {
     if (
