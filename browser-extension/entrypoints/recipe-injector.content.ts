@@ -20,7 +20,7 @@
 // per activation.
 // ============================================================
 
-import { initializeWebMCPPolyfill } from '@mcp-b/webmcp-polyfill'
+import { installWebMCP } from '@mcp-b/webmcp-polyfill'
 import { CW_WEBMCP_AGENT_MARKER, parseRelayCommand } from './webmcp/relay-protocol'
 import { findRecipeForLocation } from './webmcp/recipes'
 import { jmailToolImplementations } from './webmcp/recipes/jmail-tools'
@@ -63,10 +63,10 @@ export default defineContentScript({
       const impl = implementations[recipe.id]
       if (!impl) return
 
-      // Skip if the page already provides native modelContext —
-      // polyfill's initialize() also no-ops in that case, but be explicit.
+      // Install only when WebMCP is missing; installWebMCP() also preserves
+      // an existing native implementation.
       if (!(document as any).modelContext) {
-        initializeWebMCPPolyfill()
+        installWebMCP()
       }
       const ctx = (document as any).modelContext
       if (!ctx?.registerTool) {

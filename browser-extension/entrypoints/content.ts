@@ -65,6 +65,7 @@ export default defineContentScript({
       'webmcp_recipe_get_status',
       'webmcp_recipe_enable',
       'webmcp_plugin_download_stream',
+      'webmcp_plugin_download_finalize',
       // Side-panel page bridge (binding-gated in background)
       'requestBoundPageContext',
       'requestPageBodyText',

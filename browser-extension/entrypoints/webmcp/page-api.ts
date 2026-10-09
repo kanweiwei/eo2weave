@@ -77,25 +77,17 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
   const getNavigatorModelContext = () => (navigator as any)?.modelContext
   const getTestingModelContext = () => (navigator as any)?.modelContextTesting
 
-  // Chrome 140+'s native ModelContext binding requires the tool input to be
-  // an OBJECT; passing a JSON string fails the native type check with
-  // "invalid input object". Older @mcp-b/global polyfill builds expect the
-  // JSON-string signature, so fall back only on that exact binding error.
-  const callExecuteTool = async (
+  // Choose before invocation so side-effecting legacy tools are never retried.
+  const callExecuteTool = (
     modelContext: any,
     targetTool: any,
     args: Record<string, unknown>,
   ): Promise<unknown> => {
-    try {
-      return await modelContext.executeTool(targetTool, args || {})
-    } catch (error: any) {
-      const message = typeof error?.message === 'string' ? error.message : String(error)
-      if (message.includes('invalid input object')) {
-        // Polyfill page: its executeTool parses the JSON string internally.
-        return modelContext.executeTool(targetTool, JSON.stringify(args || {}))
-      }
-      throw error
-    }
+    const input =
+      modelContext?.__isWebMCPPolyfill === true
+        ? JSON.stringify(args || {})
+        : args || {}
+    return modelContext.executeTool(targetTool, input)
   }
 
   const resolveApi = (): {
