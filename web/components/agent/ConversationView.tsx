@@ -434,8 +434,17 @@ export function ConversationView({
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}
         <FlowCanvasPanel conversationId={convId} />
 
-        {/* Input area */}
-        <div className="shrink-0 border-t border-neutral-200 bg-white px-2 py-2 dark:border-neutral-700 dark:bg-neutral-900 sm:px-4 sm:py-3">
+        {/* Input area — no hard divider: a soft upward fade above the input
+            implies the split while keeping one continuous surface (the old
+            full-width border-t read as a heavy seam in the narrow panel). */}
+        <div className="relative shrink-0 bg-white px-2 py-2 dark:bg-neutral-900 sm:px-4 sm:py-3">
+          {/* Fade overlay: sits over the scroll area's bottom edge; pointer-events
+              none so it never blocks scrolling/clicks on the last message.
+              Light/dark variants via the parent's dark: class. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 h-5 -translate-y-full bg-gradient-to-b from-transparent to-white dark:to-neutral-900"
+          />
           <div className="mx-auto flex max-w-3xl flex-col">
             {/* Quick chip — shares the generate_image availability gate, so it
                 only ever promises what the current provider can deliver. */}

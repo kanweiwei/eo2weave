@@ -95,29 +95,30 @@ export function ActiveTabIndicator() {
     info?.url ??
     null
 
-  // S4 speech-bubble style (user pick 2026-10-09), muted palette (user
-  // feedback: the dark teal competed with the input for visual focus):
-  // soft neutral bubble + teal accent dot only. Tail via a rotated square
-  // tucked into the bubble's bottom edge — never crosses the input border.
+  // S4 speech-bubble style (user pick 2026-10-09), muted palette + compact
+  // sizing (user feedback: the dark teal competed with the input for focus,
+  // and the bubble took too much vertical space): soft neutral bubble,
+  // teal accent dot only, tight padding, tail overlapping the margin so the
+  // whole indicator adds ~20px instead of ~40px.
   return (
-    <div className="flex items-start" style={{ marginBottom: 10 }}>
+    <div className="flex items-start" style={{ marginBottom: 5 }}>
       <span
-        className="relative inline-flex max-w-full items-center gap-2"
+        className="relative inline-flex max-w-full items-center gap-1.5"
         style={{
           background: '#f0fdfa',
           color: '#134e4a',
-          border: '1px solid rgba(13, 148, 136, 0.25)',
-          borderRadius: '14px 14px 14px 4px',
-          padding: '6px 12px',
-          fontSize: 12,
-          lineHeight: 1.4,
+          border: '1px solid rgba(13, 148, 136, 0.22)',
+          borderRadius: '10px 10px 10px 3px',
+          padding: '2px 9px',
+          fontSize: 11,
+          lineHeight: 1.35,
         }}
         title={display ?? undefined}
       >
         {display === null ? (
           <Loader2
             className="shrink-0 animate-spin"
-            style={{ width: 11, height: 11, color: '#14b8a6' }}
+            style={{ width: 9, height: 9, color: '#14b8a6' }}
             aria-hidden="true"
           />
         ) : (
@@ -125,8 +126,8 @@ export function ActiveTabIndicator() {
             aria-hidden="true"
             className="shrink-0 rounded-full"
             style={{
-              width: 7,
-              height: 7,
+              width: 5,
+              height: 5,
               background: '#14b8a6',
               animation: 'cwTabPulse 2s infinite',
             }}
@@ -139,20 +140,20 @@ export function ActiveTabIndicator() {
           aria-hidden="true"
           style={{
             position: 'absolute',
-            left: 10,
-            bottom: -4.5,
-            width: 8,
-            height: 8,
+            left: 8,
+            bottom: -3.5,
+            width: 6,
+            height: 6,
             background: '#f0fdfa',
-            borderRight: '1px solid rgba(13, 148, 136, 0.25)',
-            borderBottom: '1px solid rgba(13, 148, 136, 0.25)',
+            borderRight: '1px solid rgba(13, 148, 136, 0.22)',
+            borderBottom: '1px solid rgba(13, 148, 136, 0.22)',
             transform: 'rotate(45deg)',
             borderRadius: 1,
           }}
         />
         {/* Keyframes injected once via a style tag — scoped enough for a
             single-instance component and avoids touching global CSS. */}
-        <style>{'@keyframes cwTabPulse { 0% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.35); } 70% { box-shadow: 0 0 0 6px rgba(20, 184, 166, 0); } 100% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0); } }'}</style>
+        <style>{'@keyframes cwTabPulse { 0% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.35); } 70% { box-shadow: 0 0 0 5px rgba(20, 184, 166, 0); } 100% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0); } }'}</style>
       </span>
     </div>
   )

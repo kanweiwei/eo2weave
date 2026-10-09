@@ -1130,7 +1130,19 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
           }
         }}
       />
-      <div className="w-full overflow-hidden rounded-2xl border border-neutral-200 bg-card shadow-sm transition-colors focus-within:border-primary-400 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-within:border-primary-500">
+      <div
+        className="w-full overflow-hidden rounded-2xl border border-neutral-200 bg-card transition-all focus-within:border-primary-400 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-within:border-primary-500"
+        style={{
+          // Embossed (raised) feel to separate the composer from the message
+          // area — replaces the removed border-t divider. A crisp light edge
+          // on top + a soft dark drop below reads as physical elevation.
+          boxShadow: [
+            'inset 0 1px 0 rgba(255, 255, 255, 0.9)',
+            '0 1px 2px rgba(15, 23, 42, 0.06)',
+            '0 4px 12px -2px rgba(15, 23, 42, 0.10)',
+          ].join(', '),
+        }}
+      >
         {/* Editor row — clicking anywhere in the empty area focuses the editor */}
         <div
           className="relative cursor-text px-3.5 pb-1 pt-3"
