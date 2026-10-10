@@ -167,6 +167,22 @@ describe('folder-access.store runtime handle binding', () => {
     expect(mockWorkspaceStore.onNativeDirectoryGranted).toHaveBeenCalledWith(handle)
   })
 
+  it.each(['denied', 'prompt'])('does not bind a persisted directory for permission state %s', async (permission) => {
+    const projectId = 'project-permission-not-granted'
+    const handle = { name: 'repo', requestPermission: vi.fn().mockResolvedValue(permission) } as unknown as FileSystemDirectoryHandle
+    useFolderAccessStore.setState({
+      records: { [projectId]: {
+        projectId, folderName: 'repo', handle: null, persistedHandle: handle,
+        status: 'needs_user_activation', createdAt: Date.now(), updatedAt: Date.now(),
+      } },
+    })
+    expect(await useFolderAccessStore.getState().requestPermission(projectId)).toBe(false)
+    expect(useFolderAccessStore.getState().records[projectId]).toMatchObject({ handle: null, status: 'needs_user_activation' })
+    expect(mockRepo.save).not.toHaveBeenCalled()
+    expect(mockNativeFS.bindRuntimeDirectoryHandle).not.toHaveBeenCalled()
+    expect(mockWorkspaceStore.onNativeDirectoryGranted).not.toHaveBeenCalled()
+  })
+
   it('removes a native-host root locally when host revocation fails', async () => {
     const projectId = 'project-3'
     const rootId = 'root-native-1'
