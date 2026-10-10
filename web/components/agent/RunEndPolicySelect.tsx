@@ -5,7 +5,8 @@
  * above the component, so callers own the selected policy and change handler.
  */
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useT } from '@/i18n'
 
 export type RunEndPolicy = 'manual' | 'auto'
@@ -51,6 +52,8 @@ export function RunEndPolicySelect({
   const optionRefs = useRef<Partial<Record<RunEndPolicy, HTMLButtonElement | null>>>({})
   const pendingFocusPolicyRef = useRef<RunEndPolicy>(runEndPolicy)
   const menuId = useId()
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
   const isOpen = open && !disabled
 
   const labelFor = (policy: RunEndPolicy) =>
@@ -70,7 +73,8 @@ export function RunEndPolicySelect({
     if (!isOpen) return
 
     const handlePointerDown = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      const target = event.target as Node
+      if (!containerRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false)
       }
     }
@@ -78,6 +82,36 @@ export function RunEndPolicySelect({
     document.addEventListener('mousedown', handlePointerDown)
     optionRefs.current[pendingFocusPolicyRef.current]?.focus()
     return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [isOpen])
+
+  // Keep the fixed-position portal aligned with its trigger while the page moves.
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setMenuPosition(null)
+      return
+    }
+    const updatePosition = () => {
+      const trigger = triggerRef.current
+      const menu = menuRef.current
+      if (!trigger || !menu) return
+      const triggerRect = trigger.getBoundingClientRect()
+      const menuRect = menu.getBoundingClientRect()
+      const margin = 8
+      const left = Math.min(
+        Math.max(margin, triggerRect.left),
+        Math.max(margin, window.innerWidth - menuRect.width - margin),
+      )
+      const aboveTop = triggerRect.top - menuRect.height - 8
+      const top = aboveTop >= margin ? aboveTop : triggerRect.bottom + 8
+      setMenuPosition({ top, left })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
   }, [isOpen])
 
   const openMenu = (initialFocusPolicy: RunEndPolicy = runEndPolicy) => {
@@ -169,12 +203,14 @@ export function RunEndPolicySelect({
         <ChevronIcon className={`h-3 w-3 text-neutral-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
+      {isOpen && typeof document !== 'undefined' && createPortal(
         <div
+          ref={menuRef}
           id={menuId}
           role="menu"
           aria-label={t('agent.runEndPolicy.menuLabel')}
-          className="absolute bottom-full left-0 z-50 mb-2 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          style={menuPosition ? { top: menuPosition.top, left: menuPosition.left } : { visibility: 'hidden', top: 0, left: 0 }}
         >
           {POLICIES.map((policy) => {
             const selected = policy === runEndPolicy
@@ -200,7 +236,8 @@ export function RunEndPolicySelect({
               </button>
             )
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

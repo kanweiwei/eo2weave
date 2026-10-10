@@ -20,7 +20,8 @@
  * Design: compact pill button → popover with three options.
  */
 
-import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
 import { useYoloModeStore, syncLegacyPageActionYolo } from '@/store/yolo-mode.store'
 import { useConversationStoreSQLite } from '@/store/conversation.store.sqlite'
@@ -138,6 +139,9 @@ export function AgentModeSelect({
   const setYolo = useYoloModeStore((s) => s.setYolo)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
   // YOLO used to be side-panel-only (it only affected page-action writes).
   // Since PR-4 it also covers external calls and disk writes in normal tabs,
@@ -154,16 +158,47 @@ export function AgentModeSelect({
   const visibleMode: VisibleMode =
     mode === 'plan' ? 'plan' : (showYolo && conversationYoloOn) ? 'yolo' : 'act'
 
-  // Close on outside click
+  // Close on outside click, including the menu rendered through a portal.
   useEffect(() => {
     if (!open) return
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      const target = event.target as Node
+      if (!containerRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [open])
+
+  // Keep the fixed-position portal aligned with its trigger while the page moves.
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuPosition(null)
+      return
+    }
+    const updatePosition = () => {
+      const trigger = triggerRef.current
+      const menu = menuRef.current
+      if (!trigger || !menu) return
+      const triggerRect = trigger.getBoundingClientRect()
+      const menuRect = menu.getBoundingClientRect()
+      const margin = 8
+      const left = Math.min(
+        Math.max(margin, triggerRect.left),
+        Math.max(margin, window.innerWidth - menuRect.width - margin),
+      )
+      const aboveTop = triggerRect.top - menuRect.height - 8
+      const top = aboveTop >= margin ? aboveTop : triggerRect.bottom + 8
+      setMenuPosition({ top, left })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
   }, [open])
 
   const handleSelect = (target: VisibleMode) => {
@@ -204,6 +239,7 @@ export function AgentModeSelect({
     <div ref={containerRef} className={`relative inline-flex shrink-0 ${className}`}>
       {/* Trigger button */}
       <button
+        ref={triggerRef}
         onClick={() => !disabled && setOpen((prev) => !prev)}
         disabled={disabled}
         aria-label={t('agent.mode.currentAriaLabel', { mode: visibleLabel })}
@@ -221,13 +257,11 @@ export function AgentModeSelect({
       </button>
 
       {/* Dropdown */}
-      {open && !disabled && (
+      {open && !disabled && typeof document !== 'undefined' && createPortal(
         <div
-          className={`
-            absolute bottom-full left-0 z-50 mb-2 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border shadow-lg
-            bg-white dark:bg-neutral-900
-            border-neutral-200/80 dark:border-neutral-700/80
-          `}
+          ref={menuRef}
+          className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg border border-neutral-200/80 bg-white shadow-lg dark:border-neutral-700/80 dark:bg-neutral-900"
+          style={menuPosition ? { top: menuPosition.top, left: menuPosition.left } : { visibility: 'hidden', top: 0, left: 0 }}
         >
           <ModeOption
             visibleMode="plan"
@@ -256,7 +290,8 @@ export function AgentModeSelect({
               />
             </>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

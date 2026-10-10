@@ -2,7 +2,8 @@
  * ThinkingDropdown — thinking mode toggle with level selector.
  */
 
-import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { Brain, ChevronDown } from 'lucide-react'
 import { BrandSwitch } from '@creatorweave/ui'
 import { useT } from '@/i18n'
@@ -23,20 +24,56 @@ export function ThinkingDropdown({
 }: ThinkingDropdownProps) {
   const t = useT()
   const [isOpen, setIsOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
-  // Close dropdown when clicking outside
+  // Close dropdown when clicking outside the trigger container or portal menu.
   useEffect(() => {
     if (!isOpen) return
 
     const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (!target.closest('.thinking-dropdown-container')) {
+      const target = e.target as Node
+      if (!containerRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setIsOpen(false)
       }
     }
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isOpen])
+
+  // Keep the fixed-position portal aligned with its trigger while the page moves.
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setMenuPosition(null)
+      return
+    }
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current
+      const menu = menuRef.current
+      if (!trigger || !menu) return
+      const triggerRect = trigger.getBoundingClientRect()
+      const menuRect = menu.getBoundingClientRect()
+      const margin = 8
+      const left = Math.min(
+        Math.max(margin, triggerRect.right - menuRect.width),
+        Math.max(margin, window.innerWidth - menuRect.width - margin),
+      )
+      const aboveTop = triggerRect.top - menuRect.height - 6
+      const top = aboveTop >= margin ? aboveTop : triggerRect.bottom + 6
+      setMenuPosition({ top, left })
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
   }, [isOpen])
 
   const levels: { value: ExtendedThinkingLevel; label: string }[] = [
@@ -49,8 +86,9 @@ export function ThinkingDropdown({
   ]
 
   return (
-    <div className="thinking-dropdown-container relative">
+    <div ref={containerRef} className="thinking-dropdown-container relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setIsOpen((v) => !v)}
         className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border-none px-2 text-[11px] font-medium transition-colors sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 sm:text-xs ${
@@ -71,8 +109,12 @@ export function ThinkingDropdown({
       </button>
 
       {/* Dropdown */}
-      {isOpen && (
-        <div className="absolute bottom-full right-0 z-50 mb-1.5 w-52 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+      {isOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-50 w-52 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          style={menuPosition ? { top: menuPosition.top, left: menuPosition.left } : { visibility: 'hidden', top: 0, left: 0 }}
+        >
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-xs font-medium text-secondary">
               {t('conversation.thinkingMode')}
@@ -107,7 +149,8 @@ export function ThinkingDropdown({
               </div>
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
