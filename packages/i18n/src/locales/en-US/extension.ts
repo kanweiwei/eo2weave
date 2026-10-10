@@ -141,6 +141,9 @@ export const extension = {
   // Settings — Version display
   settingsVersionTitle: "Version",
   settingsLatestVersion: "Latest available",
+  settingsBundledVersion: "Bundled ZIP version",
+  settingsUpdateChannel: "Update channel",
+  settingsStoreAutoUpdates: "Managed automatically by the browser store",
   settingsCurrentVersion: "Currently installed",
   settingsUpdateAvailable: "Update available",
   settingsNewerThanWeb: "Newer than web",
@@ -153,9 +156,6 @@ export const extension = {
   outdatedBannerZipAction: "Download Package",
 
   // Newer-than-web banner
-  newerBannerTitle: "Extension is up to date",
-  newerBannerDescription: "Extension v{current} is newer than this web build (v{web}). You're all set — refresh to re-sync.",
-  newerBannerRefreshAction: "Refresh Page",
 
   // Mobile notice
   mobileNotice: "The browser extension is only available on desktop. Please open this page in Chrome or Edge on your computer to install.",

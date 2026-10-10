@@ -141,6 +141,9 @@ export const extension = {
   // Settings — 版本显示
   settingsVersionTitle: "版本",
   settingsLatestVersion: "最新版本",
+  settingsBundledVersion: "内置 ZIP 版本",
+  settingsUpdateChannel: "更新渠道",
+  settingsStoreAutoUpdates: "由浏览器商店自动管理更新",
   settingsCurrentVersion: "当前安装",
   settingsUpdateAvailable: "有更新",
   settingsNewerThanWeb: "新于网页版",
@@ -153,9 +156,6 @@ export const extension = {
   outdatedBannerZipAction: "下载安装包",
 
   // 插件版本高于网页端提示横幅
-  newerBannerTitle: "插件已是最新",
-  newerBannerDescription: "插件版本 (v{current}) 比当前网页版本 (v{web}) 还新，功能一切正常，刷新页面即可同步。",
-  newerBannerRefreshAction: "刷新页面",
 
   // Mobile notice
   mobileNotice: "浏览器扩展仅支持桌面端，请在电脑上的 Chrome 或 Edge 浏览器中打开本页面进行安装。",
