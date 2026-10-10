@@ -4,15 +4,14 @@
  *   outdated     → installed < latest. Warning banner offering BOTH update
  *                  channels (store first — one click + auto-updates; zip as
  *                  the fallback for networks that can't reach the store).
- *   newerThanWeb → installed > latest known to this web build (the store
- *                  auto-updated ahead of the web deploy). Informational,
- *                  dismissible for 3 days, suggests refreshing the web app.
  *
- * The two are mutually exclusive; outdated wins.
+ * An installed version newer than this web build is intentionally ignored:
+ * the extension store may still be reviewing that version, so the web build
+ * must not ask users to refresh or install an unavailable release.
  */
 
 import { useState, useEffect } from 'react'
-import { AlertTriangle, Store, Download, Sparkles, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, Store, Download, X } from 'lucide-react'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, EXTENSION_LATEST_VERSION } from '@/app-build'
@@ -26,12 +25,9 @@ export function ExtensionOutdatedBanner() {
   const t = useT()
   const status = useExtensionStore((s) => s.status)
   const extensionVersion = useExtensionStore((s) => s.extensionVersion)
-  const newerThanWeb = useExtensionStore((s) => s.newerThanWeb)
   const latestVersion = EXTENSION_LATEST_VERSION
   const shouldShowOutdatedBanner = useExtensionStore((s) => s.shouldShowOutdatedBanner)
-  const shouldShowNewerBanner = useExtensionStore((s) => s.shouldShowNewerBanner)
   const dismissOutdatedBanner = useExtensionStore((s) => s.dismissOutdatedBanner)
-  const dismissNewerBanner = useExtensionStore((s) => s.dismissNewerBanner)
   // Only meaningful when the extension is installed, which mobile devices can
   // never have — gate here so both banners are structurally mobile-free.
   const isMobile = isMobileDeviceForExtension()
@@ -40,8 +36,8 @@ export function ExtensionOutdatedBanner() {
   useEffect(() => {
     if (isMobile) return
     if (status === 'checking') return
-    setVisible(shouldShowOutdatedBanner() || shouldShowNewerBanner())
-  }, [isMobile, status, extensionVersion, newerThanWeb, shouldShowOutdatedBanner, shouldShowNewerBanner])
+    setVisible(shouldShowOutdatedBanner())
+  }, [isMobile, status, extensionVersion, shouldShowOutdatedBanner])
 
   if (!visible || isMobile) return null
 
@@ -101,44 +97,4 @@ export function ExtensionOutdatedBanner() {
       </div>
     )
   }
-
-  // --- Newer than web: informational banner -----------------------------
-  return (
-    <div className="relative flex items-center justify-between gap-3 border-b border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-200/20 dark:bg-primary-100/10">
-      <div className="flex items-center gap-3 min-w-0">
-        <Sparkles className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" />
-        <div className="min-w-0">
-          <span className="text-sm font-medium text-secondary">
-            {t('extension.newerBannerTitle')}
-          </span>
-          <span className="ml-2 hidden text-sm text-tertiary sm:inline">
-            {t('extension.newerBannerDescription')
-              .replace('{current}', extensionVersion || '?')
-              .replace('{web}', latestVersion)}
-          </span>
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="flex items-center gap-1.5 rounded-md bg-primary-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 dark:bg-primary-500 dark:hover:bg-primary-600"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-          {t('extension.newerBannerRefreshAction')}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            dismissNewerBanner()
-            setVisible(false)
-          }}
-          className="rounded p-1 text-tertiary transition-colors hover:bg-primary-100 hover:text-secondary dark:hover:bg-primary-100/20"
-          aria-label={t('extension.bannerDismiss')}
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
-  )
 }
