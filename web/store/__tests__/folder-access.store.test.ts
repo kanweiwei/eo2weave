@@ -413,6 +413,41 @@ describe('folder-access.store runtime handle binding', () => {
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('already exists'))
   })
 
+  it.each([true, false])('re-picking a directory restores only the same entry (same=%s)', async (sameEntry) => {
+    const projectId = 'project-restore-picked'
+    const handle = fakeHandle('photos')
+    const previousHandle = {
+      name: 'photos',
+      isSameEntry: vi.fn().mockResolvedValue(sameEntry),
+    } as unknown as FileSystemDirectoryHandle
+    mockRepo.findByProjectAndRoot.mockResolvedValue({ persistedHandle: handle })
+    mockRepo.save.mockResolvedValue(undefined)
+    mockProjectRootRepo.findByProject.mockResolvedValue([
+      { id: 'existing-photos', projectId, name: 'photos', backend: 'fsaccess' },
+    ])
+    useFolderAccessStore.setState({
+      activeProjectId: projectId,
+      roots: [{
+        id: 'existing-photos', name: 'photos', backend: 'fsaccess', scopeId: null,
+        isDefault: true, readOnly: true, handle: null, persistedHandle: previousHandle,
+        status: 'needs_user_activation',
+      }],
+    })
+
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('photos')
+
+    expect(adopted).toBe(sameEntry)
+    expect(previousHandle.isSameEntry).toHaveBeenCalledWith(handle)
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+    if (sameEntry) {
+      expect(mockNativeFS.bindRuntimeDirectoryHandle).toHaveBeenCalledWith(projectId, 'photos', handle)
+      expect(mockRepo.save).toHaveBeenCalled()
+    } else {
+      expect(mockNativeFS.bindRuntimeDirectoryHandle).not.toHaveBeenCalled()
+      expect(mockRepo.save).not.toHaveBeenCalled()
+    }
+  })
+
   it('adoptPickedRoot fails cleanly when neither record nor parked handle exists', async () => {
     const projectId = 'project-adopt-missing'
     mockRepo.findByProjectAndRoot.mockResolvedValue(null)
