@@ -2,7 +2,8 @@
  * AgentDropdown — active agent selector with create/delete actions.
  */
 
-import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, Info, Trash2 } from 'lucide-react'
 import { useT } from '@/i18n'
 import type { AgentMeta } from '@/opfs'
@@ -22,21 +23,58 @@ export function AgentDropdown({
 }: AgentDropdownProps) {
   const t = useT()
   const [isOpen, setIsOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
   const showGuide = allAgents.length <= 1
 
+  // Close dropdown when clicking outside the trigger container or portal menu.
   useEffect(() => {
     if (!isOpen) return
 
     const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (!target.closest('.agent-dropdown-container')) {
+      const target = e.target as Node
+      if (!containerRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setIsOpen(false)
       }
     }
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isOpen])
+
+  // Keep the fixed-position portal aligned with its trigger while the page moves.
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setMenuPosition(null)
+      return
+    }
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current
+      const menu = menuRef.current
+      if (!trigger || !menu) return
+      const triggerRect = trigger.getBoundingClientRect()
+      const menuRect = menu.getBoundingClientRect()
+      const margin = 8
+      const left = Math.min(
+        Math.max(margin, triggerRect.left),
+        Math.max(margin, window.innerWidth - menuRect.width - margin),
+      )
+      const aboveTop = triggerRect.top - menuRect.height - 8
+      const top = aboveTop >= margin ? aboveTop : triggerRect.bottom + 8
+      setMenuPosition({ top, left })
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
   }, [isOpen])
 
   const handleDeleteAgent = async (agentId: string) => {
@@ -46,8 +84,9 @@ export function AgentDropdown({
   }
 
   return (
-    <div className="agent-dropdown-container relative">
+    <div ref={containerRef} className="agent-dropdown-container relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setIsOpen((v) => !v)}
         className="inline-flex h-7 min-h-0 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border-none bg-neutral-100 px-2 text-[11px] font-medium text-neutral-700 transition-colors hover:bg-neutral-200/70 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700/70 sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 sm:text-xs"
@@ -62,8 +101,12 @@ export function AgentDropdown({
         <ChevronDown className={`h-3 w-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
-        <div className="absolute bottom-full left-0 z-50 mb-1 w-52 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+      {isOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-50 w-52 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          style={menuPosition ? { top: menuPosition.top, left: menuPosition.left } : { visibility: 'hidden', top: 0, left: 0 }}
+        >
           <div className="max-h-48 overflow-y-auto py-1">
             {allAgents.map((agent) => {
               const isActive = activeAgentId === agent.id
@@ -113,7 +156,8 @@ export function AgentDropdown({
               </div>
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
