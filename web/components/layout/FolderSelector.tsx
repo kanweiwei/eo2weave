@@ -104,14 +104,15 @@ export function FolderSelector() {
       return
     }
     channel.onmessage = (event: MessageEvent) => {
-      const data = event.data as { type?: string; name?: string } | null
-      if (data?.type !== 'folder-picked' || !data.name) return
-      void adoptPickedRoot(data.name)
+      const data = event.data as { type?: string; name?: string; pickId?: string; projectId?: string | null } | null
+      if (data?.type !== 'folder-picked' || !data.name || !data.pickId) return
+      if (data.projectId !== null && data.projectId !== activeProjectId) return
+      void adoptPickedRoot(data.name, data.pickId, data.projectId ?? null)
     }
     return () => {
       channel?.close()
     }
-  }, [isSidePanel, adoptPickedRoot])
+  }, [isSidePanel, activeProjectId, adoptPickedRoot])
 
   const handleAddRoot = useCallback(async () => {
     if (!canPickDirectory || isAdding) return

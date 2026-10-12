@@ -92,10 +92,15 @@ vi.mock('../workspace.store', () => ({
 }))
 
 import { useFolderAccessStore } from '../folder-access.store'
+import { getRuntimeHandlesForProject } from '@/native-fs'
+import { isNativeHostAvailable } from '@/opfs/native-disk/executor'
 
 describe('folder-access.store runtime handle binding', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
+    vi.mocked(getRuntimeHandlesForProject).mockReturnValue(new Map())
+    vi.mocked(isNativeHostAvailable).mockReturnValue(true)
+    mockSidePanelContext.isSidePanelMode.mockReturnValue(false)
     mockRepo.loadAllForProject.mockResolvedValue([])
     mockProjectRootRepo.findByProject.mockResolvedValue([])
     // Default: removed root was the last binding of its scope.
@@ -356,15 +361,10 @@ describe('folder-access.store runtime handle binding', () => {
     return { name } as unknown as FileSystemDirectoryHandle
   }
 
-  it('adoptPickedRoot adopts a project-scoped picked handle (SQLite-first ordering)', async () => {
+  it('adoptPickedRoot validates a pending project handoff before SQLite-first adoption', async () => {
     const projectId = 'project-adopt'
     const handle = fakeHandle('picked-repo')
-    mockRepo.findByProjectAndRoot.mockResolvedValue({
-      projectId,
-      rootName: 'picked-repo',
-      persistedHandle: handle,
-      status: 'ready',
-    })
+    mockRepo.takeParkedHandle.mockResolvedValue(handle)
     mockRepo.save.mockResolvedValue(undefined)
     mockProjectRootRepo.createRoot.mockResolvedValue({
       id: 'root-adopted',
@@ -373,7 +373,7 @@ describe('folder-access.store runtime handle binding', () => {
     })
     useFolderAccessStore.setState({ activeProjectId: projectId })
 
-    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('picked-repo')
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('picked-repo', 'pick-1', projectId)
 
     expect(adopted).toBe(true)
     // SQLite row MUST be created before the runtime handle is bound (the
@@ -386,11 +386,11 @@ describe('folder-access.store runtime handle binding', () => {
       persistedHandle: handle,
       status: 'ready',
     }))
-    // Parked slot must be untouched when the project-scoped record hit.
-    expect(mockRepo.takeParkedHandle).not.toHaveBeenCalled()
+    expect(mockRepo.takeParkedHandle).toHaveBeenCalledWith('pick-1', projectId, 'picked-repo')
+    expect(mockRepo.findByProjectAndRoot).not.toHaveBeenCalled()
   })
 
-  it('adoptPickedRoot falls back to the parked handle when no project record exists', async () => {
+  it('adoptPickedRoot adopts a pending root-route handoff into the active project', async () => {
     const projectId = 'project-adopt-parked'
     const handle = fakeHandle('parked-repo')
     mockRepo.findByProjectAndRoot.mockResolvedValue(null)
@@ -399,7 +399,7 @@ describe('folder-access.store runtime handle binding', () => {
     mockProjectRootRepo.createRoot.mockResolvedValue({ id: 'root-2', projectId, name: 'parked-repo' })
     useFolderAccessStore.setState({ activeProjectId: projectId })
 
-    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('parked-repo')
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('parked-repo', 'pick-root-route', null)
 
     expect(adopted).toBe(true)
     expect(mockRepo.takeParkedHandle).toHaveBeenCalledTimes(1)
@@ -408,19 +408,14 @@ describe('folder-access.store runtime handle binding', () => {
 
   it('adoptPickedRoot reports duplicates as already-exists without creating', async () => {
     const projectId = 'project-adopt-dup'
-    mockRepo.findByProjectAndRoot.mockResolvedValue({
-      projectId,
-      rootName: 'dup-repo',
-      persistedHandle: fakeHandle('dup-repo'),
-      status: 'ready',
-    })
+    mockRepo.takeParkedHandle.mockResolvedValue(fakeHandle('dup-repo'))
     // Root already present in SQLite.
     mockProjectRootRepo.findByProject.mockResolvedValue([
       { id: 'root-dup', projectId, name: 'dup-repo' },
     ])
     useFolderAccessStore.setState({ activeProjectId: projectId })
 
-    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('dup-repo')
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('dup-repo', 'pick-dup', projectId)
 
     expect(adopted).toBe(false)
     expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
@@ -436,7 +431,8 @@ describe('folder-access.store runtime handle binding', () => {
       name: 'photos',
       isSameEntry: vi.fn().mockResolvedValue(sameEntry),
     } as unknown as FileSystemDirectoryHandle
-    mockRepo.findByProjectAndRoot.mockResolvedValue({ persistedHandle: handle })
+    mockRepo.takeParkedHandle.mockResolvedValue(handle)
+    mockRepo.findByProjectAndRoot.mockResolvedValue({ persistedHandle: previousHandle })
     mockRepo.save.mockResolvedValue(undefined)
     mockProjectRootRepo.findByProject.mockResolvedValue([
       { id: 'existing-photos', projectId, name: 'photos', backend: 'fsaccess' },
@@ -450,7 +446,7 @@ describe('folder-access.store runtime handle binding', () => {
       }],
     })
 
-    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('photos')
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('photos', 'pick-photos', projectId)
 
     expect(adopted).toBe(sameEntry)
     expect(previousHandle.isSameEntry).toHaveBeenCalledWith(handle)
@@ -464,15 +460,43 @@ describe('folder-access.store runtime handle binding', () => {
     }
   })
 
-  it('adoptPickedRoot fails cleanly when neither record nor parked handle exists', async () => {
+  it('adoptPickedRoot fails cleanly when its pending handle is missing', async () => {
     const projectId = 'project-adopt-missing'
     mockRepo.findByProjectAndRoot.mockResolvedValue(null)
     mockRepo.takeParkedHandle.mockResolvedValue(null)
     useFolderAccessStore.setState({ activeProjectId: projectId })
 
-    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('ghost-repo')
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('ghost-repo', 'pick-missing', projectId)
 
     expect(adopted).toBe(false)
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+  })
+
+  it('rejects a different same-name directory without changing the persisted root after reload', async () => {
+    const projectId = 'project-identity'
+    const original = { name: 'photos', isSameEntry: vi.fn().mockResolvedValue(false), queryPermission: vi.fn().mockResolvedValue('granted') } as unknown as FileSystemDirectoryHandle
+    const replacement = fakeHandle('photos')
+    let persisted = { projectId, rootName: 'photos', persistedHandle: original }
+    mockRepo.findByProjectAndRoot.mockImplementation(async () => persisted)
+    mockRepo.save.mockImplementation(async (record) => { persisted = record })
+    mockRepo.takeParkedHandle.mockResolvedValue(replacement)
+    mockProjectRootRepo.findByProject.mockResolvedValue([{ id: 'root-original', projectId, name: 'photos', backend: 'fsaccess' }])
+    useFolderAccessStore.setState({ activeProjectId: projectId, roots: [] })
+
+    expect(await useFolderAccessStore.getState().adoptPickedRoot('photos', 'pick-wrong', projectId)).toBe(false)
+    expect(original.isSameEntry).toHaveBeenCalledWith(replacement)
+    expect(mockRepo.save).not.toHaveBeenCalled()
+    expect(mockNativeFS.bindRuntimeDirectoryHandle).not.toHaveBeenCalled()
+    expect((await mockRepo.findByProjectAndRoot(projectId, 'photos')).persistedHandle).toBe(original)
+    await useFolderAccessStore.getState().loadRoots()
+    expect(useFolderAccessStore.getState().roots[0].persistedHandle).toBe(original)
+  })
+
+  it('does not consume a handoff for a different active project', async () => {
+    useFolderAccessStore.setState({ activeProjectId: 'project-other' })
+    expect(await useFolderAccessStore.getState().adoptPickedRoot('photos', 'pick-other', 'project-picked')).toBe(false)
+    expect(mockRepo.takeParkedHandle).not.toHaveBeenCalled()
+    expect(mockRepo.save).not.toHaveBeenCalled()
     expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
   })
 

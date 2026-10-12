@@ -1028,20 +1028,14 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       return true
     },
 
-    adoptPickedRoot: async (name: string) => {
+    adoptPickedRoot: async (name: string, pickId: string, pickedProjectId: string | null) => {
       const projectId = get().activeProjectId
-      if (!projectId) return false
+      if (!projectId || !pickId || (pickedProjectId !== null && pickedProjectId !== projectId)) return false
 
-      // The pick tab filed the record under this project when it knew the
-      // projectId, otherwise it parked the handle in the shared slot.
+      // Consume only this handoff; mounted-root records remain untouched.
       let handle: FileSystemDirectoryHandle | null = null
       try {
-        const record = await folderAccessRepo.findByProjectAndRoot(projectId, name)
-        if (record?.persistedHandle) {
-          handle = record.persistedHandle
-        } else {
-          handle = await folderAccessRepo.takeParkedHandle()
-        }
+        handle = await folderAccessRepo.takeParkedHandle(pickId, pickedProjectId, name)
       } catch (error) {
         console.error('[FolderAccessStore] adoptPickedRoot: failed to load picked handle:', error)
       }
@@ -1060,6 +1054,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         const runtimeRoot = get().roots.find((r) => r.id === existingRoot.id)
         const previousHandle = runtimeRoot?.handle ?? runtimeRoot?.persistedHandle
           ?? getRuntimeHandlesForProject(projectId).get(rootName)
+          ?? (await folderAccessRepo.findByProjectAndRoot(projectId, rootName))?.persistedHandle
         let sameDirectory = false
         if (previousHandle && (existingRoot.backend ?? 'fsaccess') === 'fsaccess') {
           try {
@@ -1071,6 +1066,8 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           return false
         }
       }
+
+      if (get().activeProjectId !== projectId) return false
 
       // Same ordering contract as addRoot: SQLite row first, then bind the
       // runtime handle and persist, so a failed create never leaves an

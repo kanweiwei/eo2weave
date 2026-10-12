@@ -40,26 +40,13 @@ function FolderPickView() {
         void _entry
         break
       }
+      let pickId: string
       try {
         // Stash the handle so the panel can adopt it after the broadcast.
         // sessionStorage can't hold FileSystemHandles; IndexedDB can.
         const { folderAccessRepo } = await import('@/services/folder-access.repository')
-        if (projectId) {
-          await folderAccessRepo.save({
-            projectId,
-            rootName: name,
-            folderName: name,
-            handle,
-            persistedHandle: handle,
-            status: 'ready',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          })
-        } else {
-          // No project context (root page) — park the handle under a
-          // well-known key; the panel adopts it into the active project.
-          await folderAccessRepo.saveParkedHandle(handle)
-        }
+        // Never overwrite a mounted root before the panel checks identity.
+        pickId = await folderAccessRepo.saveParkedHandle(handle, projectId)
       } catch (error) {
         console.error('[FolderPick] Failed to persist handle:', error)
         throw error
@@ -67,7 +54,7 @@ function FolderPickView() {
       try {
         const channel = new BroadcastChannel(PICK_CHANNEL)
         try {
-          channel.postMessage({ type: 'folder-picked', name })
+          channel.postMessage({ type: 'folder-picked', name, pickId, projectId })
         } finally {
           channel.close()
         }

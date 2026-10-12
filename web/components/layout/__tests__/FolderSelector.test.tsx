@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   loadRoots: vi.fn(),
   agentState: vi.fn(),
   error: vi.fn(),
+  adopt: vi.fn(),
 }))
 
 vi.mock('@/agent/workspace-assistant-context', () => ({ isSidePanelMode: () => mocks.sidePanel }))
@@ -25,7 +26,7 @@ vi.mock('@/store/folder-access.store', () => ({
       persistedHandle: { requestPermission: mocks.requestPermission },
     }],
     activeProjectId: 'project-photos', loadRoots: mocks.loadRoots,
-    addRoot: vi.fn(), adoptPickedRoot: vi.fn(), addNativeHostRoot: vi.fn(),
+    addRoot: vi.fn(), adoptPickedRoot: mocks.adopt, addNativeHostRoot: vi.fn(),
     removeRoot: vi.fn(), toggleReadOnly: vi.fn(),
   }),
 }))
@@ -33,16 +34,23 @@ vi.mock('@/store/folder-access.store', () => ({
 import { FolderSelector } from '../FolderSelector'
 
 describe('FolderSelector permission restoration', () => {
+  let channel: { onmessage: ((event: MessageEvent) => void) | null }
   beforeEach(() => {
     vi.resetAllMocks()
     mocks.sidePanel = true
     mocks.loadRoots.mockResolvedValue(undefined)
     vi.spyOn(window, 'open').mockReturnValue(null)
+    vi.stubGlobal('BroadcastChannel', class {
+      onmessage = null
+      close() {}
+      constructor() { channel = this }
+    })
   })
 
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   async function restore() {
@@ -59,6 +67,15 @@ describe('FolderSelector permission restoration', () => {
     )
     expect(mocks.requestPermission).not.toHaveBeenCalled()
     expect(mocks.bind).not.toHaveBeenCalled()
+  })
+
+  it('routes only the matching project handoff to adoption', () => {
+    render(<FolderSelector />)
+    const message = { type: 'folder-picked', name: 'photos', pickId: 'pick-photos', projectId: 'project-other' }
+    channel.onmessage?.({ data: message } as MessageEvent)
+    expect(mocks.adopt).not.toHaveBeenCalled()
+    channel.onmessage?.({ data: { ...message, projectId: 'project-photos' } } as MessageEvent)
+    expect(mocks.adopt).toHaveBeenCalledWith('photos', 'pick-photos', 'project-photos')
   })
 
   it('does not bind a directory when top-level permission is denied', async () => {

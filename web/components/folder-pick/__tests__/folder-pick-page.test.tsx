@@ -38,7 +38,7 @@ describe('folder-pick page handoff', () => {
     vi.resetAllMocks()
     mocks.projectId = 'project-folder-test'
     mocks.save.mockResolvedValue(undefined)
-    mocks.park.mockResolvedValue(undefined)
+    mocks.park.mockResolvedValue('pick-photos')
     vi.stubGlobal('BroadcastChannel', class {
       postMessage = mocks.postMessage
       close = mocks.closeChannel
@@ -53,7 +53,7 @@ describe('folder-pick page handoff', () => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps the granting tab open after a readable directory is persisted and broadcast', async () => {
+  it('keeps the granting tab open after a readable directory is parked and broadcast without replacing a mounted root', async () => {
     const handle = directory()
     mocks.pick.mockResolvedValue(handle)
     const timeout = vi.spyOn(window, 'setTimeout')
@@ -61,10 +61,9 @@ describe('folder-pick page handoff', () => {
     await userEvent.setup().click(screen.getByText('folderPick.choose'))
 
     expect(await screen.findByText('folderPick.done')).toBeInTheDocument()
-    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({
-      projectId: 'project-folder-test', persistedHandle: handle, status: 'ready',
-    }))
-    expect(mocks.postMessage).toHaveBeenCalledWith({ type: 'folder-picked', name: 'photos' })
+    expect(mocks.park).toHaveBeenCalledWith(handle, 'project-folder-test')
+    expect(mocks.save).not.toHaveBeenCalled()
+    expect(mocks.postMessage).toHaveBeenCalledWith({ type: 'folder-picked', name: 'photos', pickId: 'pick-photos', projectId: 'project-folder-test' })
     expect(mocks.closeChannel).toHaveBeenCalledOnce()
     expect(window.close).not.toHaveBeenCalled()
     expect(timeout.mock.calls.some(([, delay]) => delay === 300)).toBe(false)
@@ -78,13 +77,14 @@ describe('folder-pick page handoff', () => {
     expect(await screen.findByText('folderPick.failedTitle')).toBeInTheDocument()
     expect(screen.getByText('NotAllowedError: Directory access denied')).toBeInTheDocument()
     expect(mocks.save).not.toHaveBeenCalled()
+    expect(mocks.park).not.toHaveBeenCalled()
     expect(mocks.postMessage).not.toHaveBeenCalled()
     expect(screen.queryByText('folderPick.done')).not.toBeInTheDocument()
   })
 
   it('does not claim success or notify the panel when handle persistence fails', async () => {
     mocks.pick.mockResolvedValue(directory())
-    mocks.save.mockRejectedValue(new Error('Handle storage failed'))
+    mocks.park.mockRejectedValue(new Error('Handle storage failed'))
     render(<FolderPickPage />)
     await userEvent.setup().click(screen.getByText('folderPick.choose'))
 
@@ -111,7 +111,7 @@ describe('folder-pick page handoff', () => {
     render(<FolderPickPage />)
     await userEvent.setup().click(screen.getByText('folderPick.choose'))
 
-    await waitFor(() => expect(mocks.park).toHaveBeenCalledWith(handle))
+    await waitFor(() => expect(mocks.park).toHaveBeenCalledWith(handle, null))
     expect(mocks.save).not.toHaveBeenCalled()
     expect(await screen.findByText('folderPick.done')).toBeInTheDocument()
   })
