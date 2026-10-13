@@ -160,7 +160,17 @@ export const readImageExecutor: ToolExecutor = async (
   const path = typeof args.path === 'string' ? args.path : undefined
   if (!path) return toolErrorJson('read_image', 'invalid_arguments', 'path is required')
 
-  if (!context.onReadImageSuccess) {
+  // Runtime-switchable experiment flag (no dev-server restart needed).
+  // Prefer the build-time env var; fall back to a localStorage toggle read
+  // lazily so the browser bundle does not need a rebuild to flip the mode.
+  const toolResultExperiment = process.env.NEXT_PUBLIC_EXPERIMENT_READ_IMAGE_TOOL_RESULT === 'true'
+    || (
+      typeof window !== 'undefined'
+      && window.localStorage.getItem('experiment.readImageToolResult') === 'true'
+    )
+    && (context.provider?.getModel()?.input?.includes('image') ?? false)
+
+  if (!toolResultExperiment && !context.onReadImageSuccess) {
     return toolErrorJson(
       'read_image',
       'handoff_unavailable',
@@ -236,7 +246,17 @@ export const readImageExecutor: ToolExecutor = async (
       contentParts = [{ type: 'text', text: content }]
     }
 
-    const queued = context.onReadImageSuccess({
+    if (toolResultExperiment) {
+      return toolOkJson('read_image', {
+        path: visiblePath,
+        mimeType: normalizedMimeType,
+        mode: 'vision',
+      }, {
+        contentParts,
+      })
+    }
+
+    const queued = context.onReadImageSuccess!({
       content,
       contentParts,
       readImage: {
