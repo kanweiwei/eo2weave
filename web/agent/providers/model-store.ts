@@ -24,10 +24,18 @@ interface CachedModels {
   error?: string
 }
 
-// ─── Config ──────────────────────────────────────────────────────────────────
+// ─── Config ────────────────────────────────────────────────────────────
 
 /** localStorage key prefix */
 const STORAGE_PREFIX = 'cw-models:'
+
+/**
+ * Cache freshness window. Stale entries are still served immediately
+ * (stale-while-revalidate) so the UI never blocks, but callers can detect
+ * staleness via `isCacheStale()` / `getCachedModelsResult()` and re-fetch
+ * in the background.
+ */
+export const MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h
 
 // ─── Cache storage ───────────────────────────────────────────────────────────
 
@@ -135,6 +143,16 @@ export function getCachedModelsResult(
 }
 
 /**
+ * Whether a cached entry is older than MODELS_CACHE_TTL_MS.
+ * Missing entry counts as stale (nothing cached = needs fetch).
+ */
+export function isCacheStale(providerType: LLMProviderType, providerKey?: string): boolean {
+  const entry = getCachedModelsResult(providerType, providerKey)
+  if (!entry) return true
+  return Date.now() - entry.fetchedAt > MODELS_CACHE_TTL_MS
+}
+
+/**
  * Store fetched models in both memory and localStorage.
  * Only persists dynamic (API-fetched) results.
  */
@@ -159,6 +177,129 @@ export function setCachedModels(
   // Notify listeners that models have been updated
   // (e.g. image gen tool may need to register/unregister)
   notifyModelsUpdated()
+}
+
+/**
+ * Merge the static skeleton catalog with dynamic /models results for one
+ * provider, applying the channel-aware precedence rules:
+ *
+ * - Rich API data (any entry with `metadataFromApi`) is authoritative: the
+ *   API list IS the catalog. Skeleton ids it does not list are dropped
+ *   (renamed/removed provider-side); listed ids are merged — API metadata
+ *   wins, static capability tags are unioned in since `input_modalities`
+ *   only covers vision.
+ * - Without authoritative data, the skeleton fills gaps and dynamic entries
+ *   are appended (previous behavior).
+ *
+ * Pure function; extracted from ProviderManager so the precedence rules are
+ * unit-testable without rendering the settings UI.
+ */
+export function mergeModelLists(
+  providerType: LLMProviderType,
+  dynamicModels: ModelInfo[],
+  options: { isCustom: boolean; customModelIds?: string[] }
+): ModelInfo[] {
+  const seen = new Set<string>()
+  const result: ModelInfo[] = []
+
+  if (options.isCustom) {
+    // Start with configured model IDs (bare bones — no contextWindow info)
+    for (const id of options.customModelIds ?? []) {
+      if (!seen.has(id)) {
+        seen.add(id)
+        result.push({
+          id,
+          name: id,
+          capabilities: ['code'] as const,
+          contextWindow: getModelContextWindow(providerType, id),
+        })
+      }
+    }
+
+    // Overlay dynamic models on top — they carry API-provided context_length
+    // from the fetch. Enrich with API data but keep the registry contextWindow
+    // as a floor when the API response omitted context_window.
+    for (const dm of dynamicModels) {
+      const existingIdx = result.findIndex((m) => m.id === dm.id)
+      if (existingIdx >= 0) {
+        const registered = result[existingIdx]
+        result[existingIdx] = dm.contextWindow != null ? dm : { ...dm, contextWindow: registered.contextWindow }
+      } else if (!seen.has(dm.id)) {
+        seen.add(dm.id)
+        result.push(dm)
+      }
+    }
+
+    return result
+  }
+
+  // Dynamic models (from /models API) FIRST — they carry authoritative
+  // provider metadata (name, context_window, input_modalities/vision).
+  for (const m of dynamicModels) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id)
+      result.push(m)
+    }
+  }
+
+  // Static skeleton second: only fills gaps when there is NO authoritative
+  // API data. When the dynamic list carries provider metadata
+  // (metadataFromApi), the API list IS the model catalog: skeleton ids the
+  // API does not list are dropped (renamed/removed provider-side), and
+  // listed ids are merged — API metadata wins, static capability tags are
+  // unioned in since input_modalities only covers vision.
+  //
+  // Product note: this treats a filtered /models response (one-api/new-api
+  // gateways expose a key-scoped subset) as authoritative too. Accepted:
+  // showing a stale "supported" model is worse than hiding a still-working
+  // one, and the user can re-add any hidden id via "add model".
+  const apiListed = dynamicModels.some((m) => m.metadataFromApi)
+    ? new Set(dynamicModels.map((m) => m.id))
+    : null
+  const staticModels = getModelsForProvider(providerType)
+  for (const m of staticModels) {
+    if (apiListed && !apiListed.has(m.id)) continue
+    const existingIdx = result.findIndex((r) => r.id === m.id)
+    if (existingIdx >= 0) {
+      const apiEntry = result[existingIdx]
+      result[existingIdx] = {
+        ...apiEntry,
+        capabilities: Array.from(new Set([...apiEntry.capabilities, ...m.capabilities])),
+      }
+    } else if (!apiListed && !seen.has(m.id)) {
+      seen.add(m.id)
+      result.push(m)
+    }
+  }
+
+  return result
+}
+
+/**
+ * Look up a single model's cached ModelInfo entry (case-insensitive id match)
+ * from the dynamic model cache. Returns the API-parsed entry (which may carry
+ * `inputModalities`, `metadataFromApi`, etc.) or null when not cached.
+ */
+export function findCachedModelInfo(
+  providerType: LLMProviderType,
+  modelId: string,
+  providerKey?: string
+): ModelInfo | null {
+  const keysToTry: Array<{ pt: LLMProviderType; pk?: string }> = [
+    { pt: providerType, pk: providerKey },
+    { pt: providerType },
+  ]
+  if (providerKey !== providerType) {
+    keysToTry.push({ pt: providerType, pk: providerType })
+  }
+  const lowerModelId = modelId.toLowerCase()
+  for (const { pt, pk } of keysToTry) {
+    const models = getCachedModels(pt, pk)
+    if (!models) continue
+    const hit = models.find((m) => m.id.toLowerCase() === lowerModelId)
+    if (hit) return hit
+  }
+  return null
 }
 
 /**

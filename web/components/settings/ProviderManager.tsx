@@ -45,7 +45,7 @@ import type {
 } from '@/agent/providers/types'
 import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
 import { canFetchModels } from '@/agent/providers/model-fetcher'
-import { getCachedModels, getModelContextWindow } from '@/agent/providers/model-store'
+import { getCachedModels, getModelContextWindow, mergeModelLists } from '@/agent/providers/model-store'
 import { getDefaultPinnedModels } from '@/agent/providers/default-models'
 import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -204,61 +204,15 @@ function ProviderCard({
   const [showAddModelDialog, setShowAddModelDialog] = useState(false)
   const [addModelSearch, setAddModelSearch] = useState('')
 
-  // Merge model lists: dynamic + static + custom provider models
-  const allModels = useMemo<ModelInfo[]>(() => {
-    const seen = new Set<string>()
-    const result: ModelInfo[] = []
-
-    if (isCustom && customProvider) {
-      // Start with configured model IDs (bare bones — no contextWindow info)
-      for (const id of customProvider.models) {
-        if (!seen.has(id)) {
-          seen.add(id)
-          result.push({
-            id,
-            name: id,
-            capabilities: ['code'] as const,
-            contextWindow: getModelContextWindow(providerType, id),
-          })
-        }
-      }
-
-      // Overlay dynamic models on top — they carry API-provided context_length
-      // from the fetch (OpenRouter-style APIs). Preserve the model ID from the
-      // dynamic list but use the rich info (contextWindow) from the API.
-      for (const dm of dynamicModels) {
-        const existingIdx = result.findIndex((m) => m.id === dm.id)
-        if (existingIdx >= 0) {
-          // Enrich with API data (contextWindow, capabilities, name)
-          result[existingIdx] = dm
-        } else if (!seen.has(dm.id)) {
-          seen.add(dm.id)
-          result.push(dm)
-        }
-      }
-
-      return result
-    }
-
-    // Static models first (have capability info)
-    const staticModels = getModelsForProvider(providerType)
-    for (const m of staticModels) {
-      if (!seen.has(m.id)) {
-        seen.add(m.id)
-        result.push(m)
-      }
-    }
-
-    // Then dynamic models (from /models API)
-    for (const m of dynamicModels) {
-      if (!seen.has(m.id)) {
-        seen.add(m.id)
-        result.push(m)
-      }
-    }
-
-    return result
-  }, [isCustom, customProvider, providerType, dynamicModels])
+  // Merge model lists: dynamic (API) + static skeleton + custom provider models.
+  // Precedence rules live in mergeModelLists (unit-tested).
+  const allModels = useMemo<ModelInfo[]>(
+    () => mergeModelLists(providerType, dynamicModels, {
+      isCustom,
+      customModelIds: isCustom ? customProvider?.models : undefined,
+    }),
+    [isCustom, customProvider, providerType, dynamicModels]
+  )
 
   // Record confirmed pins against the merged list (dynamic fetch + static +
   // custom provider entries). This is what powers stale detection: a pin
