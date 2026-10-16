@@ -21,10 +21,16 @@ export interface ContinueWorkCardProps {
 }
 
 /**
- * Compact "continue work" affordance — a single button row that surfaces the
- * most recent project so the user can resume with one click. Designed to
- * sit inline next to the primary "new project" CTA in the hero (small + low-
- * contrast), not as a featured card.
+ * Compact "continue work" affordance — a single row that surfaces the most
+ * recent project so the user can resume with one click. Designed to sit inline
+ * next to the primary "new project" CTA in the hero (small + low-contrast),
+ * not as a featured card.
+ *
+ * The whole row exposes `role="button"`, so a click anywhere on it (icon,
+ * name, timestamp, arrow) opens the project. The inner <button> keeps its own
+ * hover/focus visuals and relies on event bubbling to drive the row handler,
+ * so visual presentation stays identical to the pre-redesign version while
+ * every region of the row becomes interactive.
  */
 export function ContinueWorkCard({
   project,
@@ -46,10 +52,29 @@ export function ContinueWorkCard({
     locale: dateFnsLocale,
   })
 
+  const handleRowClick = () => {
+    if (isActionPending) return
+    onOpen(project.id)
+  }
+
+  const handleRowKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isActionPending) return
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onOpen(project.id)
+    }
+  }
+
   return (
     <div
       data-testid="continue-work-card"
-      className="group flex h-9 items-center gap-3 rounded-lg bg-card/60 px-3 transition-colors hover:bg-muted"
+      role="button"
+      tabIndex={isActionPending ? -1 : 0}
+      aria-label={t('projectHome.continueWork.openProject', { name: project.name })}
+      aria-disabled={isActionPending}
+      onClick={handleRowClick}
+      onKeyDown={handleRowKeyDown}
+      className="group flex h-9 cursor-pointer items-center gap-3 rounded-lg bg-card/60 px-3 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
     >
       <span
         aria-hidden
@@ -61,7 +86,6 @@ export function ContinueWorkCard({
       <div className="min-w-0 flex-1 truncate text-sm">
         <button
           type="button"
-          onClick={() => onOpen(project.id)}
           disabled={isActionPending}
           className="cursor-pointer truncate rounded font-medium text-secondary hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:opacity-60 dark:text-secondary-foreground"
         >
@@ -71,15 +95,12 @@ export function ContinueWorkCard({
         <span className="text-muted-foreground">{relativeTime}</span>
       </div>
 
-      <button
-        type="button"
-        onClick={() => onOpen(project.id)}
-        disabled={isActionPending}
-        aria-label={t('projectHome.continueWork.openProject', { name: project.name })}
-        className="grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:opacity-60"
+      <span
+        aria-hidden
+        className="grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
       >
         <ArrowRight className="h-4 w-4" />
-      </button>
+      </span>
     </div>
   )
 }
