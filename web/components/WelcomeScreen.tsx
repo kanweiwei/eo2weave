@@ -37,7 +37,14 @@ import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
 import { ActiveTabIndicator } from './agent/ActiveTabIndicator'
+import { AgentDropdown } from './agent/AgentDropdown'
+import { ThinkingDropdown } from './agent/ThinkingDropdown'
+import { AgentModeSelect } from './agent/AgentModeSelect'
+import { RunEndPolicySelect } from './agent/RunEndPolicySelect'
 import type { FileMentionItem } from './agent/FileMentionExtension'
+import { useAgentsStore } from '@/store/agents.store'
+import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
+import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 import { useGatewayLogin, isLLMGatewayConfigured } from '@/hooks/useGatewayLogin'
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import { useExtensionStore } from '@/store/extension.store'
@@ -200,6 +207,35 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
   const hasCreatedProject = typeof window !== 'undefined'
     && localStorage.getItem('creatorweave:auto-default-project-created') === '1'
+
+  // ── Toolbar state (pre-conversation configuration) ──
+  // Settings store holds thinking toggle + level; changes here flow into the
+  // first message send because useSettingsStore is read at send time, not
+  // snapshotted on mount.
+  const enableThinking = useSettingsStore((s) => s.enableThinking)
+  const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
+  const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
+  const setThinkingLevel = useSettingsStore((s) => s.setThinkingLevel)
+  // Workspace preferences: agentMode + auto-apply policy. Both are
+  // per-workspace, but with no active workspace yet (bare URL on entry),
+  // setAgentMode / setAutoApplyOnRunComplete only update the global mirror;
+  // the per-workspace map is populated on the first switchWorkspace, at
+  // which point the just-chosen value lands on the new conversation.
+  const agentMode = useWorkspacePreferencesStore((s) => s.agentMode)
+  const setAgentMode = useWorkspacePreferencesStore((s) => s.setAgentMode)
+  const autoApplyOnRunComplete = useWorkspacePreferencesStore((s) => s.autoApplyOnRunComplete)
+  const setAutoApplyOnRunComplete = useWorkspacePreferencesStore((s) => s.setAutoApplyOnRunComplete)
+  // Agents store: pull the per-project agent list and make sure the store
+  // is initialised for the active project. useProjectAgentsInit is shared
+  // with ConversationView (so the bare-URL AgentDropdown on WelcomeScreen
+  // populates the same way the in-conversation dropdown does). When there
+  // is no active project yet (truly bare URL), the init hook is a no-op
+  // and the dropdown shows "default" — same fallback AgentRichInput uses.
+  const allAgents = useAgentsStore((s) => s.agents)
+  const activeAgentId = useAgentsStore((s) => s.activeAgentId)
+  const setActiveAgent = useAgentsStore((s) => s.setActiveAgent)
+  const deleteAgent = useAgentsStore((s) => s.deleteAgent)
+  useProjectAgentsInit()
 
   // Track whether folder-access hydration has completed for the current
   // project. Until then we don't know whether `folderRoots` is genuinely
@@ -740,7 +776,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 {t('welcome.readyHint')}
               </p>
             )}
-            <div className="relative mb-6" data-tour="welcome-input">
+            <div className="relative" data-tour="welcome-input">
               {/* Side-panel mode: shows which tab the AI is currently reading.
                   Renders null outside side-panel mode. */}
               <ActiveTabIndicator />
@@ -793,6 +829,38 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   </TooltipProvider>
                 )}
               />
+            </div>
+
+            {/* ── Compact toolbar row ──
+                Lets users configure thinking level / agent mode / YOLO /
+                completion-apply policy BEFORE sending the first message.
+                The settings flow into the new conversation on send (the
+                settings store is read at send time, not snapshotted on
+                mount; the workspace-preferences maps get populated on
+                first switchWorkspace). Rendered on every non-welcome
+                step — the setup steps may not be able to send yet, but
+                preconfiguring here still applies to the eventual first
+                send, and it keeps the visual layout consistent. */}
+            <div className="mx-auto mb-6 mt-2 flex max-w-2xl items-center justify-between gap-1.5">
+              <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2 sm:overflow-visible">
+                <AgentDropdown
+                  allAgents={allAgents}
+                  activeAgentId={activeAgentId}
+                  setActiveAgent={setActiveAgent}
+                  deleteAgent={deleteAgent}
+                />
+                <ThinkingDropdown
+                  enableThinking={enableThinking}
+                  thinkingLevel={thinkingLevel}
+                  setEnableThinking={setEnableThinking}
+                  setThinkingLevel={setThinkingLevel}
+                />
+                <AgentModeSelect mode={agentMode} onModeChange={setAgentMode} />
+                <RunEndPolicySelect
+                  runEndPolicy={autoApplyOnRunComplete ? 'auto' : 'manual'}
+                  onRunEndPolicyChange={(policy) => setAutoApplyOnRunComplete(policy === 'auto')}
+                />
+              </div>
             </div>
           </>
         )}

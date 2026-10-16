@@ -17,7 +17,6 @@ import { useConversationStore } from '@/store/conversation.store'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useSettingsStore } from '@/store/settings.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
-import { useProjectStore } from '@/store/project.store'
 import { useAgentsStore } from '@/store/agents.store'
 import { useT } from '@/i18n'
 import { createUserMessage } from '@/agent/message-types'
@@ -28,6 +27,7 @@ import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { useActiveConversation } from './useActiveConversation'
+import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 
 /** Stable empty array so mentionAgents selector returns same ref when unchanged */
 const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
@@ -68,12 +68,10 @@ export function useConversationLogic() {
   // Track which convId the draft belongs to, so we can clear it after restore
   const draftConvIdRef = useRef<string | null>(null)
 
-  // ── Project store ──
-  const activeProjectId = useProjectStore((s) => s.activeProjectId)
-
   // ── Agents store ──
-  const isAgentsLoading = useAgentsStore((s) => s.isLoading)
-  const isAgentsInitialized = useAgentsStore((s) => s.isInitialized)
+  // (Project store's activeProjectId is no longer read here — agent
+  //  initialisation moved to useProjectAgentsInit, which subscribes to
+  //  it on its own.)
   const allAgents = useAgentsStore((s) => s.agents)
   const activeAgentId = useAgentsStore((s) => s.activeAgentId)
   const setActiveAgent = useAgentsStore((s) => s.setActiveAgent)
@@ -207,30 +205,10 @@ export function useConversationLogic() {
   }, [setInput, setMentionedAgentIds])
 
   // ── Initialize agents for mentions ──
-  useEffect(() => {
-    if (!activeProjectId) return
-    if (isAgentsLoading) return
-    if (mentionAgents.length > 0 && isAgentsInitialized) return
-
-    let cancelled = false
-    ;(async () => {
-      try {
-        const { ProjectManager } = await import('@/opfs')
-        const pm = await ProjectManager.create()
-        const store = useAgentsStore.getState()
-        store.setProjectManager(pm)
-        await store.initialize(activeProjectId)
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('[ConversationView] Failed to initialize agents for mentions:', error)
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeProjectId, isAgentsInitialized, isAgentsLoading, mentionAgents.length])
+  // (logic moved to useProjectAgentsInit so WelcomeScreen can share the
+  //  same init flow — without it, the bare-URL AgentDropdown would render
+  //  with an empty agent list even when the active project has agents.)
+  useProjectAgentsInit()
 
   // ── Smart auto-scroll (only scroll when user is already at the bottom) ──
   const activeMessagesLength = activeMessages.length
