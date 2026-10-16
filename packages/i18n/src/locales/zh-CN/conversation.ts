@@ -199,8 +199,6 @@ export const conversation = {
       invalidImage: "无法将该文件解码为有效图片。",
       browserUnsupported: "当前浏览器无法安全解码图片文件。",
       normalizeFailed: "无法将图片处理为可供模型使用的格式。",
-      handoffUnavailable: "无法将图片加入后续会话消息，请重试。",
-      handoffQueued: "图片已作为新的用户消息加入下一轮。请勿继续调用工具，请在下一轮直接基于该图片回答。",
       readFailed: "无法读取图片：{message}",
     },
     // Codex OAuth 错误

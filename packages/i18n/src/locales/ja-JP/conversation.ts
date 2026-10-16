@@ -167,8 +167,6 @@ export const conversation = {
       invalidImage: "ファイルを有効な画像としてデコードできませんでした。",
       browserUnsupported: "このブラウザでは画像ファイルを安全にデコードできません。",
       normalizeFailed: "モデル入力用に画像を処理できません。",
-      handoffUnavailable: "画像を後続の会話メッセージに追加できませんでした。もう一度お試しください。",
-      handoffQueued: "画像を次のターンの新しいユーザーメッセージとして追加しました。これ以上ツールを呼び出さず、次のメッセージの画像に基づいて直接回答してください。",
       readFailed: "画像を読み取れませんでした：{message}",
     },
     // Codex OAuth エラー

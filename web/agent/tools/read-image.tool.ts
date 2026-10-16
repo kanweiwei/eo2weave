@@ -1,9 +1,8 @@
 /**
- * Read Image Tool — prepares an image for the next conversation turn.
+ * Read Image Tool — returns image or OCR content in the current tool result.
  *
- * Unlike OCR, this tool does not return image content through a tool result.
- * It creates a queued user-message handoff so OpenAI-compatible providers
- * receive the image in a normal user message on the following turn.
+ * Vision-capable models receive image content directly through the tool result.
+ * Non-vision models receive an OCR text fallback in the same result.
  */
 
 import type { ToolContext, ToolDefinition, ToolExecutor, ToolPromptDoc } from './tool-types'
@@ -12,7 +11,7 @@ import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from './agent-
 import { fileToBase64, isOcrCompatibleImage, performOcr } from '@/services/ocr.service'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
-import { toolErrorJson, toolOkJson } from './tool-envelope'
+import { toolErrorJson, toolOkJson, type ToolEnvelopeSuccess } from './tool-envelope'
 
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
 const MAX_SOURCE_BYTES = 10 * 1024 * 1024
@@ -135,7 +134,7 @@ export const readImageDefinition: ToolDefinition = {
     name: 'read_image',
     description:
       'Read an image file from the authorized workspace or assets directory. ' +
-      'This tool prepares a new visible user message containing the image for the next model turn. ' +
+      'The image is returned to the model as part of the tool result. ' +
       'After calling it, do not call more tools: answer directly in the next turn using the image or OCR text. ' +
       'Supports PNG, JPEG, WebP, BMP, and GIF images.',
     parameters: {
@@ -159,14 +158,6 @@ export const readImageExecutor: ToolExecutor = async (
 ): Promise<string> => {
   const path = typeof args.path === 'string' ? args.path : undefined
   if (!path) return toolErrorJson('read_image', 'invalid_arguments', 'path is required')
-
-  if (!context.onReadImageSuccess) {
-    return toolErrorJson(
-      'read_image',
-      'handoff_unavailable',
-      translateReadImage('handoffUnavailable'),
-    )
-  }
 
   try {
     const target = await resolveVfsTarget(path, context, 'read')
@@ -208,8 +199,7 @@ export const readImageExecutor: ToolExecutor = async (
     const prefix = translateReadImage('sourceContext', { path: visiblePath })
 
     let content = prefix
-    let contentParts: NonNullable<Parameters<NonNullable<ToolContext['onReadImageSuccess']>>[0]['contentParts']>
-    let imageData: string | undefined
+    let contentParts: NonNullable<ToolEnvelopeSuccess['contentParts']>
     let ocrStatus: 'not_needed' | 'done' | 'empty' | 'failed' | 'timeout' = 'not_needed'
 
     if (supportsVision) {
@@ -220,7 +210,6 @@ export const readImageExecutor: ToolExecutor = async (
       ]
     } else {
       const ocr = await performOcr(file)
-      imageData = ocr.base64Data
       ocrStatus = ocr.status === 'done' && ocr.text
         ? 'done'
         : ocr.status === 'done'
@@ -236,31 +225,13 @@ export const readImageExecutor: ToolExecutor = async (
       contentParts = [{ type: 'text', text: content }]
     }
 
-    const queued = context.onReadImageSuccess({
-      content,
-      contentParts,
-      readImage: {
-        path: visiblePath,
-        mimeType: normalizedMimeType,
-        ...(imageData ? { imageData } : {}),
-        toolCallId: context.currentToolCallId,
-        ocrStatus,
-      },
-    })
-    if (!queued) {
-      return toolErrorJson(
-        'read_image',
-        'handoff_unavailable',
-        translateReadImage('handoffUnavailable'),
-        { retryable: true },
-      )
-    }
-
     return toolOkJson('read_image', {
       path: visiblePath,
       mimeType: normalizedMimeType,
       mode: supportsVision ? 'vision' : 'ocr',
-      message: translateReadImage('handoffQueued'),
+      ocrStatus,
+    }, {
+      contentParts,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -280,6 +251,6 @@ export const readImageExecutor: ToolExecutor = async (
 export const readImagePromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   lines: [
-    '- `read_image(path)` - Read an authorized image into a visible follow-up user message. This ends the current tool flow; answer directly in the next turn from the image or OCR text.',
+    '- `read_image(path)` - Read an authorized image into the current tool result. Vision-capable models receive the image; text-only models receive OCR text. After calling it, answer directly from the result.',
   ],
 }
