@@ -24,6 +24,8 @@ import { useProjectStore } from '@/store/project.store'
 import { useSettingsStore } from '@/store/settings.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
+import { useYoloModeStore, YOLO_WELCOME_SENTINEL } from '@/store/yolo-mode.store'
+import { usePageActionSessionStore } from '@/store/page-action-session.store'
 import { useMobile } from '@/components/mobile/useMobile'
 import { useUnloadGuard } from '@/hooks/useUnloadGuard'
 import { TopBar } from './TopBar'
@@ -231,6 +233,40 @@ export function WorkspaceLayout({
   const handleStartConversation = useCallback(
     (text: string) => {
       const conv = createNew(text.slice(0, 30))
+
+      // Carry WelcomeScreen's pre-conversation toolbar picks over to the new
+      // conversation. setAgentMode / setAutoApplyOnRunComplete only update
+      // the per-workspace map when an active workspace exists, so the picks
+      // the user made on the bare URL live in the global mirror only. The
+      // upcoming setActive(conv.id) triggers syncAgentModeForWorkspace +
+      // syncAutoApplyOnRunCompleteForWorkspace via the workspace-mode
+      // subscriber, and that would reset the global mirror to DEFAULT for
+      // the new conv (since map[conv.id] is undefined). Seed the map first
+      // so the sync reads the user's choices back. Same story for YOLO:
+      // useYoloModeStore.setYolo(null, ...) is a no-op, so the YOLO pick
+      // sits in the legacy pageActionYolo flag until we materialize it on
+      // the new conv.
+      useWorkspacePreferencesStore.setState((state) => {
+        if (state.agentModeByWorkspace[conv.id] === undefined) {
+          state.agentModeByWorkspace[conv.id] = state.agentMode
+        }
+        if (state.autoApplyOnRunCompleteByWorkspace[conv.id] === undefined) {
+          state.autoApplyOnRunCompleteByWorkspace[conv.id] = state.autoApplyOnRunComplete
+        }
+      })
+      // Migrate the WelcomeScreen YOLO pick (welcome sentinel) onto the new
+      // conversation. The sentinel is intentionally NOT cleared here — it is
+      // the user's "default yolo preference" for the bare URL and should
+      // carry across every new conversation created from it, so the user
+      // does not have to re-pick YOLO each time. It is cleared only when
+      // the user explicitly switches to plan/act on the WelcomeScreen itself
+      // (useYoloModeStore.setYolo(null, false) writes the sentinel to false).
+      if (useYoloModeStore.getState().yoloByConversation[YOLO_WELCOME_SENTINEL]) {
+        useYoloModeStore.getState().setYolo(conv.id, true)
+      } else if (usePageActionSessionStore.getState().pageActionYolo) {
+        useYoloModeStore.getState().setYolo(conv.id, true)
+      }
+
       setActive(conv.id)
       setPendingMessage(text)
       // Draft → real conversation: replace bare URL with canonical one

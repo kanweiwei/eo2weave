@@ -23,7 +23,7 @@
 import { createPortal } from 'react-dom'
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
-import { useYoloModeStore, syncLegacyPageActionYolo } from '@/store/yolo-mode.store'
+import { useYoloModeStore, syncLegacyPageActionYolo, YOLO_WELCOME_SENTINEL } from '@/store/yolo-mode.store'
 import { useConversationStoreSQLite } from '@/store/conversation.store.sqlite'
 import { useT } from '@/i18n'
 
@@ -152,9 +152,12 @@ export function AgentModeSelect({
   // conversation-scoped (yolo-mode.store); the legacy global flag is kept as
   // a shim and used only when no conversation is known.
   const activeConvId = useConversationStoreSafeId()
+  // Pre-conversation pick (WelcomeScreen) lives under the welcome sentinel so
+  // it survives a refresh via the yolo-mode store's localStorage layer. Once
+  // a conversation exists, that conversation's own yolo entry wins.
   const conversationYoloOn = activeConvId
     ? Boolean(yoloByConversation[activeConvId])
-    : pageActionYolo
+    : Boolean(yoloByConversation[YOLO_WELCOME_SENTINEL]) || pageActionYolo
   const visibleMode: VisibleMode =
     mode === 'plan' ? 'plan' : (showYolo && conversationYoloOn) ? 'yolo' : 'act'
 
@@ -204,7 +207,10 @@ export function AgentModeSelect({
   const handleSelect = (target: VisibleMode) => {
     // YOLO is conversation-scoped (PR-4). Both stores are kept in sync: the
     // yolo-mode store is authoritative, the legacy page-action flag stays
-    // updated so older UI consumers keep rendering correctly.
+    // updated so older UI consumers keep rendering correctly. When no active
+    // conversation exists (WelcomeScreen on a bare URL), the pick lands in
+    // the welcome sentinel so it actually persists (see
+    // useYoloModeStore.setYolo) and survives a refresh.
     const applyYolo = (on: boolean) => {
       setYolo(activeConvId, on)
       syncLegacyPageActionYolo(on)

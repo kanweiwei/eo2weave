@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, conversationState, pageActionAvailable, folderAccessState, settingsState, inputDraftState, projectState } = vi.hoisted(() => ({
+const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, conversationState, pageActionAvailable, folderAccessState, settingsState, inputDraftState, projectState, workspacePreferencesState, agentsState } = vi.hoisted(() => ({
   captureTabMock: vi.fn(async () => ({ ok: true, dataUrl: 'data:image/png;base64,c2NyZWVuc2hvdA==' })),
   addFilesMock: vi.fn(),
   addNativeHostRootMock: vi.fn(async () => true),
@@ -16,6 +16,10 @@ const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, c
     checkHasApiKey: async () => {},
     providerType: 'openai',
     modelName: 'vision-model',
+    enableThinking: false,
+    thinkingLevel: 'medium',
+    setEnableThinking: vi.fn(),
+    setThinkingLevel: vi.fn(),
   },
   // Mock state for folder-access store. `rootsHydrated` defaults to true so
   // existing tests (which expect the mount-folder step to render on first
@@ -34,6 +38,22 @@ const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, c
   },
   // Mutable so the empty-string fallback test can simulate pre-hydration.
   projectState: { activeProjectId: 'proj-1' },
+  // Workspace-preferences store: covers the toolbar (agentMode + auto-apply).
+  workspacePreferencesState: {
+    agentMode: 'act' as 'plan' | 'act',
+    setAgentMode: vi.fn(),
+    autoApplyOnRunComplete: false,
+    setAutoApplyOnRunComplete: vi.fn(),
+  },
+  // Agents store: WelcomeScreen never initializes ProjectManager on a bare
+  // URL, so the toolbar's AgentDropdown receives [] / null and degrades to
+  // showing "default". No action mocks needed beyond the no-op stubs.
+  agentsState: {
+    agents: [] as unknown[],
+    activeAgentId: null as string | null,
+    setActiveAgent: vi.fn(async () => {}),
+    deleteAgent: vi.fn(async () => false),
+  },
 }))
 
 vi.mock('@/store/settings.store', () => ({
@@ -43,7 +63,29 @@ vi.mock('@/store/settings.store', () => ({
     checkHasApiKey: () => Promise<void>
     providerType: string
     modelName: string
+    enableThinking: boolean
+    thinkingLevel: string
+    setEnableThinking: (v: boolean) => void
+    setThinkingLevel: (v: string) => void
   }) => unknown) => selector(settingsState),
+}))
+
+vi.mock('@/store/workspace-preferences.store', () => ({
+  useWorkspacePreferencesStore: (selector: (state: {
+    agentMode: 'plan' | 'act'
+    setAgentMode: (m: 'plan' | 'act') => void
+    autoApplyOnRunComplete: boolean
+    setAutoApplyOnRunComplete: (v: boolean) => void
+  }) => unknown) => selector(workspacePreferencesState),
+}))
+
+vi.mock('@/store/agents.store', () => ({
+  useAgentsStore: (selector: (state: {
+    agents: unknown[]
+    activeAgentId: string | null
+    setActiveAgent: (id: string) => Promise<void>
+    deleteAgent: (id: string) => Promise<boolean>
+  }) => unknown) => selector(agentsState),
 }))
 
 vi.mock('@/store/conversation.store', () => ({
@@ -221,6 +263,30 @@ vi.mock('../agent/AgentRichInput', async () => {
   return { AgentRichInput: MockAgentRichInput }
 })
 
+// ── Toolbar sub-component mocks ──
+// Each toolbar dropdown is exercised in isolation by its own test suite
+// (AgentModeSelect.test.tsx etc.). Here we only need them to render so the
+// WelcomeScreen test can assert the toolbar mounts. Stubs double as
+// data-testid hooks for the new toolbar-presence test below.
+vi.mock('../agent/AgentDropdown', () => ({
+  AgentDropdown: () => <div data-testid="toolbar-agent-dropdown" />,
+}))
+
+// The init hook is also mounted by ConversationView; stub it here so the
+// WelcomeScreen test can stay focused on the toolbar wiring.
+vi.mock('@/hooks/useProjectAgentsInit', () => ({
+  useProjectAgentsInit: () => {},
+}))
+vi.mock('../agent/ThinkingDropdown', () => ({
+  ThinkingDropdown: () => <div data-testid="toolbar-thinking-dropdown" />,
+}))
+vi.mock('../agent/AgentModeSelect', () => ({
+  AgentModeSelect: () => <div data-testid="toolbar-agent-mode" />,
+}))
+vi.mock('../agent/RunEndPolicySelect', () => ({
+  RunEndPolicySelect: () => <div data-testid="toolbar-run-end-policy" />,
+}))
+
 vi.mock('../agent/PageScreenshotCropDialog', () => ({
   PageScreenshotCropDialog: ({ onConfirm }: { onConfirm: (file: File) => void }) => (
     <button type="button" onClick={() => onConfirm(new File(['screenshot'], 'page-screenshot.png', { type: 'image/png' }))}>
@@ -254,9 +320,22 @@ describe('WelcomeScreen', () => {
     settingsState.hasApiKeyLoaded = true
     settingsState.providerType = 'openai'
     settingsState.modelName = 'vision-model'
+    settingsState.enableThinking = false
+    settingsState.thinkingLevel = 'medium'
+    settingsState.setEnableThinking.mockClear()
+    settingsState.setThinkingLevel.mockClear()
     // Fresh draft store per test — draft persistence is per project, so a
     // stale entry from a previous test would leak into the restore test.
     inputDraftState.drafts.clear()
+    // Reset workspace-preferences + agents mocks to their default baseline.
+    workspacePreferencesState.agentMode = 'act'
+    workspacePreferencesState.autoApplyOnRunComplete = false
+    workspacePreferencesState.setAgentMode.mockClear()
+    workspacePreferencesState.setAutoApplyOnRunComplete.mockClear()
+    agentsState.agents = []
+    agentsState.activeAgentId = null
+    agentsState.setActiveAgent.mockClear()
+    agentsState.deleteAgent.mockClear()
   })
 
   // hasApiKey=true + roots=[] (store mocks) + welcome-seen → mount-folder
@@ -549,5 +628,35 @@ describe('WelcomeScreen', () => {
     rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
     expect(screen.getByTestId('draft-restored')).toHaveTextContent('typed text')
     expect(inputDraftState.drafts.has('welcome')).toBe(false)
+  })
+
+  // ── Toolbar (pre-conversation configuration) ──
+  // The toolbar (Agent / Thinking / Mode / Completion policy) lets users
+  // configure per-run knobs BEFORE the first message, so settings flow
+  // into the new conversation at send time. Rendered on every non-welcome
+  // step (input already renders there too).
+  it('renders all four toolbar dropdowns on the ready step', () => {
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    advanceToReady()
+
+    expect(screen.getByTestId('toolbar-agent-dropdown')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-thinking-dropdown')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-agent-mode')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-run-end-policy')).toBeInTheDocument()
+  })
+
+  it('renders the toolbar on the api-key setup step too', () => {
+    // Unconfigured baseline lands on the api-key step (still renders input
+    // + toolbar per the persistent-rendering pattern).
+    settingsState.hasApiKey = false
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-agent-dropdown')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-thinking-dropdown')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-agent-mode')).toBeInTheDocument()
+    expect(screen.getByTestId('toolbar-run-end-policy')).toBeInTheDocument()
   })
 })
