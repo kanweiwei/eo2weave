@@ -1,7 +1,7 @@
 // Project Home
 export const projectHome = {
     // Header brand
-    brand: "YiYang ZhiZhi",
+    brand: "EO2Weave",
     openSettings: "Open settings",
     statsSummary: "{projects} projects",
     statsConversations: "{count} conversations",
