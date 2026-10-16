@@ -1,5 +1,10 @@
 // 首页
 export const projectHome = {
+    // 顶部品牌
+    brand: "怡氧知知",
+    openSettings: "打开设置",
+    statsSummary: "{projects} 个项目",
+    statsConversations: "{count} 个对话",
     // Hero 区域
     hero: {
       badge: "本地优先",
@@ -139,14 +144,51 @@ export const projectHome = {
       unarchive: "取消归档",
       delete: "删除",
     },
+    // 继续工作卡片
+    continueWork: {
+      label: "继续工作",
+      resume: "继续",
+      openProject: "打开项目 {name}",
+    },
+    // 项目网格
+    grid: {
+      title: "我的项目",
+      newProject: "新建项目",
+      search: "搜索项目",
+    },
+    // 头部帮助
+    help: {
+      label: "帮助",
+      docsHub: "文档中心",
+      privacy: "隐私政策",
+    },
+    // 右侧设置抽屉
+    drawer: {
+      title: "显示偏好",
+    },
     // 对话框
     dialogs: {
       createProject: "创建新项目",
       createProjectDescription:
         "为你的新项目起一个名字，用于组织和区分不同的工作区。",
+      projectNameLabel: "项目名称",
       projectNamePlaceholder: "输入项目名称",
       createButton: "创建项目",
       creating: "创建中...",
+      folderFieldTitle: "授权本地文件夹",
+      folderFieldRecommended: "推荐",
+      folderFieldHint:
+        "授权后，怡氧知知就能在您指定的文件夹中搜索、浏览、编辑和创建文件，帮您更高效地完成工作。",
+      folderPickerUnsupported:
+        "当前浏览器不支持选择本地目录，请使用 Chrome / Edge 最新版。",
+      chooseLocalFolder: "选择本地文件夹",
+      addAnotherFolder: "继续添加文件夹",
+      folderAlreadyAdded: "文件夹「{name}」已授权",
+      pickFailed: "选择文件夹失败",
+      removeFolder: "移除文件夹 {name}",
+      nativeHostButton: "授权本地连接",
+      nativeHostHint: "通过浏览器扩展接入本机原生文件系统，可以授权系统盘任意位置（需要装扩展）",
+      nativeHostBadge: "本地连接",
       renameProject: "重命名项目",
       renamePlaceholder: "输入新的项目名称",
       archiveProject: "归档项目",

@@ -1,5 +1,10 @@
 // プロジェクトホーム
 export const projectHome = {
+    // ヘッダーブランド
+    brand: "怡氧知知",
+    openSettings: "設定を開く",
+    statsSummary: "{projects} プロジェクト",
+    statsConversations: "{count} 会話",
     hero: {
       badge: "ローカルファースト",
       title: "ここから創作を始める",
@@ -136,13 +141,50 @@ export const projectHome = {
       unarchive: "アーカイブ解除",
       delete: "削除",
     },
+    continueWork: {
+      label: "続ける",
+      resume: "続ける",
+      openProject: "プロジェクト {name} を開く",
+    },
+    // プロジェクトグリッド
+    grid: {
+      title: "マイプロジェクト",
+      newProject: "新規プロジェクト",
+      search: "プロジェクトを検索",
+    },
+    // ヘッダーヘルプ
+    help: {
+      label: "ヘルプ",
+      docsHub: "ドキュメントセンター",
+      privacy: "プライバシーポリシー",
+    },
+    // 右側の設定ドロワー
+    drawer: {
+      title: "表示設定",
+    },
     dialogs: {
       createProject: "新しいプロジェクトを作成",
       createProjectDescription:
         "新しいプロジェクトに名前を付けて、異なるワークスペースを整理・区別しましょう。",
+      projectNameLabel: "プロジェクト名",
       projectNamePlaceholder: "プロジェクト名を入力",
       createButton: "プロジェクトを作成",
       creating: "作成中...",
+      folderFieldTitle: "ローカルフォルダを承認",
+      folderFieldRecommended: "おすすめ",
+      folderFieldHint:
+        "承認すると、選択したフォルダ内のファイルを検索、閲覧、編集、作成できるようになります。",
+      folderPickerUnsupported:
+        "このブラウザはローカルディレクトリの選択に対応していません。Chrome/Edge をお使いください。",
+      chooseLocalFolder: "ローカルフォルダを選択",
+      addAnotherFolder: "別のフォルダを追加",
+      folderAlreadyAdded: "フォルダ「{name}」は既に承認されています",
+      pickFailed: "フォルダの選択に失敗しました",
+      removeFolder: "フォルダ {name} を削除",
+      nativeHostButton: "ローカル接続を承認",
+      nativeHostHint:
+        "ブラウザ拡張経由でネイティブファイルシステムにアクセスし、ユーザーのマシンの任意のパスを承認できます（拡張機能が必要）。",
+      nativeHostBadge: "ローカル",
       renameProject: "プロジェクト名を変更",
       renamePlaceholder: "新しいプロジェクト名を入力",
       archiveProject: "プロジェクトをアーカイブ",

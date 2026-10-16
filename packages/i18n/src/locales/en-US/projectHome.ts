@@ -1,5 +1,10 @@
 // Project Home
 export const projectHome = {
+    // Header brand
+    brand: "YiYang ZhiZhi",
+    openSettings: "Open settings",
+    statsSummary: "{projects} projects",
+    statsConversations: "{count} conversations",
     // Hero section
     hero: {
       badge: "Local First",
@@ -143,14 +148,51 @@ export const projectHome = {
       unarchive: "Unarchive",
       delete: "Delete",
     },
+    continueWork: {
+      label: "Continue",
+      resume: "Resume",
+      openProject: "Open project {name}",
+    },
+    // Project grid
+    grid: {
+      title: "My Projects",
+      newProject: "New Project",
+      search: "Search projects",
+    },
+    // Header help
+    help: {
+      label: "Help",
+      docsHub: "Docs Hub",
+      privacy: "Privacy Policy",
+    },
+    // Right-side settings drawer
+    drawer: {
+      title: "Display Preferences",
+    },
     // Dialogs
     dialogs: {
       createProject: "Create New Project",
       createProjectDescription:
         "Give your new project a name to organize and distinguish different workspaces.",
+      projectNameLabel: "Project name",
       projectNamePlaceholder: "Enter project name",
       createButton: "Create Project",
       creating: "Creating...",
+      folderFieldTitle: "Authorize local folders",
+      folderFieldRecommended: "Recommended",
+      folderFieldHint:
+        "Once authorized, the app can search, browse, edit and create files in the folders you choose.",
+      folderPickerUnsupported:
+        "This browser does not support picking local directories. Use Chrome/Edge.",
+      chooseLocalFolder: "Choose local folder",
+      addAnotherFolder: "Add another folder",
+      folderAlreadyAdded: "Folder \"{name}\" is already authorized",
+      pickFailed: "Failed to pick folder",
+      removeFolder: "Remove folder {name}",
+      nativeHostButton: "Authorize local connection",
+      nativeHostHint:
+        "Bridge to native file system via the browser extension — authorize any path on the user's machine (extension required).",
+      nativeHostBadge: "Local",
       renameProject: "Rename Project",
       renamePlaceholder: "Enter new project name",
       archiveProject: "Archive Project",
