@@ -25,7 +25,6 @@ import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import type { SettingsTab } from '@/components/settings/SettingsDialog'
 import { ConversationStorageBadge } from '@/components/conversation'
 import { FolderSelector } from './FolderSelector'
-import { ModelQuickSwitch } from './ModelQuickSwitch'
 import { ImageGenDropdown, useHasImageModels } from '@/components/agent/ImageGenDropdown'
 import { useT } from '@/i18n'
 import {
@@ -153,8 +152,8 @@ export function TopBar({
         <header
           className={`relative flex shrink-0 items-center justify-between border-b border-neutral-200 bg-background dark:border-border ${
             isMobile
-              ? 'min-h-12 px-2 py-1 max-[599px]:flex-wrap max-[599px]:gap-y-0.5'
-              : 'h-[52px] px-4'
+              ? 'min-h-11 px-2 py-0.5 max-[599px]:flex-wrap max-[599px]:gap-y-0.5'
+              : 'h-12 px-4'
           }`}
         >
           {/* Skip link — first focusable element for keyboard / screen reader users */}
@@ -218,10 +217,6 @@ export function TopBar({
             {/* Fixed-width slot so the trigger can never spill over the
                 project switcher on the left (regression from 24bd878 where
                 an unconstrained trigger overlapped it on narrow viewports). */}
-            <div className="w-[140px] min-w-0 shrink min-[400px]:w-[180px]">
-              <ModelQuickSwitch onManageProviders={() => openSettings('llm')} />
-            </div>
-
             {/* New conversation — primary action */}
             <ActionTooltip label={t('sidebar.newWorkspace')}>
               <BrandButton
@@ -251,13 +246,6 @@ export function TopBar({
             {/* Folder Selector */}
             <div className="shrink-0">
               <FolderSelector />
-            </div>
-
-            {/* Model switcher — always visible; in the unconfigured state its
-                popover shows the single "Manage LLM Providers" CTA (the old
-                amber warning button here was removed as a duplicate entry). */}
-            <div className="shrink-0">
-              <ModelQuickSwitch onManageProviders={() => openSettings('llm')} />
             </div>
 
             {/* Image generation model + aspect ratio (combined) */}

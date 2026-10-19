@@ -18,7 +18,7 @@ import {
   X,
   RefreshCw,
   Loader2,
-  Cable,
+  HardDrive,
   Globe2,
   MoreHorizontal,
 } from 'lucide-react'
@@ -188,7 +188,7 @@ export function FolderSelector() {
           className={cn(
             roots.length === 0
               ? 'flex h-7 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-normal'
-              : 'flex h-8 w-9 items-center justify-center rounded-none border-0 border-l border-gray-200 dark:border-neutral-700',
+              : 'flex h-7 w-8 items-center justify-center rounded-none border-0 border-l border-gray-200 dark:border-neutral-700',
             'text-secondary transition-colors hover:bg-primary-50 hover:text-primary-600',
             'dark:border-border dark:hover:bg-muted',
             (isAdding || isAddingNativeHost) && 'cursor-wait opacity-70'
@@ -216,7 +216,7 @@ export function FolderSelector() {
         {canPickDirectory && nativeHostAvailable && <DropdownMenuSeparator />}
         {nativeHostAvailable && (
           <DropdownMenuItem onSelect={() => void handleAddNativeHostRoot()}>
-            <Cable className="h-4 w-4" />
+            <HardDrive className="h-4 w-4" />
             <span>{t('projectRoots.openViaNativeHost')}</span>
           </DropdownMenuItem>
         )}
@@ -250,7 +250,7 @@ export function FolderSelector() {
   // and the native-host entry point.
   return (
     <div
-        className="relative flex h-8 items-center overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-neutral-700 dark:bg-card"
+        className="relative flex h-7 items-center overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-neutral-700 dark:bg-card"
         ref={containerRef}
       >
       <Popover
@@ -266,7 +266,7 @@ export function FolderSelector() {
             aria-label={t('projectRoots.title')}
             aria-expanded={isRootsOpen}
             className={cn(
-              'flex h-8 min-w-0 items-center gap-1.5 rounded-none border-0 bg-transparent px-3 text-sm font-normal text-secondary',
+              'flex h-7 min-w-0 items-center gap-1.5 rounded-none border-0 bg-transparent px-2.5 text-sm font-normal text-secondary',
               'transition-colors hover:bg-primary-50 hover:text-primary-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1',
               'dark:bg-transparent dark:hover:bg-muted'
             )}
@@ -337,7 +337,7 @@ function RootRow({
               title={t('projectRoots.nativeHostBadge')}
               aria-label={t('projectRoots.nativeHostBadge')}
             >
-              <Cable className="h-3 w-3" />
+              <HardDrive className="h-3 w-3" />
             </span>
           ) : (
             <span

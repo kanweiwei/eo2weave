@@ -35,7 +35,7 @@ import type { ConversationMessagesHandle } from './ConversationMessages'
 import { ConversationUsageBar } from './ConversationUsageBar'
 import { ConversationEmptyState } from './ConversationEmptyState'
 import { AgentDropdown } from './AgentDropdown'
-import { ThinkingDropdown } from './ThinkingDropdown'
+import { ModelThinkingControls } from './ModelThinkingControls'
 import { ContextUsageBar } from './ContextUsageBar'
 import { ScrollToBottomButton } from './ScrollToBottomButton'
 import { MessageNavBar } from './MessageNavBar'
@@ -499,6 +499,14 @@ export function ConversationView({
                     onCapture={() => void handleCaptureScreenshot()}
                   />
                 )}
+                beforeSendAccessory={(
+                  <ModelThinkingControls
+                    enableThinking={enableThinking}
+                    thinkingLevel={thinkingLevel}
+                    setEnableThinking={setEnableThinking}
+                    setThinkingLevel={setThinkingLevel}
+                  />
+                )}
               />
             </div>
           </div>
@@ -512,12 +520,6 @@ export function ConversationView({
                 activeAgentId={activeAgentId}
                 setActiveAgent={setActiveAgent}
                 deleteAgent={deleteAgent}
-              />
-              <ThinkingDropdown
-                enableThinking={enableThinking}
-                thinkingLevel={thinkingLevel}
-                setEnableThinking={setEnableThinking}
-                setThinkingLevel={setThinkingLevel}
               />
               <AgentModeSelect mode={agentMode} onModeChange={setAgentMode} />
               <RunEndPolicySelect

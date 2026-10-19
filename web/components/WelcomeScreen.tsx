@@ -36,6 +36,7 @@ import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
+import { ModelThinkingControls } from './agent/ModelThinkingControls'
 import { ActiveTabIndicator } from './agent/ActiveTabIndicator'
 import type { FileMentionItem } from './agent/FileMentionExtension'
 import { useGatewayLogin, isLLMGatewayConfigured } from '@/hooks/useGatewayLogin'
@@ -146,6 +147,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const checkHasApiKey = useSettingsStore((s) => s.checkHasApiKey)
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
+  const enableThinking = useSettingsStore((s) => s.enableThinking)
+  const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
+  const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
+  const setThinkingLevel = useSettingsStore((s) => s.setThinkingLevel)
   const folderRoots = useFolderAccessStore((s) => s.roots)
   const addRoot = useFolderAccessStore((s) => s.addRoot)
   const addNativeHostRoot = useFolderAccessStore((s) => s.addNativeHostRoot)
@@ -766,6 +771,14 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 }}
                 initialText={draftToRestore ?? undefined}
                 onDraftRestored={restoreDraft}
+                beforeSendAccessory={(
+                  <ModelThinkingControls
+                    enableThinking={enableThinking}
+                    thinkingLevel={thinkingLevel}
+                    setEnableThinking={setEnableThinking}
+                    setThinkingLevel={setThinkingLevel}
+                  />
+                )}
                 leadingAccessory={(
                   <TooltipProvider delayDuration={250}>
                     <Tooltip>

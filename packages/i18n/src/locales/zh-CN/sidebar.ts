@@ -42,6 +42,11 @@ export const sidebar = {
     files: "文件",
     changes: "变更",
     snapshots: "保存记录",
+    localFilesEmpty: {
+      title: "让 {brand} 协助你处理本地文件",
+      authorizedHint: "授权本地文件夹后即可在此处查看文件目录，并让 AI 协助搜索、编辑和创建。",
+      unlinkedHint: "若暂不授权，AI 创建或修改的文件也会暂存于此。",
+    },
 
     // Snapshot List
     snapshotList: {

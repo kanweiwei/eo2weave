@@ -42,6 +42,11 @@ export const sidebar = {
     files: "Files",
     changes: "Changes",
     snapshots: "Save Records",
+    localFilesEmpty: {
+      title: "Let {brand} help you work with local files",
+      authorizedHint: "Authorize a local folder to view its files here and let AI search, edit, and create files.",
+      unlinkedHint: "Without authorization, files created or modified by AI are temporarily kept here.",
+    },
 
     // Save Records
     snapshotList: {

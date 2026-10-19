@@ -10,6 +10,7 @@ import { useT } from '@/i18n'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 
 interface ThinkingDropdownProps {
+  compact?: boolean
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
   setEnableThinking: (enabled: boolean) => void
@@ -17,6 +18,7 @@ interface ThinkingDropdownProps {
 }
 
 export function ThinkingDropdown({
+  compact = false,
   enableThinking,
   thinkingLevel,
   setEnableThinking,
@@ -91,7 +93,7 @@ export function ThinkingDropdown({
         ref={triggerRef}
         type="button"
         onClick={() => setIsOpen((v) => !v)}
-        className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border-none px-2 text-[11px] font-medium transition-colors sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 sm:text-xs ${
+        className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border-none px-2 text-[11px] font-medium transition-colors ${compact ? 'w-[88px] justify-center' : 'sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 sm:text-xs'} ${
           enableThinking
             ? 'bg-primary-100/60 text-primary-700 dark:bg-primary-100/15 dark:text-primary-300'
             : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'

@@ -21,7 +21,7 @@ export function SiteFooter() {
   const { operator, rights, icpNumber, privacyHref } = SITE_FOOTER_CONFIG
 
   return (
-    <footer className="relative z-10 border-t border-border/60 bg-background/60">
+    <footer className="relative z-10 border-t border-border/60 bg-transparent">
       <div className="max-w-5xl mx-auto px-6 py-8 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6">
         <div className="text-xs text-muted-foreground">
           <span>© 2026 {operator}</span>

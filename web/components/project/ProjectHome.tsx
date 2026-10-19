@@ -30,16 +30,7 @@ import { DocumentReviewIllustration } from './DocumentReviewIllustration'
 // the timeline/sidebar sections.
 const skillHomeStyles = `
   .home-hero {
-    background: radial-gradient(
-        48rem 31rem at 35% 43%,
-        oklch(var(--primary) / 0.06) 0%,
-        transparent 70%
-      ),
-      radial-gradient(
-        46rem 32rem at 67% 54%,
-        oklch(220 0.15 0.5 / 0.05) 0%,
-        transparent 71%
-      );
+    background-color: hsl(var(--card));
   }
 `
 
@@ -247,7 +238,7 @@ export function ProjectHome({
       <style>{skillHomeStyles}</style>
 
       {/* Header: brand + spacer + help + settings (single grouped button bar) */}
-      <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <header className="sticky top-0 z-30 border-b border-border bg-card backdrop-blur supports-[backdrop-filter]:bg-card/95">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-3 px-6">
           <div className="flex items-center gap-2.5 text-base font-semibold text-secondary dark:text-secondary-foreground">
             <img
@@ -280,7 +271,7 @@ export function ProjectHome({
         )}
 
         {/* Hero — text left, undraw illustration right (desktop only) */}
-        <section className="home-hero relative grid grid-cols-1 items-center gap-6 overflow-hidden rounded-2xl px-2 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,240px)] lg:gap-10 lg:py-6">
+        <section className="home-hero relative mt-2 grid grid-cols-1 items-center gap-6 overflow-hidden rounded-2xl border border-border/80 bg-card px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,240px)] lg:gap-10 lg:px-6 lg:py-6">
           <div className="relative">
             <h1 className="text-2xl font-semibold tracking-tight text-secondary dark:text-secondary-foreground sm:text-3xl">
               {t('projectHome.hero.title')}

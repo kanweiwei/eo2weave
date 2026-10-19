@@ -597,23 +597,37 @@ const ResourceTabPanel = memo(function ResourceTabPanel({
       {/* Tab content */}
       <div className="flex-1 overflow-hidden" data-tour="file-tree">
         {resourceTab === 'files' && (
-          <div className="custom-scrollbar flex h-full flex-col overflow-y-auto">
-            {roots.map((root) => (
-              <RootFileTreePanel
-                key={root.id}
-                root={root}
-                selectedFilePath={selectedFilePath}
-                revealTargetPath={revealTargetPath}
-                rootsLength={rootsLength}
-                onFileSelect={onFileSelect}
-                onInspect={onInspect}
-                onFileDelete={onFileDelete}
-                onRevealComplete={onRevealComplete}
-                collapsed={collapsedRoots.has(root.name)}
-                onToggleCollapse={handleToggleCollapse}
-              />
-            ))}
-          </div>
+          roots.length === 1 && roots[0]?.id === '__opfs__' ? (
+            <div className="flex h-full items-center justify-center p-6">
+              <div className="max-w-sm text-sm leading-7 text-muted-foreground">
+                <h3 className="mb-4 text-center text-base font-semibold leading-6 text-secondary dark:text-secondary-foreground">
+                  {t('sidebar.localFilesEmpty.title', { brand: t('projectHome.brand') })}
+                </h3>
+                <ul className="list-disc space-y-2 pl-5">
+                  <li>{t('sidebar.localFilesEmpty.authorizedHint')}</li>
+                  <li>{t('sidebar.localFilesEmpty.unlinkedHint')}</li>
+                </ul>
+              </div>
+            </div>
+          ) : (
+            <div className="custom-scrollbar flex h-full flex-col overflow-y-auto">
+              {roots.map((root) => (
+                <RootFileTreePanel
+                  key={root.id}
+                  root={root}
+                  selectedFilePath={selectedFilePath}
+                  revealTargetPath={revealTargetPath}
+                  rootsLength={rootsLength}
+                  onFileSelect={onFileSelect}
+                  onInspect={onInspect}
+                  onFileDelete={onFileDelete}
+                  onRevealComplete={onRevealComplete}
+                  collapsed={collapsedRoots.has(root.name)}
+                  onToggleCollapse={handleToggleCollapse}
+                />
+              ))}
+            </div>
+          )
         )}
 
         {/* Plugins tab content hidden for now */}

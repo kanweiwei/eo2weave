@@ -43,6 +43,11 @@ export const sidebar = {
     files: "ファイル",
     changes: "変更",
     snapshots: "保存記録",
+    localFilesEmpty: {
+      title: "{brand} でローカルファイルを操作",
+      authorizedHint: "ローカルフォルダーを許可すると、ここでファイルを確認し、AI に検索・編集・作成を依頼できます。",
+      unlinkedHint: "許可しない場合、AI が作成または変更したファイルはここに一時保存されます。",
+    },
 
     // Snapshot List
     snapshotDetail: {

@@ -85,6 +85,8 @@ interface AgentRichInputProps {
   }
   /** Optional action rendered next to the attachment button in the toolbar. */
   leadingAccessory?: ReactNode
+  /** Optional controls rendered immediately before the send/stop button. */
+  beforeSendAccessory?: ReactNode
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +357,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   onSlashCommand,
   sendState,
   leadingAccessory,
+  beforeSendAccessory,
 }: AgentRichInputProps, ref) {
   const t = useT()
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
@@ -1335,7 +1338,12 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
             </Tooltip>
           </div>
           {sendState && (
-            <div className="flex items-center gap-1.5 pr-1">
+            <div className="flex min-w-0 items-center gap-1 pr-1">
+              {beforeSendAccessory && (
+                <div className="min-w-0 shrink flex items-center gap-1">
+                  {beforeSendAccessory}
+                </div>
+              )}
               {sendState.isProcessing ? (
                 <>
                   <Tooltip>
