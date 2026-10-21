@@ -494,6 +494,8 @@ export const settings = {
       loggedIn: "已登录",
       loggingIn: "登录中...",
       loggedOut: "未登录",
+      loginExpired: "登录已过期",
+      loginAgain: "重新登录",
       serviceUrl: "服务地址",
       logout: "登出",
       tokenInvalidLoginExpired: "坚果云 AI 登录已过期，请重新登录",

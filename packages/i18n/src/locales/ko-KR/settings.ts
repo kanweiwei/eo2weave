@@ -503,6 +503,8 @@ export const settings = {
       loggedIn: "로그인됨",
       loggingIn: "로그인 중...",
       loggedOut: "로그인되지 않음",
+      loginExpired: "로그인 만료",
+      loginAgain: "다시 로그인",
       serviceUrl: "서비스 URL",
       logout: "로그아웃",
       creatingSession: "인증 세션 생성 중...",

@@ -510,6 +510,8 @@ export const settings = {
       loggedIn: "ログイン済み",
       loggingIn: "ログイン中...",
       loggedOut: "未ログイン",
+      loginExpired: "ログインの有効期限切れ",
+      loginAgain: "再ログイン",
       serviceUrl: "サービスURL",
       logout: "ログアウト",
       creatingSession: "認可セッションを作成中...",

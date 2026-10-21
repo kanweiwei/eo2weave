@@ -1239,7 +1239,7 @@ function CreditPackageBar({ label, pkg, timeMode, t }: {
   )
 }
 
-function LLMGatewayCard({
+export function LLMGatewayCard({
   isExpanded,
   onToggle,
 }: {
@@ -1247,7 +1247,7 @@ function LLMGatewayCard({
   onToggle: () => void
 }) {
   const t = useT()
-  const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider } = useSettingsStore()
+  const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus } = useSettingsStore()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
@@ -1267,6 +1267,18 @@ function LLMGatewayCard({
   const [copied, setCopied] = useState(false)
 
   const isAuthRunning = authState.status === 'requesting' || authState.status === 'waiting' || authState.status === 'polling'
+
+  // The "logged in" badge alone is not the truth: the api-key row survives
+  // long enough to look logged-in even after the gateway session died. The
+  // auth layer records the real state, so drive the badge from it and offer
+  // a re-login instead of pushing the user to log out.
+  const sessionExpired = modelCredentialStatus === 'expired'
+
+  // While the Device Code Flow is running (or just finished / failed) the
+  // auth panel takes over the card body — this is also how a re-login for an
+  // expired session shows the user code.
+  const isDeviceFlowActive =
+    isAuthRunning || authState.status === 'success' || authState.status === 'error'
 
   const pinnedIds = pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE] || []
   // allModels starts empty on mount (models fetch after expand+login) — an
@@ -1391,6 +1403,13 @@ function LLMGatewayCard({
       }
 
       setIsLoggedIn(true)
+      // A successful (re-)login ends the expired state — clear it so the
+      // badge returns to "Logged in" and the re-login button disappears.
+      useSettingsStore.getState().setModelCredentialStatus('valid')
+      setAuthState({ status: 'idle' })
+      // Drop the stale quota/error state so it is refetched with the new token.
+      setRateLimitsResult(null)
+      setRateLimitsError(null)
       triggerProviderRefresh()
     } catch (e) {
       setAuthState({
@@ -1413,6 +1432,9 @@ function LLMGatewayCard({
     setIsLoggedIn(false)
     setAllModels([])
     setAuthState({ status: 'idle' })
+    // An explicit logout is not an expiry — record it so the UI shows the
+    // "not logged in" state instead of the "login expired" one.
+    useSettingsStore.getState().setModelCredentialStatus('missing')
     // Clear cached rate-limits so next login refetches
     setRateLimitsResult(null)
     setRateLimitsError(null)
@@ -1481,15 +1503,24 @@ function LLMGatewayCard({
           <div
             className="h-2 w-2 shrink-0 rounded-full"
             style={{
-              background: isLoggedIn ? 'var(--brand,#0d9488)' : 'var(--border,#2a2a2a)',
-              boxShadow: isLoggedIn ? '0 0 6px var(--brand,#0d9488)' : 'none',
+              background: sessionExpired
+                ? '#f59e0b'
+                : isLoggedIn
+                  ? 'var(--brand,#0d9488)'
+                  : 'var(--border,#2a2a2a)',
+              boxShadow: isLoggedIn && !sessionExpired ? '0 0 6px var(--brand,#0d9488)' : 'none',
             }}
           />
           <span className="text-[13px] font-semibold text-secondary">{t('settings.gateway.name')}</span>
 
         </div>
         <div className="flex items-center gap-2">
-          {isLoggedIn ? (
+          {sessionExpired ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-500">
+              <AlertTriangle className="h-3 w-3" />
+              {t('settings.gateway.loginExpired')}
+            </span>
+          ) : isLoggedIn ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-[var(--brand,#0d9488)]/10 px-2 py-0.5 text-[10px] font-medium text-[var(--brand,#0d9488)]">
               {t('settings.gateway.loggedIn')}
             </span>
@@ -1514,7 +1545,7 @@ function LLMGatewayCard({
             </p>
           </div>
 
-          {isLoggedIn ? (
+          {isLoggedIn && !isDeviceFlowActive ? (
             <>
               {/* Pinned models (user's selected models) */}
               <div className="space-y-2">
@@ -1739,21 +1770,37 @@ function LLMGatewayCard({
               )}
 
               <div className="flex gap-2 pt-1">
-                <BrandButton
-                  variant="outline"
-                  className="flex-1 h-8 text-[11px]"
-                  onClick={handleFetchRateLimits}
-                  disabled={rateLimitsLoading}
-                >
-                  {rateLimitsLoading ? t('settings.gatewayRateLimits.refreshing') : t('settings.gatewayRateLimits.refresh')}
-                </BrandButton>
-                <BrandButton
-                  variant="outline"
-                  className="flex-1 h-8 text-[11px]"
-                  onClick={handleLogout}
-                >
-                  {t('settings.gateway.logout')}
-                </BrandButton>
+                {sessionExpired ? (
+                  // The session died — the only useful action is renewing it.
+                  // Logging out would just discard a credential the user can
+                  // restore by logging in again, so no logout button here.
+                  <BrandButton
+                    variant="primary"
+                    className="flex-1 h-8 text-[11px]"
+                    onClick={handleLogin}
+                    disabled={isAuthRunning}
+                  >
+                    {t('settings.gateway.loginAgain')}
+                  </BrandButton>
+                ) : (
+                  <>
+                    <BrandButton
+                      variant="outline"
+                      className="flex-1 h-8 text-[11px]"
+                      onClick={handleFetchRateLimits}
+                      disabled={rateLimitsLoading}
+                    >
+                      {rateLimitsLoading ? t('settings.gatewayRateLimits.refreshing') : t('settings.gatewayRateLimits.refresh')}
+                    </BrandButton>
+                    <BrandButton
+                      variant="outline"
+                      className="flex-1 h-8 text-[11px]"
+                      onClick={handleLogout}
+                    >
+                      {t('settings.gateway.logout')}
+                    </BrandButton>
+                  </>
+                )}
               </div>
             </>
           ) : (
@@ -1767,7 +1814,7 @@ function LLMGatewayCard({
                   style={{ background: 'var(--brand, #0d9488)' }}
                   onClick={handleLogin}
                 >
-                  {t('settings.gateway.login')}
+                  {sessionExpired ? t('settings.gateway.loginAgain') : t('settings.gateway.login')}
                 </button>
               )}
 

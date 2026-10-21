@@ -507,6 +507,8 @@ export const settings = {
       loggedIn: "Logged in",
       loggingIn: "Logging in...",
       loggedOut: "Not logged in",
+      loginExpired: "Login expired",
+      loginAgain: "Log in again",
       serviceUrl: "Service URL",
       logout: "Log out",
       creatingSession: "Creating authorization session...",

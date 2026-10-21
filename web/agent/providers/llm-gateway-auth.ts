@@ -112,13 +112,33 @@ export const LLM_GATEWAY_API_KEY_ID = '__llm_gateway_token__'
  */
 const REFRESH_TOKEN_DB_KEY = '__llm_gateway_refresh_token__'
 
+/**
+ * Last credential status recorded by this module.
+ *
+ * The settings store holds the same value, but reading it back is async
+ * (the store is loaded through a dynamic import), while callers such as
+ * `fetchGatewayRateLimits` need the state of the token acquisition that
+ * just failed — i.e. "expired" vs "never logged in" — to pick the right
+ * message. This mirror keeps that read synchronous.
+ */
+let lastCredentialStatus: 'unknown' | 'valid' | 'expired' | 'missing' = 'unknown'
+
 /** Keep the settings UI's credential state aligned with background auth checks. */
 function setCredentialStatus(status: 'valid' | 'expired' | 'missing'): void {
+  lastCredentialStatus = status
   void import('@/store/settings.store')
     .then(({ useSettingsStore }) => useSettingsStore.getState().setModelCredentialStatus(status))
     .catch(() => {
       // Auth must remain usable even when the settings store is unavailable.
     })
+}
+
+/**
+ * The credential status as of the last token operation performed by this
+ * module. `'unknown'` means no token operation has run in this session yet.
+ */
+export function getGatewayCredentialStatus(): 'unknown' | 'valid' | 'expired' | 'missing' {
+  return lastCredentialStatus
 }
 
 export interface StoredTokens {
@@ -499,6 +519,9 @@ export async function performDeviceCodeFlow(
           base_url: baseURL,
         })
         emit({ status: 'success' })
+        // A fresh device-code login always yields a usable credential — record
+        // it so the UI leaves the "login expired" state.
+        setCredentialStatus('valid')
         return tokens
       }
       // Still pending, continue polling
@@ -688,6 +711,7 @@ export function hasValidAccessToken(): boolean {
  */
 export function logoutGateway(): void {
   clearStoredTokens()
+  setCredentialStatus('missing')
 }
 
 /**

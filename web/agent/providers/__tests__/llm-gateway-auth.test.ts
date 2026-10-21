@@ -27,8 +27,17 @@ vi.mock('@/security/api-key-store', () => ({
   deleteApiKey: (...args: unknown[]) => deleteApiKeyMock(...(args as [string])),
 }))
 
+// The auth layer pushes the credential state into the settings store through a
+// dynamic import — stub it so the tests never load the real store.
+vi.mock('@/store/settings.store', () => ({
+  useSettingsStore: {
+    getState: () => ({ setModelCredentialStatus: vi.fn() }),
+  },
+}))
+
 import {
   forceRefreshAccessToken,
+  getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
 } from '../llm-gateway-auth'
@@ -178,6 +187,52 @@ describe('llm-gateway-auth dead-session cleanup', () => {
       await vi.waitFor(() => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
       })
+    })
+  })
+
+  describe('getGatewayCredentialStatus', () => {
+    it('reports "expired" when the refresh_token is definitively invalid', async () => {
+      seedStoredTokens()
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response(JSON.stringify({ code: 'invalid_grant', message: 'token revoked' }), {
+            status: 400,
+          })
+        )
+      )
+
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+
+      expect(getGatewayCredentialStatus()).toBe('expired')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('reports "missing" after an explicit logout', () => {
+      logoutGateway()
+
+      expect(getGatewayCredentialStatus()).toBe('missing')
+    })
+
+    it('reports "valid" while the stored access token is still usable', async () => {
+      const now = Date.now()
+      localStorage.setItem(
+        'llm-gateway-tokens',
+        JSON.stringify({
+          access_token: 'fresh-access-token',
+          refresh_token: 'refresh-token',
+          access_expires_at: now + 10 * 60 * 1000,
+          refresh_expires_at: now + 30 * 24 * 60 * 60 * 1000,
+          client_id: CLIENT_ID,
+          base_url: BASE_URL,
+        })
+      )
+
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+
+      expect(getGatewayCredentialStatus()).toBe('valid')
     })
   })
 })
