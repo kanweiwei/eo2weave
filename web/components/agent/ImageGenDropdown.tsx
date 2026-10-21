@@ -95,7 +95,7 @@ export function useHasImageModels(): boolean {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function ImageGenDropdown() {
+export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
   const imageGenModel = useSettingsStore((s) => s.imageGenModel)
   const setImageGenModel = useSettingsStore((s) => s.setImageGenModel)
   const imageGenAspectRatio = useSettingsStore((s) => s.imageGenAspectRatio)
@@ -161,14 +161,31 @@ export function ImageGenDropdown() {
   return (
     <Popover open={open} onOpenChange={(v) => { setOpen(v); if (!v) setSearch('') }}>
       <PopoverTrigger asChild>
-        <BrandButton variant="outline" className="h-8 max-w-[220px] justify-between gap-1.5 px-2.5 text-xs">
-          <span className="flex min-w-0 items-center gap-1.5">
+        {compact ? (
+          <BrandButton
+            iconButton
+            variant="ghost"
+            title={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
+            aria-label={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
+            className="h-7 w-7 shrink-0 p-0"
+          >
             <ImageIcon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{currentDisplay}</span>
-            <span className="shrink-0 text-muted-foreground">{imageGenAspectRatio || '1:1'}</span>
-          </span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-        </BrandButton>
+          </BrandButton>
+        ) : (
+          <BrandButton
+            variant="outline"
+            title={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
+            aria-label={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
+            className="h-8 max-w-[220px] justify-between gap-1.5 px-2.5 text-xs"
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{currentDisplay}</span>
+              <span className="shrink-0 text-muted-foreground">{imageGenAspectRatio || '1:1'}</span>
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          </BrandButton>
+        )}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-0">
         {/* Search */}

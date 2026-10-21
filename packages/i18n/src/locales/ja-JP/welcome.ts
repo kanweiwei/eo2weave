@@ -1,6 +1,7 @@
 // ウェルカムページ
 export const welcome = {
     title: "EO2Weave",
+    greeting: "今日はどんなお仕事をお手伝いしましょうか？",
     tagline:
       "ナレッジベースとマルチエージェント編成のための AI ネイティブ Creator Workspace",
     placeholder: "メッセージを入力して会話を開始...",

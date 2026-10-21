@@ -297,7 +297,7 @@ export class WorkspaceManager {
 
       // NOTE: Do NOT update lastAccessedAt here.
       // getWorkspace() is a read-only runtime accessor called by many
-      // background tasks (prefetch, skill-scanner, useStorageInfo, agent
+      // background tasks (prefetch, skill-scanner, agent
       // tools). Treating it as an "access" causes spurious lastAccessedAt
       // bumps that reorder the sidebar non-deterministically on every page
       // refresh. Access-time updates are the sole responsibility of

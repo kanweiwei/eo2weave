@@ -131,6 +131,8 @@ export const conversation = {
     // 提示
     toast: {
       noApiKey: "请先在设置中配置 API Key",
+      noModel: "暂无可用模型",
+      gatewayReauthRequired: "坚果云 AI 授权已过期，请重新登录",
       deletedTurn: "已删除完整对话轮次",
       stopBeforeSend: "当前对话正在运行，请先停止后再发送",
       stopBeforeRegenerate: "请先停止当前运行，再重新生成",

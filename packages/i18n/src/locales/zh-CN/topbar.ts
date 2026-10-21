@@ -10,7 +10,11 @@ export const topbar = {
     workspaceLabel: "对话：{name}",
     modelSwitcher: {
       title: "快速切换模型",
-      unavailable: "模型不可用",
+      unavailable: "暂无可用模型",
+      loading: "正在加载模型…",
+      noModels: "暂无可用模型",
+      credentialExpired: "请重新登录",
+      temporarilyUnavailable: "暂时无法验证",
       noPinnedModels: "暂无常用模型，请在设置中添加",
       searchPlaceholder: "搜索模型…",
       noResults: "无匹配模型",
@@ -55,5 +59,6 @@ export const topbar = {
       storage: "存储",
       language: "语言",
       theme: "主题",
+      imageGeneration: "图像生成",
     },
 } as const

@@ -18,6 +18,12 @@ import {
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
+import {
+  resolveDefaultModelSelection,
+  type AvailableProviderLike,
+  type ModelCredentialStatus,
+  type ModelSelectionResolution,
+} from '@/store/model-selection'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
 
@@ -138,6 +144,8 @@ interface SettingsState {
    * initial async check (which defaults `hasApiKey` to `false`).
    */
   hasApiKeyLoaded: boolean
+  /** Catalog/credential state used to keep model selection and sending distinct. */
+  modelCredentialStatus: ModelCredentialStatus
 
   // Per-workspace model overrides
   modelOverridesByWorkspace: Record<string, WorkspaceModelOverride>
@@ -187,6 +195,7 @@ interface SettingsState {
   setSnapshotHighWatermark: (n: number) => void
   setSnapshotLowWatermark: (n: number) => void
   setHasApiKey: (has: boolean) => void
+  setModelCredentialStatus: (status: ModelCredentialStatus) => void
   setAgentLoopNotificationsEnabled: (enabled: boolean) => void
   setAgentLoopNotificationsOnlyWhenHidden: (onlyWhenHidden: boolean) => void
   getEffectiveProviderConfig: () => EffectiveProviderConfig | null
@@ -224,6 +233,10 @@ interface SettingsState {
    * Switch provider and model atomically (used by quick-switcher)
    */
   switchProviderAndModel: (providerType: LLMProviderType, modelName: string) => void
+  ensureValidModelSelection: (
+    providers: ReadonlyArray<AvailableProviderLike>,
+    options?: { preserveExpiredCredential?: boolean },
+  ) => ModelSelectionResolution
 
   /**
    * Get all providers that have a saved API key
@@ -233,6 +246,7 @@ interface SettingsState {
     displayName: string
     models: Array<{ id: string; name: string }>
     providerKey: string
+    catalogStatus?: 'loading' | 'ready' | 'empty' | 'failed'
     /** Authoritative model ids for this provider (registry / static list),
      *  NOT the pinned-derived display list. Pins missing from here are stale. */
     authoritativeIds: string[]
@@ -373,6 +387,7 @@ export const useSettingsStore = create<SettingsState>()(
       snapshotLowWatermark: 50,
       hasApiKey: false,
       hasApiKeyLoaded: false,
+      modelCredentialStatus: 'unknown',
       modelOverridesByWorkspace: {},
       lastUsedModelByProvider: {},
       imageGenModel: 'google/gemini-2.5-flash-image',
@@ -610,6 +625,7 @@ export const useSettingsStore = create<SettingsState>()(
         void persistSnapshotWatermarksToDb(high, nextLow)
       },
       setHasApiKey: (hasApiKey) => set({ hasApiKey }),
+      setModelCredentialStatus: (modelCredentialStatus) => set({ modelCredentialStatus }),
       setAgentLoopNotificationsEnabled: (enabled) => {
         set((s) => ({ agentLoopNotifications: { ...s.agentLoopNotifications, enabled } }))
       },
@@ -797,6 +813,42 @@ export const useSettingsStore = create<SettingsState>()(
         void get().checkHasApiKey()
       },
 
+      ensureValidModelSelection: (providers, options = {}) => {
+        const state = get()
+        const resolution = resolveDefaultModelSelection(providers, {
+          providerType: state.providerType,
+          modelName: state.modelName,
+        })
+
+        // An expired gateway credential is an auth problem, not a model
+        // problem. Keep the user's choice so a successful re-login resumes it.
+        if (options.preserveExpiredCredential && state.modelCredentialStatus === 'expired') {
+          return {
+            action: 'keep',
+            providerType: state.providerType,
+            modelName: state.modelName,
+            reason: 'current-valid',
+          }
+        }
+
+        if (resolution.action !== 'switch') return resolution
+        const current = get()
+        set({
+          providerType: resolution.providerType as LLMProviderType,
+          modelName: resolution.modelName,
+          lastUsedModelByProvider: {
+            ...current.lastUsedModelByProvider,
+            [resolution.providerType as LLMProviderType]: resolution.modelName,
+          },
+          ...(isCustomProviderType(resolution.providerType)
+            ? {
+                customBaseUrl: current.customProviders.find((provider) => provider.id === resolution.providerType)?.baseUrl ?? current.customBaseUrl,
+              }
+            : {}),
+        })
+        return resolution
+      },
+
       getAvailableProviders: async () => {
         const { loadApiKey } = await import('@/security/api-key-store')
         const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
@@ -829,7 +881,7 @@ export const useSettingsStore = create<SettingsState>()(
             // Use pinned models if available, otherwise fallback to all models
             const pinned = state.pinnedModelsByProvider[providerType]
             const allModels = getModelsForProvider(providerType)
-            const models = pinned
+            const models = pinned && pinned.length > 0
               ? pinned
                   .map((id) => {
                     const found = allModels.find((m) => m.id === id)
@@ -880,7 +932,7 @@ export const useSettingsStore = create<SettingsState>()(
           if (key) {
             // Use pinned models if available, otherwise fallback to custom provider models
             const pinned = state.pinnedModelsByProvider[cp.id]
-            const models = pinned
+            const models = pinned && pinned.length > 0
               ? pinned.map((id) => ({ id, name: id }))
               : cp.models.map((m) => ({ id: m, name: m }))
 
@@ -907,7 +959,7 @@ export const useSettingsStore = create<SettingsState>()(
             const meta = getDynamicMeta(id)
             const pinned = state.pinnedModelsByProvider[id]
             const allModels = getModelsForProvider(id)
-            const models = pinned
+            const models = pinned && pinned.length > 0
               ? pinned.map((pid) => {
                   const found = allModels.find((m) => m.id === pid)
                   return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
@@ -937,7 +989,7 @@ export const useSettingsStore = create<SettingsState>()(
               const gwMeta = getDynamicMeta(llmGatewayProviderKey)
               const pinned = state.pinnedModelsByProvider[llmGatewayProviderKey]
               const allModels = getModelsForProvider(llmGatewayProviderKey)
-              const models = pinned
+              const models = pinned && pinned.length > 0
                 ? pinned.map((pid) => {
                     const found = allModels.find((m) => m.id === pid)
                     return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
@@ -979,6 +1031,19 @@ export const useSettingsStore = create<SettingsState>()(
           // that was just auto-removed (no flash between refreshes).
           r.models = r.models.filter((m) => !toRemove.includes(m.id))
         }
+
+        // Reconcile only after every provider source has been collected. This
+        // prevents an early provider from winning while a later provider is
+        // still being restored.
+        const reconciliationProviders: AvailableProviderLike[] = results.map((result) => ({
+          providerType: result.providerType,
+          models: result.models,
+          authoritativeIds: result.authoritativeIds,
+          catalogStatus: result.authoritativeIds.length > 0 || result.models.length > 0 ? 'ready' : 'empty',
+        }))
+        get().ensureValidModelSelection(reconciliationProviders, {
+          preserveExpiredCredential: get().modelCredentialStatus === 'expired',
+        })
 
         return results
       },

@@ -99,6 +99,8 @@ export const conversation = {
     },
     toast: {
       noApiKey: "まず設定で API Key を設定してください",
+      noModel: "利用可能なモデルがありません",
+      gatewayReauthRequired: "Nutstore AI のセッションが期限切れです。再ログインしてください",
       deletedTurn: "完全なチャットターンを削除しました",
       stopBeforeSend: "チャットが実行中です。送信する前に停止してください",
       stopBeforeRegenerate: "再生成する前に、現在の実行を停止してください",

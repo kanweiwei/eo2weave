@@ -10,7 +10,11 @@ export const topbar = {
     workspaceLabel: "チャット: {name}",
     modelSwitcher: {
       title: "クイックモデル切替",
-      unavailable: "モデルは利用できません",
+      unavailable: "利用可能なモデルがありません",
+      loading: "モデルを読み込み中…",
+      noModels: "利用可能なモデルがありません",
+      credentialExpired: "再ログインが必要です",
+      temporarilyUnavailable: "一時的に確認できません",
       noPinnedModels: "まだピン留めされたモデルはありません。設定で追加してください。",
       searchPlaceholder: "モデルを検索…",
       noResults: "一致するモデルはありません",
@@ -55,5 +59,6 @@ export const topbar = {
       storage: "ストレージ",
       language: "言語",
       theme: "テーマ",
+      imageGeneration: "画像生成",
     },
 } as const

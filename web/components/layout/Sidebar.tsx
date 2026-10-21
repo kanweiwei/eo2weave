@@ -37,6 +37,10 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
 } from '@creatorweave/ui'
 import { useConversationStore } from '@/store/conversation.store'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
@@ -1182,8 +1186,40 @@ export const Sidebar = memo(function Sidebar({
 
         {!collapsed && <>
         {/* Collapse button */}
-        <div className="border-subtle flex items-center justify-between border-b bg-white px-2 py-1 dark:bg-card">
-          <span className="text-xs font-semibold uppercase tracking-wider text-secondary">{t('sidebar.workspace')}</span>
+        <div className="border-subtle flex h-10 items-center justify-between border-b bg-white px-2 dark:bg-card">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-secondary outline-none transition-colors hover:bg-transparent focus-visible:ring-0"
+                aria-label={`${t('sidebar.workspace')} (${workspaceTab === 'active' ? activeCount : archivedCount})`}
+              >
+                <span>
+                  {t('sidebar.workspace')}
+                  <span className="ml-1 font-normal text-muted-foreground">
+                    {workspaceTab === 'active' ? activeCount : archivedCount}
+                  </span>
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-tertiary" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-44 rounded-xl p-2">
+              <DropdownMenuItem
+                onSelect={() => setWorkspaceTab('active')}
+                className={workspaceTab === 'active' ? 'bg-muted font-medium text-secondary' : ''}
+              >
+                {t('sidebar.activeTab')}
+                <span className="ml-auto text-tertiary">{activeCount}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => setWorkspaceTab('archived')}
+                className={workspaceTab === 'archived' ? 'bg-muted font-medium text-secondary' : ''}
+              >
+                {t('sidebar.archivedTab')}
+                <span className="ml-auto text-tertiary">{archivedCount}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="flex items-center gap-1">
             <BrandButton
               iconButton
@@ -1225,48 +1261,9 @@ export const Sidebar = memo(function Sidebar({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {/* Conversation list */}
           <div
-            className="flex min-h-0 flex-col overflow-hidden"
+            className="flex min-h-0 flex-col overflow-hidden bg-muted/25"
             style={{ height: `${conversationRatio}%` }}
           >
-          {/* Workspace tab filter with sliding indicator */}
-          <div className="relative mx-2 mt-2 mb-1 flex rounded-md bg-muted/60 p-0.5">
-            <div
-              className="absolute top-0.5 bottom-0.5 rounded-[5px] bg-card shadow-sm transition-transform duration-200 ease-[cubic-bezier(0.25,0.1,0.25,1)]"
-              style={{
-                width: 'calc(50% - 2px)',
-                transform: workspaceTab === 'archived' ? 'translateX(calc(100% + 2px))' : 'translateX(0)',
-              }}
-            />
-            <button
-              type="button"
-              className={`relative z-10 flex-1 rounded-md py-1 text-center text-[11px] transition-colors duration-200 ${
-                workspaceTab === 'active'
-                  ? 'font-semibold text-primary'
-                  : 'text-tertiary hover:text-secondary'
-              }`}
-              onClick={() => setWorkspaceTab('active')}
-            >
-              {t('sidebar.activeTab')}
-              {activeCount > 0 && (
-                <span className="ml-0.5 text-xs text-tertiary">({activeCount})</span>
-              )}
-            </button>
-            <button
-              type="button"
-              className={`relative z-10 flex-1 items-center justify-center gap-1 rounded-md py-1 text-center text-[11px] transition-colors duration-200 ${
-                workspaceTab === 'archived'
-                  ? 'font-semibold text-primary'
-                  : 'text-tertiary hover:text-secondary'
-              }`}
-              onClick={() => setWorkspaceTab('archived')}
-            >
-              {t('sidebar.archivedTab')}
-              {archivedCount > 0 && (
-                <span className="ml-0.5 text-xs text-tertiary">({archivedCount})</span>
-              )}
-            </button>
-          </div>
-
           {workspaceTab === 'active' && (
             <NewWorkspaceButton
               onClick={handleCreateNewWorkspace}
@@ -1275,7 +1272,7 @@ export const Sidebar = memo(function Sidebar({
             />
           )}
 
-          <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-2">
             {displayedConversations.map((conv) => {
               const isRunning = runningSet.has(conv.id)
               const isActive = conv.id === activeWorkspaceId

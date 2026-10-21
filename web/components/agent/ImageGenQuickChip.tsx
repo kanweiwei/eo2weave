@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ImageIcon, X } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import { useT } from '@/i18n'
 import { isImageGenAvailable } from '@/agent/tools/image-gen.tool'
 import { useSettingsStore } from '@/store/settings.store'
@@ -95,7 +95,7 @@ export function ImageGenQuickChip({ onPrefill }: { onPrefill: (text: string) => 
           title={examplePrompt}
           className="inline-flex items-center gap-1.5 transition-colors hover:text-primary-700 dark:hover:text-primary-300"
         >
-          <ImageIcon className="h-3.5 w-3.5" aria-hidden="true" />
+          <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
           {t('conversation.imageGen.quickChip.label')}
         </button>
         <button

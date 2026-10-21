@@ -264,7 +264,7 @@ export function ProjectHome({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl space-y-6 px-6 pb-8 pt-0">
+      <main className="mx-auto w-full max-w-5xl space-y-6 px-6 pb-8 pt-4">
         {/* Extension install banner — hidden on mobile (browsers can't install there) */}
         {!isMobileDeviceForExtension() && (
           <ExtensionBanner onInstallClick={() => useExtensionStore.getState().openInstallGuide()} />

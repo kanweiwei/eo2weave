@@ -152,6 +152,7 @@ export function WorkspaceLayout({
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const syncModelForWorkspace = useSettingsStore((s) => s.syncModelForWorkspace)
+  const ensureValidModelSelection = useSettingsStore((s) => s.ensureValidModelSelection)
   const saveModelOverrideForWorkspace = useSettingsStore((s) => s.saveModelOverrideForWorkspace)
   // `showPreview` is a boolean state field controlling the sync preview drawer.
   // `showPreviewPanel` is the action that toggles it (used elsewhere).
@@ -291,10 +292,16 @@ export function WorkspaceLayout({
     }
   }, [])
 
-  // Sync workspace-specific model selection when switching workspace
+  // Sync workspace-specific model selection when switching workspace. Empty
+  // overrides are ignored by the store so they cannot erase a valid choice.
   useEffect(() => {
     syncModelForWorkspace(activeConversationId ?? null)
-  }, [activeConversationId, syncModelForWorkspace])
+    void useSettingsStore.getState().getAvailableProviders().then((providers) => {
+      ensureValidModelSelection(providers, { preserveExpiredCredential: true })
+    }).catch((error) => {
+      console.warn('[WorkspaceLayout] model reconciliation deferred:', error)
+    })
+  }, [activeConversationId, ensureValidModelSelection, syncModelForWorkspace])
 
   // Persist current model selection for active workspace
   useEffect(() => {
@@ -766,7 +773,6 @@ export function WorkspaceLayout({
         onManageProjects={onManageProjects}
         projectSwitcherOpen={projectSwitcherOpen}
         onProjectSwitcherOpenChange={setProjectSwitcherOpen}
-        onSelectWorkspace={onSelectWorkspace}
         onWorkflowOpen={() => useFlowStore.getState().setPanelOpen(true)}
         onNewConversation={() => {
           const newConv = createNew('New conversation')

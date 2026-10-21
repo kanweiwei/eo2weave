@@ -27,7 +27,7 @@ export function ExtensionBanner({ onInstallClick }: ExtensionBannerProps) {
   if (!visible) return null
 
   return (
-    <div className="relative mt-4 flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-100/30 dark:bg-primary-100/10">
+    <div className="relative flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-100/30 dark:bg-primary-100/10">
         <div className="flex items-center gap-3 min-w-0">
           <Globe className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" />
           <div className="min-w-0">

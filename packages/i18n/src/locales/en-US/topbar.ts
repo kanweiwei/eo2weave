@@ -9,7 +9,11 @@ export const topbar = {
     workspaceLabel: "Chat: {name}",
     modelSwitcher: {
       title: "Quick Model Switch",
-      unavailable: "Model unavailable",
+      unavailable: "No models available",
+      loading: "Loading models…",
+      noModels: "No models available",
+      credentialExpired: "Re-login required",
+      temporarilyUnavailable: "Temporarily unable to verify",
       noPinnedModels: "No models pinned yet. Add models in Settings.",
       searchPlaceholder: "Search models…",
       noResults: "No matching models",
@@ -54,5 +58,6 @@ export const topbar = {
       storage: "Storage",
       language: "Language",
       theme: "Theme",
+      imageGeneration: "Image generation",
     },
 } as const

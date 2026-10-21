@@ -1,5 +1,6 @@
 export const welcome = {
     title: "EO2Weave",
+    greeting: "What can I help you with today?",
     tagline: "AI-Native Workspace for Creators",
     placeholder: "Type a message to start...",
     send: "Send",

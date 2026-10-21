@@ -23,9 +23,6 @@ interface FlatModel {
 }
 
 interface ModelQuickSwitchProps {
-  /** Called when user clicks the "Manage providers" entry. Typically opens
-   *  the settings dialog on the LLM provider tab. */
-  onManageProviders?: () => void
   /** Use the narrower trigger sizing when rendered beside the send button. */
   compact?: boolean
   enableThinking?: boolean
@@ -35,7 +32,6 @@ interface ModelQuickSwitchProps {
 }
 
 export function ModelQuickSwitch({
-  onManageProviders,
   compact = false,
   enableThinking = false,
   thinkingLevel = 'medium',
@@ -46,6 +42,7 @@ export function ModelQuickSwitch({
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const hasApiKey = useSettingsStore((s) => s.hasApiKey)
+  const modelCredentialStatus = useSettingsStore((s) => s.modelCredentialStatus)
   const getAvailableProviders = useSettingsStore((s) => s.getAvailableProviders)
   const switchProviderAndModel = useSettingsStore((s) => s.switchProviderAndModel)
   const providerRefreshVersion = useSettingsStore((s) => s._providerRefreshVersion)
@@ -53,6 +50,7 @@ export function ModelQuickSwitch({
   const [open, setOpen] = useState(false)
   const [providers, setProviders] = useState<AvailableProvider[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -66,6 +64,7 @@ export function ModelQuickSwitch({
     let cancelled = false
     const load = async () => {
       setLoading(true)
+      setLoadError(false)
       try {
         const result = await getAvailableProviders()
         if (!cancelled) {
@@ -73,6 +72,7 @@ export function ModelQuickSwitch({
         }
       } catch (err) {
         console.error('[ModelQuickSwitch] Failed to load providers:', err)
+        if (!cancelled) setLoadError(true)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -192,13 +192,17 @@ export function ModelQuickSwitch({
 
   const currentModelLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
+    if (loading) return t('topbar.modelSwitcher.loading')
+    if (modelCredentialStatus === 'expired' && modelName) {
+      return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
+    }
     if (!hasApiKey || !providerType || !modelName) {
-      return t('topbar.modelSwitcher.unavailable')
+      return t('topbar.modelSwitcher.noModels')
     }
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
     return model?.name || modelName
-  }, [hasApiKey, providerType, providers, modelName, t])
+  }, [hasApiKey, loading, modelCredentialStatus, providerType, providers, modelName, t])
 
   const thinkingLevels: { value: ExtendedThinkingLevel; label: string }[] = [
     { value: 'minimal', label: t('conversation.thinkingLevels.minimal') },
@@ -306,7 +310,7 @@ export function ModelQuickSwitch({
       <PopoverContent
         align="end"
         onOpenAutoFocus={(event) => event.preventDefault()}
-        className="flex max-h-[420px] w-[300px] flex-col overflow-hidden rounded-lg border-border/80 bg-background p-0 shadow-md shadow-black/5"
+        className="flex max-h-[420px] w-[300px] flex-col overflow-hidden rounded-lg border border-border/80 bg-white p-0 shadow-md shadow-black/5 dark:bg-neutral-900"
       >
         {/* Search input — always visible when providers exist */}
         {!loading && enrichedProviders.length > 0 && (
@@ -352,19 +356,7 @@ export function ModelQuickSwitch({
           </div>
         ) : enrichedProviders.length === 0 ? (
                       <div className="flex flex-col items-center gap-2 px-2 py-4 text-center">
-            <span className="text-xs text-tertiary">{t('topbar.modelSwitcher.noPinnedModels')}</span>
-            {onManageProviders && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  onManageProviders()
-                }}
-                className="rounded-md bg-primary-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-primary-700"
-              >
-                {t('topbar.modelSwitcher.manageProviders')}
-              </button>
-            )}
+            <span className="text-xs text-tertiary">{loadError ? t('topbar.modelSwitcher.temporarilyUnavailable') : t('topbar.modelSwitcher.noModels')}</span>
           </div>
         ) : isSearching ? (
           filteredFlatModels.length === 0 ? (
@@ -440,12 +432,6 @@ export function ModelQuickSwitch({
                       <span className="truncate text-sm font-semibold text-secondary" title={provider.displayName}>
                         {provider.displayName}
                       </span>
-                    </span>
-                    <span className="shrink-0 rounded-full bg-muted px-1.5 py-1 text-xs text-tertiary">
-                      {visibleModels.length}
-                      {visionOnly && visibleModels.length !== provider.models.length ? (
-                        <span className="ml-0.5 text-tertiary/60">/{provider.models.length}</span>
-                      ) : null}
                     </span>
                   </button>
                   {!isCollapsed ? (

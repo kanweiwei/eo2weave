@@ -144,6 +144,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false)
   const hasApiKey = useSettingsStore((s) => s.hasApiKey)
   const hasApiKeyLoaded = useSettingsStore((s) => s.hasApiKeyLoaded)
+  const modelCredentialStatus = useSettingsStore((s) => s.modelCredentialStatus)
   const checkHasApiKey = useSettingsStore((s) => s.checkHasApiKey)
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
@@ -215,7 +216,9 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
   const readiness: ProviderReadiness = {
     hasApiKey,
-    hasUsableModel: !!providerType && !!modelName,
+    // An expired gateway credential preserves the model selection; it should
+    // not send the user back through model selection.
+    hasUsableModel: (!!providerType && !!modelName) || modelCredentialStatus === 'expired',
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>
@@ -265,7 +268,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
       if (folderRoots.length > 0 || folderMountSkipped) return 'ready'
       return 'mount-folder'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped, aiSetupSkipped])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped, aiSetupSkipped, modelCredentialStatus])
 
   // Onboarding completed (key + default model configured): the AI-setup skip
   // has served its purpose. Clear it so a LATER deliberate unconfigure (user
@@ -425,17 +428,13 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   return (
     <main className="flex h-full flex-col items-center justify-center bg-background px-4 dark:bg-neutral-950">
       <div className="w-full max-w-2xl">
-        {/* Logo & Tagline */}
         <div className="mb-6 text-center">
           <img
             src="/favicon.svg"
             alt=""
             className="mb-4 inline-block h-12 w-12"
           />
-          <h1 className="mb-2 text-3xl font-semibold text-foreground">
-            {t('welcome.title')}
-          </h1>
-          <p className="text-base text-neutral-500 dark:text-neutral-400">{t('welcome.tagline')}</p>
+          <p className="text-base text-foreground">{t('welcome.greeting')}</p>
         </div>
 
         {isLoading ? (
@@ -739,12 +738,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             for full remounts. */}
         {!isLoading && step !== 'welcome' && (
           <>
-            {step === 'ready' && (
-              /* One-line hint replacing the quick-start buttons */
-              <p className="mb-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                {t('welcome.readyHint')}
-              </p>
-            )}
             <div className="relative mb-6" data-tour="welcome-input">
               {/* Side-panel mode: shows which tab the AI is currently reading.
                   Renders null outside side-panel mode. */}
@@ -816,13 +809,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             onConfirm={handleScreenshotConfirm}
             onCancel={() => setScreenshotDataUrl(null)}
           />
-        )}
-
-        {/* Local-first privacy hint */}
-        {!isLoading && step !== 'welcome' && (
-          <p className="mt-7 text-center text-[11px] text-neutral-400 dark:text-neutral-500">
-            {t('welcome.setupLocalFirstHint')}
-          </p>
         )}
 
       </div>

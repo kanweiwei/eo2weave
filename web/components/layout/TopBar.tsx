@@ -23,9 +23,7 @@ import {
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import type { SettingsTab } from '@/components/settings/SettingsDialog'
-import { ConversationStorageBadge } from '@/components/conversation'
 import { FolderSelector } from './FolderSelector'
-import { ImageGenDropdown, useHasImageModels } from '@/components/agent/ImageGenDropdown'
 import { useT } from '@/i18n'
 import {
   BrandButton,
@@ -33,6 +31,11 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from '@creatorweave/ui'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useFlowStore } from '@/store/flow.store'
@@ -74,8 +77,6 @@ interface TopBarProps {
   projectSwitcherOpen?: boolean
   /** Callback when project switcher open state changes */
   onProjectSwitcherOpenChange?: (open: boolean) => void
-  /** Navigate to a workspace within the current project (updates URL) */
-  onSelectWorkspace?: (workspaceId: string) => void
   /** Open the workflow canvas */
   onWorkflowOpen?: () => void
   /** Create a new conversation */
@@ -97,7 +98,6 @@ export function TopBar({
   onManageProjects,
   projectSwitcherOpen,
   onProjectSwitcherOpenChange,
-  onSelectWorkspace,
   onWorkflowOpen,
   onNewConversation,
 }: TopBarProps) {
@@ -105,7 +105,6 @@ export function TopBar({
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined)
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const mobileMorePanelRef = useRef<HTMLDivElement | null>(null)
-  const hasImageModels = useHasImageModels()
   const flowPanelOpen = useFlowStore((s) => s.panelOpen)
   const t = useT()
   const conversationName = activeConversationName ?? activeWorkspaceName
@@ -248,73 +247,47 @@ export function TopBar({
               <FolderSelector />
             </div>
 
-            {/* Image generation model + aspect ratio (combined) */}
-            <ImageGenDropdown />
-
-            {/* Conversation Storage - OPFS conversation status with storage dropdown */}
-            <div className="shrink-0">
-              <ConversationStorageBadge compact onSelectWorkspace={onSelectWorkspace} />
-            </div>
-
-            <div className="h-5 w-px bg-muted" />
-
-            {/* Tools Panel */}
-            <ActionTooltip label={t('topbar.tooltips.toolsPanel')}>
-              <BrandButton iconButton className="shrink-0" onClick={onToolsPanelOpen} data-tour="tools">
-                <List className="h-[14px] w-[14px]" />
-              </BrandButton>
-            </ActionTooltip>
-
-            {/* Workflow Canvas (only in an active conversation) */}
-            {conversationName && onWorkflowOpen && (
-              <ActionTooltip label={t('topbar.tooltips.workflow')}>
-                <BrandButton
-                  iconButton
-                  className="shrink-0"
-                  variant={flowPanelOpen ? 'primary' : undefined}
-                  onClick={onWorkflowOpen}
-                  aria-pressed={flowPanelOpen}
-                >
-                  <Workflow className="h-[14px] w-[14px]" />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <BrandButton iconButton aria-label={t('topbar.mobile.more')}>
+                  <MoreHorizontal className="h-[14px] w-[14px]" />
                 </BrandButton>
-              </ActionTooltip>
-            )}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56 rounded-xl p-1.5">
+                <DropdownMenuItem onSelect={() => onToolsPanelOpen?.()}>
+                  <List className="h-3.5 w-3.5" />
+                  {t('topbar.tooltips.toolsPanel')}
+                </DropdownMenuItem>
+                {conversationName && onWorkflowOpen && (
+                  <DropdownMenuItem onSelect={onWorkflowOpen}>
+                    <Workflow className="h-3.5 w-3.5" />
+                    {t('topbar.tooltips.workflow')}
+                    {flowPanelOpen && <span className="ml-auto text-xs text-primary">●</span>}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={() => onCommandPaletteOpen?.()}>
+                  <Keyboard className="h-3.5 w-3.5" />
+                  {t('topbar.tooltips.commandPalette')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onSkillsManagerOpen?.()}>
+                  <WandSparkles className="h-3.5 w-3.5" />
+                  {t('topbar.tooltips.skillsManager')}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {isSidePanelMode() && (
+                  <DropdownMenuItem onSelect={() => window.open(window.location.href, '_blank', 'noopener')}>
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    在新标签页打开
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
 
-            {/* Quick Actions / Command Palette */}
-            <ActionTooltip label={t('topbar.tooltips.commandPalette')}>
-              <BrandButton iconButton onClick={onCommandPaletteOpen}>
-                <Keyboard className="h-[14px] w-[14px]" />
-              </BrandButton>
-            </ActionTooltip>
-
-            {/* Skills */}
-            <ActionTooltip label={t('topbar.tooltips.skillsManager')}>
-              <BrandButton iconButton className="shrink-0" onClick={onSkillsManagerOpen} data-tour="skills">
-                <WandSparkles className="h-[14px] w-[14px]" />
-              </BrandButton>
-            </ActionTooltip>
-
-            <div className="h-5 w-px bg-muted" />
-
-            {/* Settings */}
             <ActionTooltip label={t('topbar.tooltips.appSettings')}>
               <BrandButton iconButton className="shrink-0" onClick={() => openSettings()}>
                 <Settings className="h-[14px] w-[14px]" />
               </BrandButton>
             </ActionTooltip>
-
-            {/* Side panel only: open current workspace in a new tab */}
-            {isSidePanelMode() && (
-              <ActionTooltip label="在新标签页打开">
-                <BrandButton
-                  iconButton
-                  className="shrink-0"
-                  onClick={() => window.open(window.location.href, '_blank', 'noopener')}
-                >
-                  <ExternalLink className="h-[14px] w-[14px]" />
-                </BrandButton>
-              </ActionTooltip>
-            )}
           </div>
         )}
       </header>
@@ -335,15 +308,6 @@ export function TopBar({
               </div>
               <FolderSelector />
             </div>
-
-            {/* Image generation model + aspect ratio (combined).
-                Container hides when the current provider has no image models, so the
-                mobile "more" panel doesn't leave a blank bordered card behind. */}
-            {hasImageModels && (
-              <div className="mb-2 rounded-lg border border-neutral-200 p-2 dark:border-neutral-700">
-                <ImageGenDropdown />
-              </div>
-            )}
 
             {/* Quick actions grid */}
             <div className="grid grid-cols-2 gap-1.5">

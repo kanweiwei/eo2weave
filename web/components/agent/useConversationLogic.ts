@@ -346,9 +346,16 @@ export function useConversationLogic() {
         providerType: pType,
         modelName: mName,
         maxTokens: mTokens,
+        modelCredentialStatus,
       } = useSettingsStore.getState()
-      if (!hasKey) {
-        toast.error(t('conversation.toast.noApiKey'))
+      if (!hasKey || modelCredentialStatus === 'expired' || !pType || !mName) {
+        toast.error(
+          modelCredentialStatus === 'expired'
+            ? t('conversation.toast.gatewayReauthRequired')
+            : !pType || !mName
+              ? t('conversation.toast.noModel')
+              : t('conversation.toast.noApiKey'),
+        )
         options?.onInputRejected?.(text)
         return
       }
