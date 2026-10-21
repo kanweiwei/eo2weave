@@ -39,7 +39,6 @@ import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agen
 import { ModelThinkingControls } from './agent/ModelThinkingControls'
 import { ActiveTabIndicator } from './agent/ActiveTabIndicator'
 import { AgentDropdown } from './agent/AgentDropdown'
-import { ThinkingDropdown } from './agent/ThinkingDropdown'
 import { AgentModeSelect } from './agent/AgentModeSelect'
 import { RunEndPolicySelect } from './agent/RunEndPolicySelect'
 import type { FileMentionItem } from './agent/FileMentionExtension'
@@ -215,13 +214,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     && localStorage.getItem('creatorweave:auto-default-project-created') === '1'
 
   // ── Toolbar state (pre-conversation configuration) ──
-  // Settings store holds thinking toggle + level; changes here flow into the
-  // first message send because useSettingsStore is read at send time, not
+  // The thinking toggle + level come from the settings store (declared above,
+  // next to the input accessory that renders them); they flow into the first
+  // message send because useSettingsStore is read at send time, not
   // snapshotted on mount.
-  const enableThinking = useSettingsStore((s) => s.enableThinking)
-  const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
-  const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
-  const setThinkingLevel = useSettingsStore((s) => s.setThinkingLevel)
   // Workspace preferences: agentMode + auto-apply policy. Both are
   // per-workspace, but with no active workspace yet (bare URL on entry),
   // setAgentMode / setAutoApplyOnRunComplete only update the global mirror;
@@ -838,15 +834,17 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             </div>
 
             {/* ── Compact toolbar row ──
-                Lets users configure thinking level / agent mode / YOLO /
-                completion-apply policy BEFORE sending the first message.
-                The settings flow into the new conversation on send (the
-                settings store is read at send time, not snapshotted on
-                mount; the workspace-preferences maps get populated on
-                first switchWorkspace). Rendered on every non-welcome
-                step — the setup steps may not be able to send yet, but
-                preconfiguring here still applies to the eventual first
-                send, and it keeps the visual layout consistent. */}
+                Lets users configure agent / mode / completion-apply policy
+                BEFORE sending the first message. The settings flow into the
+                new conversation on send (the settings store is read at send
+                time, not snapshotted on mount; the workspace-preferences maps
+                get populated on first switchWorkspace). Rendered on every
+                non-welcome step — the setup steps may not be able to send yet,
+                but preconfiguring here still applies to the eventual first
+                send, and it keeps the visual layout consistent.
+                The thinking toggle lives in the input's accessory bar
+                (ModelThinkingControls), matching the conversation view — the
+                toolbar therefore only carries the remaining knobs. */}
             <div className="mx-auto mb-6 mt-2 flex max-w-2xl items-center justify-between gap-1.5">
               <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2 sm:overflow-visible">
                 <AgentDropdown
@@ -854,12 +852,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   activeAgentId={activeAgentId}
                   setActiveAgent={setActiveAgent}
                   deleteAgent={deleteAgent}
-                />
-                <ThinkingDropdown
-                  enableThinking={enableThinking}
-                  thinkingLevel={thinkingLevel}
-                  setEnableThinking={setEnableThinking}
-                  setThinkingLevel={setThinkingLevel}
                 />
                 <AgentModeSelect mode={agentMode} onModeChange={setAgentMode} />
                 <RunEndPolicySelect
@@ -869,6 +861,13 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </div>
             </div>
           </>
+        )}
+
+        {/* Local-first privacy hint */}
+        {!isLoading && step !== 'welcome' && (
+          <p className="mt-7 text-center text-[11px] text-neutral-400 dark:text-neutral-500">
+            {t('welcome.setupLocalFirstHint')}
+          </p>
         )}
 
         {screenshotDataUrl && (

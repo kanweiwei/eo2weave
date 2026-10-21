@@ -213,12 +213,14 @@ vi.mock('../agent/AgentRichInput', async () => {
   // the consumed text STAYS in the editor, exactly like tiptap setContent.
   const MockAgentRichInput = ({
     leadingAccessory,
+    beforeSendAccessory,
     initialText,
     onDraftRestored,
     onChange,
     sendState,
   }: {
     leadingAccessory?: ReactNode
+    beforeSendAccessory?: ReactNode
     initialText?: string
     onDraftRestored?: () => void
     onChange?: (value: { text: string; mentionedAgentIds: string[] }) => void
@@ -256,6 +258,7 @@ vi.mock('../agent/AgentRichInput', async () => {
             send
           </button>
         )}
+        {beforeSendAccessory}
         {leadingAccessory}
       </div>
     )
@@ -279,6 +282,11 @@ vi.mock('@/hooks/useProjectAgentsInit', () => ({
 }))
 vi.mock('../agent/ThinkingDropdown', () => ({
   ThinkingDropdown: () => <div data-testid="toolbar-thinking-dropdown" />,
+}))
+// The thinking toggle lives in the input's accessory bar (same as the
+// conversation view), so it is asserted there rather than in the toolbar.
+vi.mock('../agent/ModelThinkingControls', () => ({
+  ModelThinkingControls: () => <div data-testid="inline-thinking-controls" />,
 }))
 vi.mock('../agent/AgentModeSelect', () => ({
   AgentModeSelect: () => <div data-testid="toolbar-agent-mode" />,
@@ -631,18 +639,19 @@ describe('WelcomeScreen', () => {
   })
 
   // ── Toolbar (pre-conversation configuration) ──
-  // The toolbar (Agent / Thinking / Mode / Completion policy) lets users
-  // configure per-run knobs BEFORE the first message, so settings flow
-  // into the new conversation at send time. Rendered on every non-welcome
-  // step (input already renders there too).
-  it('renders all four toolbar dropdowns on the ready step', () => {
+  // The toolbar (Agent / Mode / Completion policy) lets users configure
+  // per-run knobs BEFORE the first message, so settings flow into the new
+  // conversation at send time. Rendered on every non-welcome step (input
+  // already renders there too). The thinking toggle is part of the input's
+  // accessory bar, not the toolbar.
+  it('renders the toolbar dropdowns and the inline thinking controls on the ready step', () => {
     render(<WelcomeScreen onStartConversation={vi.fn()} />)
     advanceToReady()
 
     expect(screen.getByTestId('toolbar-agent-dropdown')).toBeInTheDocument()
-    expect(screen.getByTestId('toolbar-thinking-dropdown')).toBeInTheDocument()
     expect(screen.getByTestId('toolbar-agent-mode')).toBeInTheDocument()
     expect(screen.getByTestId('toolbar-run-end-policy')).toBeInTheDocument()
+    expect(screen.getByTestId('inline-thinking-controls')).toBeInTheDocument()
   })
 
   it('renders the toolbar on the api-key setup step too', () => {
@@ -655,8 +664,8 @@ describe('WelcomeScreen', () => {
 
     expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
     expect(screen.getByTestId('toolbar-agent-dropdown')).toBeInTheDocument()
-    expect(screen.getByTestId('toolbar-thinking-dropdown')).toBeInTheDocument()
     expect(screen.getByTestId('toolbar-agent-mode')).toBeInTheDocument()
     expect(screen.getByTestId('toolbar-run-end-policy')).toBeInTheDocument()
+    expect(screen.getByTestId('inline-thinking-controls')).toBeInTheDocument()
   })
 })
