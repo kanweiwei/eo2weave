@@ -236,7 +236,7 @@ describe('subagent runtime', () => {
     })
   })
 
-  it('refreshes a cached child loop context before resuming it in a later parent run', async () => {
+  it('rebuilds child loop context from current runtime deps when resuming in a later parent run', async () => {
     const workspaceId = `workspace-context-refresh-${Date.now()}`
     const firstRunPaths: string[] = []
     const secondRunPaths: string[] = []
@@ -246,15 +246,19 @@ describe('subagent runtime', () => {
       description: 'context refresh test',
       prompt: 'first pass',
     })
-    const cachedContext = hoisted.loopConfigs[0].toolContext
+    const firstContext = hoisted.loopConfigs[0].toolContext
 
     const refreshedRuntime = createRuntime(workspaceId, [], (paths) => secondRunPaths.push(...paths))
     await refreshedRuntime.resume({ agentId: spawned.agentId, prompt: 'second pass' })
     await waitForStatus(refreshedRuntime, spawned.agentId, 'completed')
 
-    expect(hoisted.loopConfigs).toHaveLength(1)
-    expect(hoisted.loopConfigs[0].toolContext).toBe(cachedContext)
-    cachedContext.onWorkspacePathsChanged(['root/child-write.ts'])
+    // The completed task's live loop/context are released (memory hygiene);
+    // resume builds a FRESH context from the current runtime deps, so stale
+    // parent-run callbacks can never leak into the resumed child by design.
+    expect(hoisted.loopConfigs).toHaveLength(2)
+    const resumedContext = hoisted.loopConfigs[1].toolContext
+    expect(resumedContext).not.toBe(firstContext)
+    resumedContext.onWorkspacePathsChanged(['root/child-write.ts'])
     expect(firstRunPaths).toEqual([])
     expect(secondRunPaths).toEqual(['root/child-write.ts'])
   })

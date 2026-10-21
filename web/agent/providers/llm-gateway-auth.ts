@@ -112,6 +112,35 @@ export const LLM_GATEWAY_API_KEY_ID = '__llm_gateway_token__'
  */
 const REFRESH_TOKEN_DB_KEY = '__llm_gateway_refresh_token__'
 
+/**
+ * Last credential status recorded by this module.
+ *
+ * The settings store holds the same value, but reading it back is async
+ * (the store is loaded through a dynamic import), while callers such as
+ * `fetchGatewayRateLimits` need the state of the token acquisition that
+ * just failed — i.e. "expired" vs "never logged in" — to pick the right
+ * message. This mirror keeps that read synchronous.
+ */
+let lastCredentialStatus: 'unknown' | 'valid' | 'expired' | 'missing' = 'unknown'
+
+/** Keep the settings UI's credential state aligned with background auth checks. */
+function setCredentialStatus(status: 'valid' | 'expired' | 'missing'): void {
+  lastCredentialStatus = status
+  void import('@/store/settings.store')
+    .then(({ useSettingsStore }) => useSettingsStore.getState().setModelCredentialStatus(status))
+    .catch(() => {
+      // Auth must remain usable even when the settings store is unavailable.
+    })
+}
+
+/**
+ * The credential status as of the last token operation performed by this
+ * module. `'unknown'` means no token operation has run in this session yet.
+ */
+export function getGatewayCredentialStatus(): 'unknown' | 'valid' | 'expired' | 'missing' {
+  return lastCredentialStatus
+}
+
 export interface StoredTokens {
   access_token: string
   refresh_token: string
@@ -490,6 +519,9 @@ export async function performDeviceCodeFlow(
           base_url: baseURL,
         })
         emit({ status: 'success' })
+        // A fresh device-code login always yields a usable credential — record
+        // it so the UI leaves the "login expired" state.
+        setCredentialStatus('valid')
         return tokens
       }
       // Still pending, continue polling
@@ -542,6 +574,7 @@ export async function forceRefreshAccessToken(
   const stored = await loadStoredTokensWithFallback()
   if (!stored) {
     console.warn('[llm-gateway] forceRefresh: no stored tokens (localStorage + SQLite both empty)')
+    setCredentialStatus('missing')
     return null
   }
 
@@ -553,6 +586,7 @@ export async function forceRefreshAccessToken(
       now: new Date(now).toISOString(),
     })
     clearStoredTokens()
+    setCredentialStatus('expired')
     return null
   }
 
@@ -570,6 +604,7 @@ export async function forceRefreshAccessToken(
     })
     // Also persist to API key store so the next LLM request uses the new token
     await persistAccessTokenToKeyStore(tokens.access_token)
+    setCredentialStatus('valid')
     return tokens.access_token
   } catch (e) {
     // Only clear tokens if the refresh_token is definitively invalid.
@@ -582,6 +617,7 @@ export async function forceRefreshAccessToken(
       // shadow (the key the settings card's logged-in badge derives from),
       // so the UI falls back to the logged-out state with a login button.
       clearStoredTokens()
+      setCredentialStatus('expired')
     } else {
       console.warn('[llm-gateway] forceRefresh: transient error, keeping stored tokens', e)
     }
@@ -600,12 +636,16 @@ export async function getValidAccessToken(
   // Use the async fallback loader — recovers refresh_token from SQLite
   // when localStorage has been cleared
   const stored = await loadStoredTokensWithFallback()
-  if (!stored) return null
+  if (!stored) {
+    setCredentialStatus('missing')
+    return null
+  }
 
   const now = Date.now()
 
   // If access token is still valid (with 60s buffer), return it
   if (stored.access_expires_at > now + 60_000) {
+    setCredentialStatus('valid')
     return stored.access_token
   }
 
@@ -623,6 +663,7 @@ export async function getValidAccessToken(
       })
       // Also persist to API key store so the next LLM request uses the new token
       await persistAccessTokenToKeyStore(tokens.access_token)
+      setCredentialStatus('valid')
       return tokens.access_token
     } catch (e) {
       // Only clear tokens if the refresh_token is definitively invalid.
@@ -632,6 +673,7 @@ export async function getValidAccessToken(
         // Same "logged-in badge on a dead session" trap as in
         // forceRefreshAccessToken — clearStoredTokens() purges the shadow too.
         clearStoredTokens()
+        setCredentialStatus('expired')
       } else {
         console.warn('[llm-gateway] getValidAccessToken: transient error, keeping stored tokens', e)
       }
@@ -641,6 +683,7 @@ export async function getValidAccessToken(
 
   // Both tokens expired
   clearStoredTokens()
+  setCredentialStatus('expired')
   return null
 }
 
@@ -668,6 +711,7 @@ export function hasValidAccessToken(): boolean {
  */
 export function logoutGateway(): void {
   clearStoredTokens()
+  setCredentialStatus('missing')
 }
 
 /**

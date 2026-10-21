@@ -36,9 +36,9 @@ import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
+import { ModelThinkingControls } from './agent/ModelThinkingControls'
 import { ActiveTabIndicator } from './agent/ActiveTabIndicator'
 import { AgentDropdown } from './agent/AgentDropdown'
-import { ThinkingDropdown } from './agent/ThinkingDropdown'
 import { AgentModeSelect } from './agent/AgentModeSelect'
 import { RunEndPolicySelect } from './agent/RunEndPolicySelect'
 import type { FileMentionItem } from './agent/FileMentionExtension'
@@ -150,9 +150,14 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false)
   const hasApiKey = useSettingsStore((s) => s.hasApiKey)
   const hasApiKeyLoaded = useSettingsStore((s) => s.hasApiKeyLoaded)
+  const modelCredentialStatus = useSettingsStore((s) => s.modelCredentialStatus)
   const checkHasApiKey = useSettingsStore((s) => s.checkHasApiKey)
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
+  const enableThinking = useSettingsStore((s) => s.enableThinking)
+  const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
+  const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
+  const setThinkingLevel = useSettingsStore((s) => s.setThinkingLevel)
   const folderRoots = useFolderAccessStore((s) => s.roots)
   const addRoot = useFolderAccessStore((s) => s.addRoot)
   const addNativeHostRoot = useFolderAccessStore((s) => s.addNativeHostRoot)
@@ -209,13 +214,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     && localStorage.getItem('creatorweave:auto-default-project-created') === '1'
 
   // ── Toolbar state (pre-conversation configuration) ──
-  // Settings store holds thinking toggle + level; changes here flow into the
-  // first message send because useSettingsStore is read at send time, not
+  // The thinking toggle + level come from the settings store (declared above,
+  // next to the input accessory that renders them); they flow into the first
+  // message send because useSettingsStore is read at send time, not
   // snapshotted on mount.
-  const enableThinking = useSettingsStore((s) => s.enableThinking)
-  const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
-  const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
-  const setThinkingLevel = useSettingsStore((s) => s.setThinkingLevel)
   // Workspace preferences: agentMode + auto-apply policy. Both are
   // per-workspace, but with no active workspace yet (bare URL on entry),
   // setAgentMode / setAutoApplyOnRunComplete only update the global mirror;
@@ -246,7 +248,9 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
   const readiness: ProviderReadiness = {
     hasApiKey,
-    hasUsableModel: !!providerType && !!modelName,
+    // An expired gateway credential preserves the model selection; it should
+    // not send the user back through model selection.
+    hasUsableModel: (!!providerType && !!modelName) || modelCredentialStatus === 'expired',
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>
@@ -296,7 +300,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
       if (folderRoots.length > 0 || folderMountSkipped) return 'ready'
       return 'mount-folder'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped, aiSetupSkipped])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped, aiSetupSkipped, modelCredentialStatus])
 
   // Onboarding completed (key + default model configured): the AI-setup skip
   // has served its purpose. Clear it so a LATER deliberate unconfigure (user
@@ -456,17 +460,13 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   return (
     <main className="flex h-full flex-col items-center justify-center bg-background px-4 dark:bg-neutral-950">
       <div className="w-full max-w-2xl">
-        {/* Logo & Tagline */}
         <div className="mb-6 text-center">
           <img
             src="/favicon.svg"
             alt=""
             className="mb-4 inline-block h-12 w-12"
           />
-          <h1 className="mb-2 text-3xl font-semibold text-foreground">
-            {t('welcome.title')}
-          </h1>
-          <p className="text-base text-neutral-500 dark:text-neutral-400">{t('welcome.tagline')}</p>
+          <p className="text-base text-foreground">{t('welcome.greeting')}</p>
         </div>
 
         {isLoading ? (
@@ -770,12 +770,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             for full remounts. */}
         {!isLoading && step !== 'welcome' && (
           <>
-            {step === 'ready' && (
-              /* One-line hint replacing the quick-start buttons */
-              <p className="mb-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                {t('welcome.readyHint')}
-              </p>
-            )}
             <div className="relative" data-tour="welcome-input">
               {/* Side-panel mode: shows which tab the AI is currently reading.
                   Renders null outside side-panel mode. */}
@@ -802,6 +796,14 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 }}
                 initialText={draftToRestore ?? undefined}
                 onDraftRestored={restoreDraft}
+                beforeSendAccessory={(
+                  <ModelThinkingControls
+                    enableThinking={enableThinking}
+                    thinkingLevel={thinkingLevel}
+                    setEnableThinking={setEnableThinking}
+                    setThinkingLevel={setThinkingLevel}
+                  />
+                )}
                 leadingAccessory={(
                   <TooltipProvider delayDuration={250}>
                     <Tooltip>
@@ -832,15 +834,17 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             </div>
 
             {/* ── Compact toolbar row ──
-                Lets users configure thinking level / agent mode / YOLO /
-                completion-apply policy BEFORE sending the first message.
-                The settings flow into the new conversation on send (the
-                settings store is read at send time, not snapshotted on
-                mount; the workspace-preferences maps get populated on
-                first switchWorkspace). Rendered on every non-welcome
-                step — the setup steps may not be able to send yet, but
-                preconfiguring here still applies to the eventual first
-                send, and it keeps the visual layout consistent. */}
+                Lets users configure agent / mode / completion-apply policy
+                BEFORE sending the first message. The settings flow into the
+                new conversation on send (the settings store is read at send
+                time, not snapshotted on mount; the workspace-preferences maps
+                get populated on first switchWorkspace). Rendered on every
+                non-welcome step — the setup steps may not be able to send yet,
+                but preconfiguring here still applies to the eventual first
+                send, and it keeps the visual layout consistent.
+                The thinking toggle lives in the input's accessory bar
+                (ModelThinkingControls), matching the conversation view — the
+                toolbar therefore only carries the remaining knobs. */}
             <div className="mx-auto mb-6 mt-2 flex max-w-2xl items-center justify-between gap-1.5">
               <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2 sm:overflow-visible">
                 <AgentDropdown
@@ -848,12 +852,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   activeAgentId={activeAgentId}
                   setActiveAgent={setActiveAgent}
                   deleteAgent={deleteAgent}
-                />
-                <ThinkingDropdown
-                  enableThinking={enableThinking}
-                  thinkingLevel={thinkingLevel}
-                  setEnableThinking={setEnableThinking}
-                  setThinkingLevel={setThinkingLevel}
                 />
                 <AgentModeSelect mode={agentMode} onModeChange={setAgentMode} />
                 <RunEndPolicySelect
@@ -865,19 +863,19 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           </>
         )}
 
+        {/* Local-first privacy hint */}
+        {!isLoading && step !== 'welcome' && (
+          <p className="mt-7 text-center text-[11px] text-neutral-400 dark:text-neutral-500">
+            {t('welcome.setupLocalFirstHint')}
+          </p>
+        )}
+
         {screenshotDataUrl && (
           <PageScreenshotCropDialog
             imageDataUrl={screenshotDataUrl}
             onConfirm={handleScreenshotConfirm}
             onCancel={() => setScreenshotDataUrl(null)}
           />
-        )}
-
-        {/* Local-first privacy hint */}
-        {!isLoading && step !== 'welcome' && (
-          <p className="mt-7 text-center text-[11px] text-neutral-400 dark:text-neutral-500">
-            {t('welcome.setupLocalFirstHint')}
-          </p>
         )}
 
       </div>

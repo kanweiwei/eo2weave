@@ -1,6 +1,7 @@
 // 환영 페이지
 export const welcome = {
     title: "EO2Weave",
+    greeting: "오늘 어떤 일을 도와드릴까요?",
     tagline:
       "지식베이스와 멀티 에이전트 오케스트레이션을 위한 AI 네이티브 Creator Workspace",
     placeholder: "메시지를 입력하여 대화를 시작하세요...",

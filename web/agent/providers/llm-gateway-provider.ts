@@ -22,7 +22,7 @@
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderMeta } from './types'
 import { registerDynamicProvider, unregisterDynamicProvider } from './types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayCredentialStatus, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -169,10 +169,22 @@ export async function fetchGatewayRateLimits(): Promise<RateLimitsResponse> {
 
   let token = await getValidAccessToken(baseURL, clientId)
   if (!token) {
-    // Locale-aware error (zh: 坚果云 AI / others: Nutstore AI)
+    // Locale-aware error (zh: 坚果云 AI / others: Nutstore AI).
+    // "expired" and "never logged in" need different recovery steps, so the
+    // message must match the credential state the auth layer just recorded.
     const locale = useI18nStore.getState().locale
-    const msg = translateStatic(locale, 'settings.gateway.notLoggedInError')
-    throw new Error(msg !== 'settings.gateway.notLoggedInError' ? msg : 'Not logged in to Nutstore AI. Please log in first.')
+    const expired = getGatewayCredentialStatus() === 'expired'
+    const key = expired
+      ? 'settings.gateway.tokenInvalidLoginExpired'
+      : 'settings.gateway.notLoggedInError'
+    const msg = translateStatic(locale, key)
+    throw new Error(
+      msg !== key
+        ? msg
+        : expired
+          ? 'Nutstore AI login has expired. Please log in again.'
+          : 'Not logged in to Nutstore AI. Please log in first.'
+    )
   }
 
   try {

@@ -9,7 +9,7 @@
  * - Handles permission restoration
  */
 
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
   FolderOpen,
@@ -18,37 +18,28 @@ import {
   X,
   RefreshCw,
   Loader2,
-  Cable,
+  HardDrive,
+  Globe2,
+  MoreHorizontal,
 } from 'lucide-react'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { bindRuntimeDirectoryHandle } from '@/native-fs'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useT } from '@/i18n'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@creatorweave/ui'
 import { useNativeHostPing } from '@/hooks/useNativeHostPing'
 import { cn } from '@/lib/utils'
 import type { RootInfo } from '@/types/folder-access'
-
-/** Stable tooltip wrapper — module level so it is not recreated per render.
- *  Wraps content in its own TooltipProvider because FolderSelector also
- *  renders outside TopBar's provider (e.g. mobile "more" panel). */
-function IconTooltip({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
-  return (
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger asChild>{children}</TooltipTrigger>
-        <TooltipContent side="bottom" className="whitespace-pre-line">{label}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
-}
 
 export function FolderSelector() {
   const t = useT()
@@ -59,7 +50,7 @@ export function FolderSelector() {
     useFolderAccessStore()
 
   // UI state
-  const [activeChip, setActiveChip] = useState<string | null>(null) // root.id of open dropdown
+  const [isRootsOpen, setIsRootsOpen] = useState(false)
   const [isAdding, setIsAdding] = useState(false)
   const [isAddingNativeHost, setIsAddingNativeHost] = useState(false)
 
@@ -70,22 +61,15 @@ export function FolderSelector() {
   // Rust app is not installed. Re-probes on window focus.
   const nativeHostAvailable = useNativeHostPing() === 'available'
 
-  // Click outside to close dropdown
-  useEffect(() => {
-    if (!activeChip) return
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setActiveChip(null)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [activeChip])
-
   // Load roots on mount/project change
   useEffect(() => {
     loadRoots()
   }, [activeProjectId, loadRoots])
+
+  // Close the folder list when authorization changes the trigger shape.
+  useEffect(() => {
+    setIsRootsOpen(false)
+  }, [roots.length])
 
   // Folder-pick handoff (side panel → full tab) ────────────────────────
   // Chromium's showDirectoryPicker is unreliable inside the side panel
@@ -155,7 +139,6 @@ export function FolderSelector() {
       )
       if (!confirmed) return
       await removeRoot(root.id)
-      setActiveChip(null)
     },
     [removeRoot, t]
   )
@@ -177,7 +160,6 @@ export function FolderSelector() {
           })
 
           toast.success(t('projectRoots.permissionRestored'))
-          setActiveChip(null)
         } else {
           toast.error(t('projectRoots.permissionDenied'))
         }
@@ -192,134 +174,140 @@ export function FolderSelector() {
   const handleToggleReadOnly = useCallback(
     async (rootId: string) => {
       await toggleReadOnly(rootId)
-      setActiveChip(null)
     },
     [toggleReadOnly]
   )
 
-  const nativeHostButton = nativeHostAvailable && (
-    <IconTooltip
-      label={`${t('folderSelector.localConnection')}\n${t('folderSelector.localConnectionDescription')}`}
-    >
-      <button
-        type="button"
-        onClick={handleAddNativeHostRoot}
-        disabled={isAddingNativeHost}
-        aria-label={t('folderSelector.localConnection')}
-        className={cn(
-          'flex h-7 w-7 items-center justify-center rounded-md border border-border bg-white',
-          'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600 focus:outline-none',
-          'dark:border-border dark:bg-card dark:hover:border-primary-600 dark:hover:bg-muted',
-          isAddingNativeHost && 'cursor-wait opacity-70'
+  const addFolderMenu = (canPickDirectory || nativeHostAvailable) && (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={isAdding || isAddingNativeHost}
+          aria-label={t('projectRoots.chooseLocalFolder')}
+          className={cn(
+            roots.length === 0
+              ? 'flex h-7 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-normal'
+              : 'flex h-7 w-8 items-center justify-center rounded-none border-0 border-l border-gray-200 dark:border-neutral-700',
+            'text-secondary transition-colors hover:bg-primary-50 hover:text-primary-600',
+            'dark:border-border dark:hover:bg-muted',
+            (isAdding || isAddingNativeHost) && 'cursor-wait opacity-70'
+          )}
+        >
+          {isAdding || isAddingNativeHost ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : roots.length === 0 ? (
+            <>
+              <FolderOpen className="h-3.5 w-3.5" />
+              <span>{t('projectRoots.chooseLocalFolder')}</span>
+            </>
+          ) : (
+            <Plus className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[190px]">
+        {canPickDirectory && (
+          <DropdownMenuItem onSelect={() => void handleAddRoot()}>
+            <FolderOpen className="h-4 w-4" />
+            <span>{t('projectRoots.openLocalFolder')}</span>
+          </DropdownMenuItem>
         )}
-      >
-        {isAddingNativeHost ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
-        ) : (
-          <Cable className="h-3.5 w-3.5" />
+        {canPickDirectory && nativeHostAvailable && <DropdownMenuSeparator />}
+        {nativeHostAvailable && (
+          <DropdownMenuItem onSelect={() => void handleAddNativeHostRoot()}>
+            <HardDrive className="h-4 w-4" />
+            <span>{t('projectRoots.openViaNativeHost')}</span>
+          </DropdownMenuItem>
         )}
-      </button>
-    </IconTooltip>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 
-  // No roots: show the two explicit authorization paths.
+  // No roots: keep both authorization methods behind the same add control.
   if (roots.length === 0) {
     return (
       <div className="relative flex items-center gap-2" ref={containerRef}>
-        <IconTooltip
-          label={
-            !canPickDirectory
-              ? t('folderSelector.sandboxMode')
-              : `${t('folderSelector.browserAccess')}\n${t('folderSelector.browserAccessDescription')}`
-          }
-        >
+        {addFolderMenu ? (
+          <div title={t('folderSelector.browserAccessDescription')}>{addFolderMenu}</div>
+        ) : (
           <button
             type="button"
-            onClick={handleAddRoot}
-            disabled={!canPickDirectory || isAdding}
-            aria-label={
-              !canPickDirectory
-                ? t('folderSelector.sandboxMode')
-                : t('folderSelector.browserAccess')
-            }
-            className={cn(
-              'flex h-7 w-7 items-center justify-center rounded-md border border-border bg-white',
-              'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600 focus:outline-none',
-              'dark:border-border dark:bg-card dark:hover:border-primary-600 dark:hover:bg-muted',
-              isAdding && 'cursor-wait opacity-70',
-              !canPickDirectory && 'cursor-not-allowed opacity-70'
-            )}
+            disabled
+            title={t('folderSelector.sandboxMode')}
+            aria-label={t('folderSelector.sandboxMode')}
+            className="flex h-7 items-center justify-center gap-1.5 rounded-md border border-border bg-white px-2 text-xs font-normal text-secondary opacity-70 dark:border-border dark:bg-card"
           >
-            {isAdding ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
-            ) : (
               <FolderOpen className="h-3.5 w-3.5" />
-            )}
-          </button>
-        </IconTooltip>
-        {nativeHostButton}
+              <span>{t('projectRoots.chooseLocalFolder')}</span>
+            </button>
+        )}
       </div>
     )
   }
 
-  // Has roots: show chips + [+] button
+  // Has roots: show one compact management trigger, a separate add button,
+  // and the native-host entry point.
   return (
-    <div className="relative flex items-center gap-1.5" ref={containerRef}>
-      {roots.map((root) => (
-        <RootChip
-          key={root.id}
-          root={root}
-          isOpen={activeChip === root.id}
-          onToggle={() => setActiveChip(activeChip === root.id ? null : root.id)}
-          onRemove={() => handleRemoveRoot(root)}
-          onRestorePermission={() => handleRestorePermission(root)}
-          onToggleReadOnly={() => handleToggleReadOnly(root.id)}
-          t={t}
-        />
-      ))}
-
-      {/* Add button */}
-      {canPickDirectory && (
-        <IconTooltip label={t('projectRoots.addFolder')}>
+    <div
+        className="relative flex h-7 items-center overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-neutral-700 dark:bg-card"
+        ref={containerRef}
+      >
+      <Popover
+        modal={false}
+        open={isRootsOpen}
+        onOpenChange={(open) => {
+          setIsRootsOpen(open)
+        }}
+      >
+        <PopoverTrigger asChild>
           <button
             type="button"
-            onClick={handleAddRoot}
-            disabled={isAdding}
+            aria-label={t('projectRoots.title')}
+            aria-expanded={isRootsOpen}
             className={cn(
-              'flex h-7 w-7 items-center justify-center rounded-md border border-dashed border-border',
-              'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600',
-              'dark:border-border dark:hover:border-primary-600 dark:hover:bg-muted',
-              isAdding && 'cursor-wait opacity-70'
+              'flex h-7 min-w-0 items-center gap-1.5 rounded-none border-0 bg-transparent px-2.5 text-sm font-normal text-secondary',
+              'transition-colors hover:bg-primary-50 hover:text-primary-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1',
+              'dark:bg-transparent dark:hover:bg-muted'
             )}
           >
-            {isAdding ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Plus className="h-3.5 w-3.5" />
-            )}
+            <FolderOpen className="h-3.5 w-3.5" />
+            <span>{roots.length === 1 ? roots[0]?.name : t('projectRoots.authorizedCount', { count: String(roots.length) })}</span>
           </button>
-        </IconTooltip>
-      )}
-      {nativeHostButton}
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[min(22rem,calc(100vw-2rem))] p-0">
+          <div className="max-h-72 overflow-y-auto p-1.5">
+            {roots.map((root) => (
+              <RootRow
+                key={root.id}
+                root={root}
+                onRemove={() => handleRemoveRoot(root)}
+                onRestorePermission={() => handleRestorePermission(root)}
+                onToggleReadOnly={() => handleToggleReadOnly(root.id)}
+                t={t}
+              />
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      {addFolderMenu}
     </div>
   )
 }
 
 /**
- * Individual root chip with dropdown menu
+ * One authorized folder row. The row is informational; only the actions
+ * button is interactive so the list never implies folder switching.
  */
-function RootChip({
+function RootRow({
   root,
-  isOpen,
-  onToggle,
   onRemove,
   onRestorePermission,
   onToggleReadOnly,
   t,
 }: {
   root: RootInfo
-  isOpen: boolean
-  onToggle: () => void
   onRemove: () => void
   onRestorePermission: () => void
   onToggleReadOnly: () => void
@@ -329,90 +317,80 @@ function RootChip({
   const needsActivation = root.status === 'needs_user_activation'
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-haspopup="menu"
-        aria-expanded={isOpen}
-        className={cn(
-          'flex h-7 items-center gap-1 rounded-md border px-2 text-xs font-normal',
-          'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1',
-          needsActivation
-            ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-400 dark:hover:bg-amber-900/30'
-            : isReady
-              ? 'border-border bg-white text-secondary hover:bg-primary-50 dark:border-border dark:bg-card dark:hover:bg-muted'
-              : 'border-border bg-card text-muted-foreground hover:bg-muted'
-        )}
-      >
-        {/* Status dot */}
-        <span
-          className={cn(
-            'h-1.5 w-1.5 rounded-full flex-shrink-0',
-            isReady ? 'bg-success' : needsActivation ? 'bg-amber-400' : 'bg-gray-300'
+    <div
+      className={cn(
+        'relative flex min-h-12 items-center gap-2 rounded-lg px-2.5 py-2',
+        needsActivation ? 'bg-amber-50 dark:bg-amber-900/20' : 'hover:bg-muted/70'
+      )}
+    >
+      <FolderOpen className={cn(
+        'h-5 w-5 flex-shrink-0',
+        isReady ? 'text-secondary' : needsActivation ? 'text-amber-600' : 'text-muted-foreground'
+      )} />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+          <span className="truncate">{root.name}</span>
+          {root.readOnly && <Lock className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />}
+          {(root.backend ?? 'fsaccess') === 'native-host' ? (
+            <span
+              className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm bg-primary/10 text-primary-600 dark:text-primary-400"
+              title={t('projectRoots.nativeHostBadge')}
+              aria-label={t('projectRoots.nativeHostBadge')}
+            >
+              <HardDrive className="h-3 w-3" />
+            </span>
+          ) : (
+            <span
+              className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground"
+              title={t('projectRoots.browserAccessBadge')}
+              aria-label={t('projectRoots.browserAccessBadge')}
+            >
+              <Globe2 className="h-3 w-3" />
+            </span>
           )}
-        />
-        <span className="max-w-[100px] truncate">{root.name}</span>
-        {root.readOnly && <Lock className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
-        {/* Native-host backend badge - shown only when the root is backed by
-            the native host (not the File System Access API). The cable icon
-            makes native-host roots visually distinct from browser-API roots,
-            which matters during testing and operation. */}
-        {(root.backend ?? 'fsaccess') === 'native-host' && (
-          <span
-            className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-sm bg-primary/10 text-primary-600 dark:text-primary-400"
-            title={t('projectRoots.nativeHostBadge')}
-            aria-label={t('projectRoots.nativeHostBadge')}
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className={cn(
+            'h-1.5 w-1.5 rounded-full',
+            isReady ? 'bg-success' : needsActivation ? 'bg-amber-400' : 'bg-gray-300'
+          )} />
+          <span>{needsActivation ? t('projectRoots.restorePermission') : root.readOnly ? t('projectRoots.readOnly') : t('projectRoots.title')}</span>
+        </div>
+      </div>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={`${t('projectRoots.menuLabel')}: ${root.name}`}
+            aria-haspopup="menu"
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
-            <Cable className="h-2.5 w-2.5" />
-          </span>
-        )}
-      </button>
-
-      {/* Dropdown menu */}
-      {isOpen && (
-        <div
-          role="menu"
-          aria-label={t('projectRoots.menuLabel')}
-          className="absolute left-0 top-full z-50 mt-1 min-w-[160px] whitespace-nowrap rounded-lg border border-border bg-card py-1 shadow-lg dark:border-border dark:bg-card"
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          {/* Restore permission */}
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" sideOffset={4} className="min-w-[170px]">
           {needsActivation && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={onRestorePermission}
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/20 focus-visible:outline-none focus-visible:bg-amber-100 dark:focus-visible:bg-amber-900/30"
+            <DropdownMenuItem
+              onSelect={() => void onRestorePermission()}
+              className="text-amber-700 focus:bg-amber-50 focus:text-amber-700 dark:text-amber-400 dark:focus:bg-amber-900/20 dark:focus:text-amber-400"
             >
               <RefreshCw className="h-4 w-4" />
               <span>{t('projectRoots.restorePermission')}</span>
-            </button>
+            </DropdownMenuItem>
           )}
-
-          {/* Toggle read-only */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={onToggleReadOnly}
-            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-secondary hover:bg-muted dark:hover:bg-muted focus-visible:outline-none focus-visible:bg-muted"
-          >
+          <DropdownMenuItem onSelect={() => void onToggleReadOnly()}>
             <Lock className="h-4 w-4" />
             <span>{root.readOnly ? t('projectRoots.enableWrite') : t('projectRoots.makeReadOnly')}</span>
-          </button>
-
-          {/* Remove */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={onRemove}
-            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-danger hover:bg-danger/5 focus-visible:outline-none focus-visible:bg-danger/10"
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => void onRemove()}
+            className="text-danger focus:bg-danger/10 focus:text-danger"
           >
             <X className="h-4 w-4" />
             <span>{t('projectRoots.removeRoot')}</span>
-          </button>
-        </div>
-      )}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }

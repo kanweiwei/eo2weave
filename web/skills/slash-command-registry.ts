@@ -175,8 +175,9 @@ export function getSlashCommandCount(): number {
 export function registerBuiltinSlashCommands(): void {
   registerSlashCommand({
     id: 'compact',
-    label: 'Compact',
-    description: '压缩上下文，释放 token 空间',
+    // Store the lowercase i18n key suffix; the dropdown resolves the localized description.
+    label: 'compact',
+    description: 'compact',
     source: 'builtin',
   })
   // P0 builtin light-operation pack (summary/translate/explain/polish/titles)

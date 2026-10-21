@@ -1,5 +1,10 @@
 // 프로젝트 홈
 export const projectHome = {
+    // 헤더 브랜드
+    brand: "怡氧知知",
+    openSettings: "설정 열기",
+    statsSummary: "{projects} 프로젝트",
+    statsConversations: "{count} 대화",
     hero: {
       badge: "로컬 우선",
       title: "여기서 창작을 시작하세요",
@@ -134,13 +139,50 @@ export const projectHome = {
       unarchive: "보관 해제",
       delete: "삭제",
     },
+    continueWork: {
+      label: "계속하기",
+      resume: "계속",
+      openProject: "프로젝트 {name} 열기",
+    },
+    // 프로젝트 그리드
+    grid: {
+      title: "내 프로젝트",
+      newProject: "새 프로젝트",
+      search: "프로젝트 검색",
+    },
+    // 헤더 도움말
+    help: {
+      label: "도움말",
+      docsHub: "문서 센터",
+      privacy: "개인정보 처리방침",
+    },
+    // 오른쪽 설정 드로어
+    drawer: {
+      title: "표시 환경설정",
+    },
     dialogs: {
       createProject: "새 프로젝트 생성",
       createProjectDescription:
         "새 프로젝트의 이름을 지정하여 다른 워크스페이스를 구성하고 구별하세요.",
+      projectNameLabel: "프로젝트 이름",
       projectNamePlaceholder: "프로젝트 이름 입력",
       createButton: "프로젝트 생성",
       creating: "생성 중...",
+      folderFieldTitle: "로컬 폴더 권한 부여",
+      folderFieldRecommended: "권장",
+      folderFieldHint:
+        "권한을 부여하면 선택한 폴더에서 파일을 검색, 탐색, 편집, 작성할 수 있습니다.",
+      folderPickerUnsupported:
+        "이 브라우저는 로컬 디렉터리 선택을 지원하지 않습니다. Chrome/Edge를 사용해 주세요.",
+      chooseLocalFolder: "로컬 폴더 선택",
+      addAnotherFolder: "다른 폴더 추가",
+      folderAlreadyAdded: "폴더 \"{name}\"은(는) 이미 권한이 부여되었습니다",
+      pickFailed: "폴더 선택 실패",
+      removeFolder: "폴더 {name} 제거",
+      nativeHostButton: "로컬 연결 권한 부여",
+      nativeHostHint:
+        "브라우저 확장을 통해 네이티브 파일 시스템에 연결하여 사용자 기기의 모든 경로에 권한을 부여할 수 있습니다(확장 필요).",
+      nativeHostBadge: "로컬",
       renameProject: "프로젝트 이름 변경",
       renamePlaceholder: "새 프로젝트 이름 입력",
       archiveProject: "프로젝트 보관",

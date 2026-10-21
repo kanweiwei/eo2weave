@@ -85,6 +85,8 @@ interface AgentRichInputProps {
   }
   /** Optional action rendered next to the attachment button in the toolbar. */
   leadingAccessory?: ReactNode
+  /** Optional controls rendered immediately before the send/stop button. */
+  beforeSendAccessory?: ReactNode
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +357,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   onSlashCommand,
   sendState,
   leadingAccessory,
+  beforeSendAccessory,
 }: AgentRichInputProps, ref) {
   const t = useT()
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
@@ -1258,7 +1261,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                     onClick={() => fileInputRef.current?.click()}
                     disabled={disabled}
                     aria-label={t('conversation.input.attachFiles')}
-                    className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                    className="rounded-md p-1.5 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                   >
                     <Paperclip className="h-4 w-4" />
                   </button>
@@ -1281,7 +1284,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                     onClick={() => insertTrigger('@')}
                     disabled={disabled}
                     aria-label={t('conversation.input.hints.agentMention')}
-                    className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                    className="rounded-md p-1.5 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                   >
                     <AtSign className="h-4 w-4" />
                   </button>
@@ -1303,7 +1306,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                       onClick={() => insertTrigger('#')}
                       disabled={disabled}
                       aria-label={t('conversation.input.hints.fileMention')}
-                      className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                      className="rounded-md p-1.5 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                     >
                       <Hash className="h-4 w-4" />
                     </button>
@@ -1323,7 +1326,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                     onClick={() => insertTrigger('/')}
                     disabled={disabled}
                     aria-label={t('conversation.input.hints.slashCommand')}
-                    className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                    className="rounded-md p-1.5 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                   >
                     <SlashSquare className="h-4 w-4" />
                   </button>
@@ -1335,7 +1338,12 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
             </Tooltip>
           </div>
           {sendState && (
-            <div className="flex items-center gap-1.5 pr-1">
+            <div className="flex min-w-0 items-center gap-1 pr-1">
+              {beforeSendAccessory && (
+                <div className="min-w-0 shrink flex items-center gap-1">
+                  {beforeSendAccessory}
+                </div>
+              )}
               {sendState.isProcessing ? (
                 <>
                   <Tooltip>

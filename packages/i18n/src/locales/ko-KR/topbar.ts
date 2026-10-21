@@ -10,7 +10,11 @@ export const topbar = {
     workspaceLabel: "채팅: {name}",
     modelSwitcher: {
       title: "빠른 모델 전환",
-      unavailable: "모델을 사용할 수 없음",
+      unavailable: "사용 가능한 모델 없음",
+      loading: "모델을 불러오는 중…",
+      noModels: "사용 가능한 모델 없음",
+      credentialExpired: "다시 로그인해야 합니다",
+      temporarilyUnavailable: "일시적으로 확인할 수 없음",
       noPinnedModels: "아직 고정된 모델이 없습니다. 설정에서 추가하세요.",
       searchPlaceholder: "모델 검색…",
       noResults: "일치하는 모델 없음",
@@ -55,5 +59,6 @@ export const topbar = {
       storage: "스토리지",
       language: "언어",
       theme: "테마",
+      imageGeneration: "이미지 생성",
     },
 } as const

@@ -62,6 +62,10 @@ export const conversation = {
       slashCommands: {
         groupBuiltin: "Built-in",
         groupSkill: "Skills",
+        compact: {
+          label: "Compact",
+          description: "Compact the conversation context while keeping key information",
+        },
         summary: {
           label: "Summarize",
           description: "Summarize the page or selection into key points",
@@ -127,6 +131,8 @@ export const conversation = {
     // Toast
     toast: {
       noApiKey: "Please configure API Key in settings first",
+      noModel: "No usable model is available",
+      gatewayReauthRequired: "Your Nutstore AI session expired. Please log in again.",
       deletedTurn: "Deleted complete conversation turn",
       stopBeforeSend: "This conversation is running. Stop it before sending a new message.",
       stopBeforeRegenerate: "Please stop the current run before regenerating.",

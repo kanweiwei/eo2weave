@@ -2,9 +2,9 @@
 export const folderSelector = {
     openFolder: "选择文件夹",
     browserAccess: "浏览器授权",
-    browserAccessDescription: "通过浏览器选择并授权文件夹",
+    browserAccessDescription: "选择并授权文件夹，让应用可以搜索、浏览、编辑和创建文件。",
     localConnection: "本机连接",
-    localConnectionDescription: "推荐 —— 通过怡氧知知本机服务连接，跨会话保持授权，无需重复选择",
+    localConnectionDescription: "推荐 —— 通过本机服务连接，跨会话保持授权，无需重复选择",
     switchFolder: "切换文件夹",
     releaseHandle: "释放文件夹句柄",
     copyPath: "复制文件夹名称",

@@ -266,6 +266,15 @@ export interface Conversation {
   lastContextWindowUsage?: ContextWindowUsage | null
   /** Number of mounted views consuming this conversation (not persisted) */
   mountRefCount?: number
+  /**
+   * Whether `messages` reflects the full DB history. `false` for
+   * metadata-only conversations (lazy-loaded on open) — a write arriving in
+   * that state was built from an empty in-memory snapshot and must NOT be
+   * applied directly (it would truncate history and the incremental persist
+   * would then delete the DB rows). Undefined ≡ loaded (pre-flag objects and
+   * runtime-created conversations). Not persisted.
+   */
+  messagesLoaded?: boolean
   /** Runtime convert call counter for context compression cadence (not persisted) */
   compressionConvertCallCount?: number
   /** Runtime marker for last summary convert call (not persisted) */
@@ -411,6 +420,8 @@ export function createConversation(title?: string): Conversation {
     contextWindowUsage: null,
     lastContextWindowUsage: null,
     mountRefCount: 0,
+    // Runtime-created conversations: empty messages IS the full truth.
+    messagesLoaded: true,
     compressionConvertCallCount: 0,
     compressionLastSummaryConvertCall: Number.NEGATIVE_INFINITY,
     compressedContextSummary: null,

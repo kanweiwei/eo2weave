@@ -12,13 +12,14 @@
  */
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
-import { AlertTriangle, RefreshCw, WifiOff, KeyRound, ImageIcon, Loader2 } from 'lucide-react'
+import { AlertTriangle, RefreshCw, WifiOff, KeyRound, ScanEye, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { presentLlmError } from './llm-error'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
 import { ImageGenQuickChip } from './ImageGenQuickChip'
+import { ImageGenDropdown, useHasImageModels } from './ImageGenDropdown'
 import { ActiveTabIndicator } from './ActiveTabIndicator'
 import { AgentModeSelect } from './AgentModeSelect'
 import { RunEndPolicySelect } from './RunEndPolicySelect'
@@ -35,7 +36,7 @@ import type { ConversationMessagesHandle } from './ConversationMessages'
 import { ConversationUsageBar } from './ConversationUsageBar'
 import { ConversationEmptyState } from './ConversationEmptyState'
 import { AgentDropdown } from './AgentDropdown'
-import { ThinkingDropdown } from './ThinkingDropdown'
+import { ModelThinkingControls } from './ModelThinkingControls'
 import { ContextUsageBar } from './ContextUsageBar'
 import { ScrollToBottomButton } from './ScrollToBottomButton'
 import { MessageNavBar } from './MessageNavBar'
@@ -86,7 +87,7 @@ const VisionCapabilityIndicator = memo(function VisionCapabilityIndicator({
                   : 'bg-primary-50 text-primary-600 dark:bg-primary-50/40 dark:text-primary-700'
               }`}
             >
-              {isCapturing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <ImageIcon className="h-3.5 w-3.5" aria-hidden="true" />}
+              {isCapturing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <ScanEye className="h-3.5 w-3.5" aria-hidden="true" />}
             </button>
           </span>
         </TooltipTrigger>
@@ -148,6 +149,7 @@ export function ConversationView({
     sendMessage('继续')
   }, [convId, sendMessage])
 
+  const hasImageModels = useHasImageModels()
   const supportsVision = supportsImageInput(modelName, providerType || undefined)
   const canCaptureScreenshot = supportsVision && isPageActionAvailable()
 
@@ -499,6 +501,17 @@ export function ConversationView({
                     onCapture={() => void handleCaptureScreenshot()}
                   />
                 )}
+                beforeSendAccessory={(
+                  <div className="flex min-w-0 items-center gap-1">
+                    {hasImageModels && <ImageGenDropdown compact />}
+                    <ModelThinkingControls
+                      enableThinking={enableThinking}
+                      thinkingLevel={thinkingLevel}
+                      setEnableThinking={setEnableThinking}
+                      setThinkingLevel={setThinkingLevel}
+                    />
+                  </div>
+                )}
               />
             </div>
           </div>
@@ -512,12 +525,6 @@ export function ConversationView({
                 activeAgentId={activeAgentId}
                 setActiveAgent={setActiveAgent}
                 deleteAgent={deleteAgent}
-              />
-              <ThinkingDropdown
-                enableThinking={enableThinking}
-                thinkingLevel={thinkingLevel}
-                setEnableThinking={setEnableThinking}
-                setThinkingLevel={setThinkingLevel}
               />
               <AgentModeSelect mode={agentMode} onModeChange={setAgentMode} />
               <RunEndPolicySelect

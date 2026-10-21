@@ -62,6 +62,10 @@ export const conversation = {
       slashCommands: {
         groupBuiltin: "内置命令",
         groupSkill: "Skills",
+        compact: {
+          label: "压缩",
+          description: "压缩对话上下文，保留关键信息",
+        },
         summary: {
           label: "总结",
           description: "总结内容（/summary 要点文字，或侧边栏总结页面/选中）",
@@ -131,6 +135,8 @@ export const conversation = {
     // 提示
     toast: {
       noApiKey: "请先在设置中配置 API Key",
+      noModel: "暂无可用模型",
+      gatewayReauthRequired: "坚果云 AI 授权已过期，请重新登录",
       deletedTurn: "已删除完整对话轮次",
       stopBeforeSend: "当前对话正在运行，请先停止后再发送",
       stopBeforeRegenerate: "请先停止当前运行，再重新生成",

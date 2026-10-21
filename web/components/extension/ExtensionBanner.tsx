@@ -27,38 +27,38 @@ export function ExtensionBanner({ onInstallClick }: ExtensionBannerProps) {
   if (!visible) return null
 
   return (
-    <div className="relative flex items-center justify-between gap-3 border-b border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-100/30 dark:bg-primary-100/10">
-      <div className="flex items-center gap-3 min-w-0">
-        <Globe className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" />
-        <div className="min-w-0">
-          <span className="text-sm font-medium text-primary-700 dark:text-primary-300">
-            {t('extension.bannerTitle')}
-          </span>
-          <span className="ml-2 hidden text-sm text-primary-700 dark:text-primary-300/70 sm:inline">
-            {t('extension.bannerDescription')}
-          </span>
+    <div className="relative flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-100/30 dark:bg-primary-100/10">
+        <div className="flex items-center gap-3 min-w-0">
+          <Globe className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" />
+          <div className="min-w-0">
+            <span className="text-sm font-medium text-primary-700 dark:text-primary-300">
+              {t('extension.bannerTitle')}
+            </span>
+            <span className="ml-2 hidden text-sm text-primary-700 dark:text-primary-300/70 sm:inline">
+              {t('extension.bannerDescription')}
+            </span>
+          </div>
         </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          onClick={onInstallClick}
-          className="rounded-md bg-primary-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 dark:bg-primary-500 dark:hover:bg-primary-600"
-        >
-          {t('extension.bannerAction')} →
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            dismissBanner()
-            setVisible(false)
-          }}
-          className="rounded p-1 text-tertiary transition-colors hover:bg-primary-100 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-success focus:ring-offset-2 dark:hover:bg-primary-100/30"
-          aria-label={t('extension.bannerDismiss')}
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onInstallClick}
+            className="rounded-md bg-primary-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 dark:bg-primary-500 dark:hover:bg-primary-600"
+          >
+            {t('extension.bannerAction')} →
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              dismissBanner()
+              setVisible(false)
+            }}
+            className="rounded p-1 text-tertiary transition-colors hover:bg-primary-100 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-success focus:ring-offset-2 dark:hover:bg-primary-100/30"
+            aria-label={t('extension.bannerDismiss')}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
     </div>
   )
 }

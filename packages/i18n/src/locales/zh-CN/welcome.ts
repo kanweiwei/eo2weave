@@ -1,6 +1,7 @@
 // 欢迎页
 export const welcome = {
     title: "怡氧知知",
+    greeting: "有什么工作需要我处理？",
     tagline: "面向创作者的 AI 原生工作台",
     placeholder: "输入消息开始对话...",
     send: "发送",

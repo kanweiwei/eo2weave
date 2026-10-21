@@ -12,7 +12,7 @@ import { webContainer } from './webContainer'
 import { workflowEditor, customWorkflowManager, workflowEditorDialog, workflow } from './workflow'
 import { conversation, toolCallDisplay, questionCard, runChanges, session } from './conversation'
 import { fileViewer, standalonePreview, filePreview, recentFiles, officePreview } from './fileViewer'
-import { storageStatusBanner, pendingSync, conversationStorage, workspaceStorage } from './storage'
+import { storageStatusBanner, pendingSync } from './storage'
 import { themeToggle } from './themeToggle'
 import { mobile, offlineQueue } from './mobile'
 import { activityHeatmap } from './activityHeatmap'
@@ -64,8 +64,6 @@ export const koKR = {
   pendingSync,
   themeToggle,
   conversation,
-  conversationStorage,
-  workspaceStorage,
   toolCallDisplay,
   mobile,
   offlineQueue,

@@ -174,6 +174,41 @@ export class MessageRepository {
   }
 
   /**
+   * Apply an incremental diff in a single transaction: upsert new/changed
+   * messages and delete removed ids. This is the write path used during agent
+   * runs, where a full `replaceAll` would re-serialize and re-insert the whole
+   * conversation history at every block boundary (O(N) writes per block,
+   * O(N²) per run).
+   */
+  async applyDiff(
+    convId: string,
+    upserts: Array<{ message: Message; seq: number }>,
+    deleteIds: string[]
+  ): Promise<void> {
+    if (upserts.length === 0 && deleteIds.length === 0) return
+    const db = getSQLiteDB()
+    await db.transaction(async (tx) => {
+      for (const id of deleteIds) {
+        await tx.execute('DELETE FROM messages WHERE conversation_id = ? AND id = ?', [convId, id])
+      }
+      for (const { message, seq } of upserts) {
+        const { contentJson, metaJson } = this.serializeMessage(message)
+        await tx.execute(
+          `INSERT INTO messages (id, conversation_id, role, content_json, meta_json, timestamp, seq, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             role = excluded.role,
+             content_json = excluded.content_json,
+             meta_json = excluded.meta_json,
+             timestamp = excluded.timestamp,
+             seq = excluded.seq`,
+          [message.id, convId, message.role, contentJson, metaJson, message.timestamp, seq, message.timestamp || Date.now()]
+        )
+      }
+    })
+  }
+
+  /**
    * Update a single message (by message id)
    */
   async updateMessage(message: Message): Promise<void> {

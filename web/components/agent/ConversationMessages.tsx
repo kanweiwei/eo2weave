@@ -60,22 +60,39 @@ const INCREASE_VIEWPORT_BY = 900
  * `components` object requires; only the CONTENT flows reactively.
  */
 
+type TurnCtx = {
+  /** Committed tool results only — runtime (in-flight) results live in `streaming`. */
+  toolResults: Map<string, string>
+  isProcessing: boolean
+  totalTurns: number
+  /** Set once per run when the iteration limit is hit; shown on the last turn AFTER the run ends. */
+  iterationLimitReached: number | null
+  conversationId?: string | null
+  onPreviewAsset?: (name: string, blob: Blob) => void
+}
+
+type TurnStreamingCtx = {
+  /** Merged tool results (committed + runtime) for the in-flight turn. */
+  toolResults: Map<string, string>
+  runtimeProps: ReturnType<typeof getRuntimeProps>
+  streamingContent: { reasoning: string; content: string } | undefined
+  iterationLimitReached: number | null
+}
+
 type TurnRendererProps = {
   turn: Turn
   turnIndex: number
-  /** Shared streaming/toolResults context for this render pass. */
-  ctx: {
-    toolResults: Map<string, string>
-    isProcessing: boolean
-    status: string
-    isWaitingForModel: boolean
-    runtimeProps: ReturnType<typeof getRuntimeProps>
-    streamingContent: { reasoning: string; content: string } | undefined
-    totalTurns: number
-    iterationLimitReached: number | null
-    conversationId?: string | null
-    onPreviewAsset?: (name: string, blob: Blob) => void
-  }
+  /**
+   * Stable context shared by EVERY turn. Its reference only changes at
+   * commit/process boundaries — never per streaming token — so `memo` on
+   * TurnRenderer keeps committed turns from re-rendering while streaming.
+   */
+  ctx: TurnCtx
+  /**
+   * Streaming context, passed ONLY to the in-flight (last) turn while an agent
+   * run is active. `undefined` (a stable reference) for every other turn.
+   */
+  streaming?: TurnStreamingCtx
   onDeleteAgentLoop: (messageId: string) => void
   onEditAndResend: (userMessageId: string, newContent: string) => void
   onRegenerate: ((userMessageId: string) => void) | undefined
@@ -93,6 +110,7 @@ const TurnRenderer = memo(function TurnRenderer({
   turn,
   turnIndex,
   ctx,
+  streaming,
   onDeleteAgentLoop,
   onEditAndResend,
   onRegenerate,
@@ -101,6 +119,11 @@ const TurnRenderer = memo(function TurnRenderer({
   onSearchFiles,
 }: TurnRendererProps) {
   const isLast = ctx.isProcessing && turnIndex === ctx.totalTurns - 1
+  // Only the in-flight turn consumes streaming props; AssistantTurnBubble's
+  // buildTimeline early-returns committed messages when isProcessing is false,
+  // so `undefined` is equivalent for every other turn — and keeps this memo
+  // from breaking on every token.
+  const rp = streaming?.runtimeProps
   return turn.type === 'user' ? (
     <div data-turn-index={turnIndex}>
       <MessageBubble
@@ -119,20 +142,20 @@ const TurnRenderer = memo(function TurnRenderer({
   ) : (
     <AssistantTurnBubble
       turn={turn}
-      toolResults={ctx.toolResults}
+      toolResults={isLast && streaming ? streaming.toolResults : ctx.toolResults}
       isProcessing={isLast}
       // Waiting indicator only makes sense on the in-flight (last) turn.
       // runtimeProps are built globally (active=true) for streaming data, so
       // without this gate EVERY committed assistant turn would also render
       // the three-dot waiting bubble while the agent waits for the model.
-      isWaiting={isLast ? ctx.runtimeProps.isWaiting : false}
-      streamingState={ctx.runtimeProps.streamingState}
-      streamingContent={ctx.streamingContent}
-      currentToolCall={ctx.runtimeProps.currentToolCall}
-      streamingToolArgs={ctx.runtimeProps.streamingToolArgs}
-      streamingToolArgsByCallId={ctx.runtimeProps.streamingToolArgsByCallId}
-      runtimeToolCalls={ctx.runtimeProps.runtimeToolCalls}
-      runtimeSteps={ctx.runtimeProps.runtimeSteps}
+      isWaiting={isLast ? (rp?.isWaiting ?? false) : false}
+      streamingState={isLast ? rp?.streamingState : undefined}
+      streamingContent={isLast ? streaming?.streamingContent : undefined}
+      currentToolCall={isLast ? rp?.currentToolCall : undefined}
+      streamingToolArgs={isLast ? rp?.streamingToolArgs : undefined}
+      streamingToolArgsByCallId={isLast ? rp?.streamingToolArgsByCallId : undefined}
+      runtimeToolCalls={isLast ? rp?.runtimeToolCalls : undefined}
+      runtimeSteps={isLast ? rp?.runtimeSteps : undefined}
       conversationId={ctx.conversationId}
       onPreviewAsset={ctx.onPreviewAsset}
       iterationLimitReached={turnIndex === ctx.totalTurns - 1 ? ctx.iterationLimitReached : null}
@@ -385,7 +408,15 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     const reasoning = streamingData.draftAssistant.reasoning || streamingData.streamingReasoning
     const content = streamingData.draftAssistant.content || streamingData.streamingContent
     if (!reasoning && !content) return undefined
-    const lastAssistant = [...activeMessages].reverse().find((m) => m.role === 'assistant')
+    let lastAssistant: Message | undefined
+    // Reverse scan WITHOUT copying the array — this memo recomputes on every
+    // streaming token, so an O(N) spread+reverse here is per-token work.
+    for (let i = activeMessages.length - 1; i >= 0; i--) {
+      if (activeMessages[i].role === 'assistant') {
+        lastAssistant = activeMessages[i]
+        break
+      }
+    }
     if (
       lastAssistant &&
       (lastAssistant.reasoning || '') === (reasoning || '') &&
@@ -478,25 +509,37 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   const shouldRenderDraftAssistant = isProcessing && (!lastTurn || lastTurn.type !== 'assistant')
   const shouldAttachRuntimeToDraft = shouldRenderDraftAssistant
 
-  // ── Shared per-render context for turn rendering (both paths) ──
-  const renderCtx = useMemo(() => ({
-    toolResults,
+  // ── Turn render contexts ──
+  // stableCtx is shared by EVERY turn and must never change per streaming
+  // token — its reference identity is what keeps TurnRenderer's memo (and
+  // everything below it) effective during streaming. Per-token streaming
+  // data lives in streamingTurnCtx, which is passed ONLY to the in-flight
+  // (last) turn; every other turn receives `undefined`.
+  const iterationLimitReached = streamingData?.iterationLimitReached ?? null
+  const stableCtx = useMemo<TurnCtx>(() => ({
+    toolResults: committedToolResults,
     isProcessing,
-    status,
-    isWaitingForModel,
-    runtimeProps: getRuntimeProps(
-      true, isWaitingForModel, activeDraftAssistant, activeStreamingState,
-      streamingState, streamingContentMessage, status,
-    ),
-    streamingContent: streamingContentMessage,
     totalTurns: turns.length,
-    iterationLimitReached: streamingData?.iterationLimitReached ?? null,
+    iterationLimitReached,
     conversationId,
     onPreviewAsset,
-  }), [
-    toolResults, isProcessing, status, isWaitingForModel, activeDraftAssistant,
-    activeStreamingState, streamingState, streamingContentMessage, turns.length,
-    streamingData?.iterationLimitReached, conversationId, onPreviewAsset,
+  }), [committedToolResults, isProcessing, turns.length, iterationLimitReached, conversationId, onPreviewAsset])
+
+  const streamingTurnCtx = useMemo<TurnStreamingCtx | undefined>(() => {
+    if (!isProcessing) return undefined
+    return {
+      toolResults,
+      runtimeProps: getRuntimeProps(
+        true, isWaitingForModel, activeDraftAssistant, activeStreamingState,
+        streamingState, streamingContentMessage, status,
+      ),
+      streamingContent: streamingContentMessage,
+      iterationLimitReached,
+    }
+  }, [
+    isProcessing, toolResults, isWaitingForModel, activeDraftAssistant,
+    activeStreamingState, streamingState, streamingContentMessage,
+    iterationLimitReached, status,
   ])
 
   const sharedTurnProps = {
@@ -533,6 +576,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   // ConversationView, OUTSIDE the scroll container, so it stays pinned (and is
   // identical for both render paths — sticky-in-flow broke under Virtuoso).
   if (!shouldVirtualize || !scrollParent) {
+    const lastTurnIndex = turns.length - 1
     return (
       <div ref={rootRef} className="min-h-0 px-2 py-3 sm:px-4 sm:py-4">
         <div className="mx-auto w-full max-w-3xl space-y-4 px-3 sm:px-0">
@@ -541,7 +585,8 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
               key={turn.type === 'user' ? turn.message.id : turn.messages[0].id}
               turn={turn}
               turnIndex={idx}
-              ctx={renderCtx}
+              ctx={stableCtx}
+              streaming={idx === lastTurnIndex ? streamingTurnCtx : undefined}
               {...sharedTurnProps}
             />
           ))}
@@ -556,6 +601,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     enter: (velocity: number) => Math.abs(velocity) > SCROLL_SEEK_VELOCITY,
     exit: (velocity: number) => Math.abs(velocity) < SCROLL_DECCELERATION,
   }
+  const lastTurnIndex = turns.length - 1
 
   return (
     <div className="min-h-0 px-2 py-3 sm:px-4 sm:py-4">
@@ -579,7 +625,8 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
             <TurnRenderer
               turn={turn}
               turnIndex={index}
-              ctx={renderCtx}
+              ctx={stableCtx}
+              streaming={index === lastTurnIndex ? streamingTurnCtx : undefined}
               {...sharedTurnProps}
             />
           )}

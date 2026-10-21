@@ -44,13 +44,56 @@ export async function waitForConversationMetaPersist(convId: string): Promise<vo
   }
 }
 
-/** Append a single new message via MessageRepository */
+//=============================================================================
+// Incremental persist baseline
+//=============================================================================
+
+/**
+ * Last-persisted snapshot per conversation: message id -> (object reference, seq).
+ *
+ * `doPersist` diffs the incoming full snapshot against this baseline using
+ * OBJECT IDENTITY (plus seq), which is sound because conversation messages are
+ * immutable-by-convention in the store (all mutations go through immer's
+ * `set(produce)`, so any content change produces a new message object), and
+ * `reconcileMessageSnapshot`/`attachReasoningDurations` preserve references
+ * for unchanged messages. When a baseline exists, a persist writes only the
+ * changed rows instead of DELETE + re-INSERTing the entire history (which is
+ * O(N) writes per block boundary and O(N²) over a run).
+ *
+ * A missing baseline simply falls back to the full `replaceAll` path.
+ */
+interface PersistedMessageEntry {
+  ref: Message
+  seq: number
+}
+const lastPersistedMessages = new Map<string, Map<string, PersistedMessageEntry>>()
+
+/**
+ * Record `messages` as exactly what the database holds for `convId`.
+ * Call right after loading messages from the DB (loadFromDB / setActive), so
+ * the first persist after a reload is already incremental.
+ */
+export function primePersistBaseline(convId: string, messages: Message[]): void {
+  const baseline = new Map<string, PersistedMessageEntry>()
+  for (let i = 0; i < messages.length; i++) {
+    baseline.set(messages[i].id, { ref: messages[i], seq: i })
+  }
+  lastPersistedMessages.set(convId, baseline)
+}
+
+/** Forget the baseline for `convId` — the next persist performs a full rewrite. */
+export function invalidatePersistBaseline(convId: string): void {
+  lastPersistedMessages.delete(convId)
+}
+
 export async function persistNewMessage(convId: string, message: Message, seq: number): Promise<void> {
   await waitForConversationMetaPersist(convId)
   const msgRepo = getMessageRepository()
   const convRepo = getConversationRepository()
   await msgRepo.insert(convId, message, seq)
   await convRepo.touch(convId)
+  // Keep the incremental baseline in sync so the next diff does not re-write this row.
+  lastPersistedMessages.get(convId)?.set(message.id, { ref: message, seq })
 }
 
 
@@ -84,7 +127,41 @@ export async function doPersist(convId: string, messages: Message[]): Promise<vo
   await waitForConversationMetaPersist(convId)
   const msgRepo = getMessageRepository()
   const convRepo = getConversationRepository()
-  await msgRepo.replaceAll(convId, messages)
+
+  const baseline = lastPersistedMessages.get(convId)
+  if (!baseline) {
+    // No baseline (first persist after startup / invalidation): full rewrite,
+    // then the snapshot taken below becomes the incremental baseline.
+    await msgRepo.replaceAll(convId, messages)
+  } else {
+    // Incremental path: write only new/changed messages, delete removed ids.
+    // Ref changes imply content changes (immutable-message convention);
+    // seq changes catch reordering after mid-history deletions.
+    const upserts: Array<{ message: Message; seq: number }> = []
+    const seen = new Set<string>()
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      seen.add(msg.id)
+      const prev = baseline.get(msg.id)
+      if (!prev || prev.ref !== msg || prev.seq !== i) {
+        upserts.push({ message: msg, seq: i })
+      }
+    }
+    const deleteIds: string[] = []
+    for (const id of baseline.keys()) {
+      if (!seen.has(id)) deleteIds.push(id)
+    }
+    await msgRepo.applyDiff(convId, upserts, deleteIds)
+  }
+
+  // Rebuild the baseline only AFTER a successful write, so a failed persist
+  // leaves the old baseline in place and the next attempt re-writes the diff.
+  const next = new Map<string, PersistedMessageEntry>()
+  for (let i = 0; i < messages.length; i++) {
+    next.set(messages[i].id, { ref: messages[i], seq: i })
+  }
+  lastPersistedMessages.set(convId, next)
+
   await convRepo.touch(convId)
 }
 
@@ -204,6 +281,7 @@ export async function loadConversationsMeta(): Promise<Conversation[]> {
     title: meta.title,
     titleMode: meta.titleMode || 'manual',
     messages: [] as Message[], // Messages loaded lazily when conversation is opened
+    messagesLoaded: false, // meta-only: in-memory snapshot must not be trusted for writes
     lastContextWindowUsage: meta.lastContextWindowUsage || null,
     compressedContextSummary: meta.compressedContextSummary || null,
     compressedContextCutoffTimestamp: meta.compressedContextCutoffTimestamp ?? null,
@@ -235,6 +313,7 @@ export async function loadConversationsMeta(): Promise<Conversation[]> {
 
 /** Delete a conversation from SQLite */
 export async function deleteConversationFromDB(id: string): Promise<void> {
+  invalidatePersistBaseline(id)
   const repo = getConversationRepository()
   await repo.delete(id)
 }

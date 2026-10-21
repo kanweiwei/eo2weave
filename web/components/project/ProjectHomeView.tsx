@@ -38,15 +38,35 @@ export default function ProjectHomeView() {
 
   const [isClearingLocalData, setIsClearingLocalData] = useState(false)
 
-  const handleCreateProject = async (name: string) => {
+  const handleCreateProject = async (name: string): Promise<string | null> => {
     const project = await createProject(name)
     if (project) {
-      router.push(projectWorkspacePath(project.id))
+      // Defer navigation: ProjectHome still needs the project id to bind any
+      // pre-picked folder handles via folderAccessStore.setHandle. The dialog
+      // component is responsible for binding folders and then calling
+      // router.push once it has the id.
       toast.success(t('app.projectCreated', { name: project.name }))
-    } else {
-      toast.error(t('app.createProjectFailed'))
+      return project.id
     }
+    toast.error(t('app.createProjectFailed'))
+    return null
   }
+
+  const handleCreateAndOpen = async (name: string): Promise<string | null> => {
+    const projectId = await handleCreateProject(name)
+    if (projectId) {
+      router.push(projectWorkspacePath(projectId))
+    }
+    return projectId
+  }
+
+  // onCreateProject below is the "create only, no navigate" path. Navigation
+  // is triggered separately by the dialog via the onProjectCreated prop (wired
+  // to handleOpenProject). The split lets the dialog eagerly create a project
+  // when the user adds a native-host root before the dialog's primary submit
+  // action runs — handleCreateAndOpen above is kept as a convenience for any
+  // future code paths that want both create-and-navigate in one call.
+  void handleCreateAndOpen
 
   const handleRenameProject = async (projectId: string, name: string) => {
     const ok = await renameProject(projectId, name)

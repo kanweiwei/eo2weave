@@ -83,11 +83,13 @@ export function useGatewayLogin(): UseGatewayLoginResult {
       const models = await updateGatewayModels(tokens.access_token)
       console.log('[useGatewayLogin] models fetched:', models.length)
 
-      // Switch active provider to llm-gateway and pick the first available model
-      useSettingsStore.getState().setProviderType(LLM_GATEWAY_PROVIDER_TYPE)
-      if (models.length > 0) {
-        useSettingsStore.getState().setModelName(models[0].id)
-      }
+      // Keep provider/model selection atomic. The shared reconciliation action
+      // also preserves an existing gateway model when the catalog changes.
+      const settings = useSettingsStore.getState()
+      settings.switchProviderAndModel(
+        LLM_GATEWAY_PROVIDER_TYPE,
+        models[0]?.id ?? settings.modelName,
+      )
 
       // Seed the curated default pin (deepseek-v4.1-flash) for first-time
       // gateway users — same first-save seeding as ProviderManager, so the
@@ -102,8 +104,10 @@ export function useGatewayLogin(): UseGatewayLoginResult {
         }
       }
 
-      // Sync global hasApiKey so UI reacts immediately (must come AFTER provider/model set)
+      // Sync global credential state so UI reacts immediately (must come AFTER
+      // provider/model set). Expiry is kept separate from model availability.
       useSettingsStore.getState().setHasApiKey(true)
+      useSettingsStore.getState().setModelCredentialStatus('valid')
 
       // Trigger UI refresh so provider dropdowns etc. update
       useSettingsStore.getState().triggerProviderRefresh()
@@ -116,6 +120,7 @@ export function useGatewayLogin(): UseGatewayLoginResult {
       return true
     } catch (e) {
       console.error('[useGatewayLogin] FAILED:', e)
+      useSettingsStore.getState().setModelCredentialStatus('expired')
       if (mountedRef.current) {
         setAuthState({
           status: 'error',

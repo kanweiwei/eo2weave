@@ -4,7 +4,7 @@
  * Supports JSON, Markdown, and HTML formats with configurable options.
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import {
   Download,
   FileJson,
@@ -24,6 +24,8 @@ import {
   BrandDialogTitle,
 } from '@creatorweave/ui'
 import { useConversationStore } from '@/store/conversation.store'
+import { getMessageRepository } from '@/sqlite'
+import type { Message } from '@/agent/message-types'
 import { useT } from '@/i18n'
 import {
   exportConversation,
@@ -76,6 +78,37 @@ export function ExportConversationDialog({
     addTimestamp: true,
   })
 
+  // Metadata-only conversations (never opened, or evicted from memory) have an
+  // empty in-memory `messages` array — load the real history from SQLite so the
+  // export is complete instead of failing with "No messages to export".
+  const [dbMessages, setDbMessages] = useState<Message[] | null>(null)
+  const messagesLoaded = conversation?.messagesLoaded !== false
+  useEffect(() => {
+    setDbMessages(null)
+    if (!open || !conversation || conversation.messagesLoaded !== false) return
+    let cancelled = false
+    void getMessageRepository()
+      .findByConversation(conversation.id)
+      .then((rows) => {
+        if (!cancelled) setDbMessages(rows as Message[])
+      })
+      .catch((err) => {
+        console.error('[ExportConversationDialog] Failed to load messages from DB:', err)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, conversation?.id, messagesLoaded])
+
+  /** Full message list for export/preview: in-memory when trusted, DB-loaded otherwise. */
+  const exportSource: Message[] = messagesLoaded
+    ? (conversation?.messages ?? [])
+    : (dbMessages ?? [])
+  const exportConversationData = conversation
+    ? { ...conversation, messages: exportSource }
+    : null
+
   const formatOptions: Array<{
     value: ConversationExportFormat
     label: string
@@ -103,7 +136,7 @@ export function ExportConversationDialog({
   ]
 
   const handleExport = useCallback(async () => {
-    if (!conversation) return
+    if (!exportConversationData) return
 
     setIsExporting(true)
     setProgress(0)
@@ -111,7 +144,7 @@ export function ExportConversationDialog({
     setError(null)
 
     try {
-      const result = await exportConversation(conversation, {
+      const result = await exportConversation(exportConversationData, {
         format: selectedFormat,
         includeToolCalls: options.includeToolCalls,
         includeReasoning: options.includeReasoning,
@@ -137,7 +170,7 @@ export function ExportConversationDialog({
     } finally {
       setIsExporting(false)
     }
-  }, [conversation, selectedFormat, options, t])
+  }, [exportConversationData, selectedFormat, options, t])
 
   const handleClose = useCallback(() => {
     onOpenChange(false)
@@ -156,9 +189,9 @@ export function ExportConversationDialog({
     return null
   }
 
-  const messageCount = conversation.messages.length
-  const userMessages = conversation.messages.filter((m) => m.role === 'user').length
-  const assistantMessages = conversation.messages.filter((m) => m.role === 'assistant').length
+  const messageCount = exportSource.length
+  const userMessages = exportSource.filter((m) => m.role === 'user').length
+  const assistantMessages = exportSource.filter((m) => m.role === 'assistant').length
 
   return (
     <BrandDialog open={open} onOpenChange={onOpenChange}>

@@ -408,6 +408,38 @@ export function reconcileMessageSnapshot(previous: Message[], incoming: Message[
   return merged
 }
 
+/**
+ * Merge for writes that arrive while a conversation is metadata-only
+ * (`messagesLoaded === false`): the caller built its snapshot from an EMPTY
+ * in-memory state, so the snapshot can never be a legitimate replacement of
+ * a longer DB history — the merge must be strictly additive (update matching
+ * ids in place, append unseen). Unlike `reconcileMessageSnapshot`, there is
+ * no "large non-overlapping snapshot = replacement" branch: that heuristic
+ * exists for re-mapped regenerate snapshots, which cannot originate from
+ * empty memory, and it would truncate short histories (e.g. 2 persisted rows
+ * + 1 externally appended message already passes its 0.5 size ratio).
+ */
+export function mergeUnloadedWriteSnapshot(previous: Message[], incoming: Message[]): Message[] {
+  if (incoming.length === 0) return previous
+  if (previous.length === 0) return incoming
+  // Defensive: if incoming happens to fully cover previous, taking incoming
+  // loses nothing.
+  const incomingIds = new Set(incoming.map((m) => m.id))
+  if (previous.every((m) => incomingIds.has(m.id))) return incoming
+  const merged = previous.slice()
+  const indexById = new Map(merged.map((m, idx) => [m.id, idx]))
+  for (const msg of incoming) {
+    const idx = indexById.get(msg.id)
+    if (idx === undefined) {
+      merged.push(msg)
+      indexById.set(msg.id, merged.length - 1)
+    } else {
+      merged[idx] = msg
+    }
+  }
+  return merged
+}
+
 export function deriveContextUsageFromAssistantUsage(
   messages: Message[],
   modelMaxTokens: number,
