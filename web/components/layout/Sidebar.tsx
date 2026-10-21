@@ -112,7 +112,9 @@ const NewWorkspaceButton = memo(function NewWorkspaceButton({
   isActive?: boolean
 }) {
   return (
-    <div className="px-2 pb-1">
+    // Top padding keeps the button off the header's bottom border — without
+    // it the "new conversation" row sits flush against the list container.
+    <div className="px-2 pb-1 pt-2">
       <BrandButton
         variant="ghost"
         aria-current={isActive ? 'true' : undefined}
