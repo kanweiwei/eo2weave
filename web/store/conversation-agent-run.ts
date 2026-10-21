@@ -97,6 +97,9 @@ export interface ConversationAgentRunInternals {
     conversationId: string,
     event: SubagentStepNotification
   ): void
+  /** Schedule a delayed memory-eviction check (facade-module fn; avoids a
+   *  module cycle with conversation.store.sqlite.ts). */
+  scheduleConversationEviction(conversationId: string): void
 }
 
 /**
@@ -564,6 +567,20 @@ export async function runAgentImpl(
                 targetStep.subagentEvents.push(subagentEvent)
               }
             })
+            // Terminal task → drop its streaming draft. The runtime persisted
+            // the final state on the status transition (before this
+            // notification), so SubagentDetailPanel's DB fallback renders the
+            // full history. Without this, subagentDrafts grows unboundedly
+            // across every subagent the workspace ever spawned.
+            if (
+              event.status === 'completed' ||
+              event.status === 'failed' ||
+              event.status === 'killed'
+            ) {
+              useConversationRuntimeStore.setState((state) => {
+                state.subagentDrafts.delete(event.agentId)
+              })
+            }
           },
         })
 
@@ -913,6 +930,12 @@ export async function runAgentImpl(
             }
           })
           deleteStreamingQueues(conversationId)
+          // Run finished successfully → eviction candidate (covers headless
+          // background runs that never had a mounted view; guards re-checked
+          // after the delay by evictConversationMessagesIfSafe).
+          if (status === 'idle') {
+            store.scheduleConversationEviction(conversationId)
+          }
 
           // Reset runtime store for this conversation
           useConversationRuntimeStore.setState((state) => {

@@ -26,7 +26,7 @@ import { deleteAgentLoop, getAgentLoop, setAgentLoop } from './agent-loop-regist
 import { deleteStreamingQueues, getStreamingQueues } from './streaming-queue-registry'
 import { applyDraftAssistantEvent, createEmptyDraftAssistant } from './draft-assistant'
 import { ensureToolCallResults } from '@/agent/loop/tool-call-results'
-import { DEFAULT_CONVERSATION_NAME, makeSyntheticAskUserResult, ensureRuntime, i18nText, commitDraftToMessages, findSpawnStepInDraft, truncateTitle, updateAutoTitleAfterMessageDelete, healCompressionBaseline } from './conversation-message-ops'
+import { DEFAULT_CONVERSATION_NAME, makeSyntheticAskUserResult, ensureRuntime, i18nText, commitDraftToMessages, findSpawnStepInDraft, truncateTitle, updateAutoTitleAfterMessageDelete, healCompressionBaseline, mergeUnloadedWriteSnapshot } from './conversation-message-ops'
 
 
 // ---------------------------------------------------------------------------
@@ -106,12 +106,13 @@ import { generateConversationTitle } from '@/agent/title-generator'
 import { getMessageRepository, getSQLiteDB, initSQLiteDB } from '@/sqlite'
 import { useSettingsStore } from './settings.store'
 import type { SubagentStepNotification } from '@/agent/tools/tool-types'
+import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 // Follow-up suggestions are enabled by default
 
 
 //=============================================================================
-import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, withInflightLoad } from './conversation-persist'
+import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
 import {
   runAgentImpl,
   type ConversationAgentRunInternals,
@@ -256,6 +257,190 @@ interface ConversationState {
 
   // Emergency draft persistence (beforeunload)
   commitAndPersistRunningDrafts: () => void
+}
+
+// ---------------------------------------------------------------------------
+// Write guard for metadata-only (never-loaded) conversations
+// ---------------------------------------------------------------------------
+
+/**
+ * Deferred-write queues per conversation (serializes loads triggered by
+ * concurrent guarded writes to the same conversation).
+ */
+const unloadedWriteQueues = new Map<string, Promise<void>>()
+
+/**
+ * Guard against the history-truncation hazard: a metadata-only conversation
+ * (loaded from DB meta with `messages: []`, `messagesLoaded: false`) receives
+ * a write whose snapshot was built from in-memory state — the widespread
+ * `[...conv.messages, userMsg]` pattern (sendMessage, WebMCP app-tools, run
+ * paths). Applied directly, that snapshot replaces the full history with a
+ * fragment, and the incremental persist then DELETEs the missing rows from
+ * the database.
+ *
+ * Instead: reload the DB history into memory first (prime the persist
+ * baseline), then run `apply` — callers re-derive their write against the now
+ * complete state (updateMessages merges via reconcileMessageSnapshot, which
+ * appends fragments and only replaces on a genuinely covering snapshot). If
+ * the reload fails, the write is skipped: dropping one write is recoverable,
+ * deleting history is not.
+ */
+function writeWithMessagesLoaded(conversationId: string, apply: () => void): void {
+  const chained = (unloadedWriteQueues.get(conversationId) ?? Promise.resolve())
+    .then(async () => {
+      const conv = useConversationStoreSQLite
+        .getState()
+        .conversations.find((c) => c.id === conversationId)
+      if (!conv || conv.messagesLoaded !== false) {
+        // Already loaded (or a pre-flag/runtime-created object) — safe to apply.
+        apply()
+        return
+      }
+      let loaded: Message[]
+      try {
+        loaded = (await getMessageRepository().findByConversation(conversationId)) as Message[]
+      } catch (error) {
+        console.error(
+          '[conversation.store] Reload-before-write failed; skipping write to protect DB history:',
+          conversationId,
+          error
+        )
+        return
+      }
+      primePersistBaseline(conversationId, loaded)
+      useConversationStoreSQLite.setState((state) => {
+        const c = state.conversations.find((x) => x.id === conversationId)
+        if (c && c.messagesLoaded === false) {
+          c.messages = loaded
+          c.messagesLoaded = true
+          healCompressionBaseline(c)
+        }
+      })
+      apply()
+      // The write target was metadata-only, i.e. not open in any view. If no
+      // run keeps it alive it becomes an eviction candidate right away.
+      scheduleConversationEviction(conversationId)
+    })
+    .catch((error) => {
+      console.error('[conversation.store] Deferred write failed:', conversationId, error)
+    })
+  unloadedWriteQueues.set(conversationId, chained)
+  void chained.finally(() => {
+    if (unloadedWriteQueues.get(conversationId) === chained) {
+      unloadedWriteQueues.delete(conversationId)
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Conversation message memory eviction (phase 2 of the memory-governance plan)
+// ---------------------------------------------------------------------------
+// Conversations keep their full message history in memory forever once opened
+// (mount ref-counting has no cache-releasing consumer), which is a major
+// contributor to the "page gets slower the longer you chat" problem. Eviction
+// returns a conversation to its metadata-only state (`messages: []`,
+// `messagesLoaded: false`); reopening it reloads from SQLite via setActive.
+//
+// Safety relies on phase 1: after eviction any late writer goes through the
+// `writeWithMessagesLoaded` guard (reload-before-write), so a write can never
+// truncate the DB history.
+
+/** Minimum in-memory message count before eviction is worth the reload cost. */
+export const EVICTION_MIN_MESSAGES = 100
+/** Newest conversations (by updatedAt) with loaded messages that stay cached. */
+export const EVICTION_LRU_KEEP = 3
+/** Delay before an eviction candidate is re-checked and evicted. Lets final
+ *  persists settle (completion handlers read `conv.messages` right after
+ *  setting status idle — evicting synchronously would hand them `[]`). */
+export const EVICTION_DELAY_MS = 30_000
+
+const evictionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * Schedule a delayed eviction check for `conversationId`. All safety guards are
+ * re-evaluated when the timer fires, so scheduling is cheap and always safe.
+ * Idempotent: a pending timer for the same conversation is kept.
+ */
+export function scheduleConversationEviction(conversationId: string): void {
+  if (evictionTimers.has(conversationId)) return
+  const timer = setTimeout(() => {
+    evictionTimers.delete(conversationId)
+    evictConversationMessagesIfSafe(conversationId)
+  }, EVICTION_DELAY_MS)
+  evictionTimers.set(conversationId, timer)
+}
+
+function cancelScheduledEviction(conversationId: string): void {
+  const timer = evictionTimers.get(conversationId)
+  if (timer) {
+    clearTimeout(timer)
+    evictionTimers.delete(conversationId)
+  }
+}
+
+/**
+ * Test helper: drop all pending eviction timers. Tests that discard fake
+ * timers mid-flight would otherwise leave stale `evictionTimers` entries that
+ * silently block future `scheduleConversationEviction` calls for the same id.
+ */
+export function clearScheduledEvictionTimers(): void {
+  for (const timer of evictionTimers.values()) clearTimeout(timer)
+  evictionTimers.clear()
+}
+
+/**
+ * Evict a conversation's in-memory messages back to metadata-only state when it
+ * is provably quiescent and outside the LRU keep-set. Every guard is checked
+ * at execution time (not scheduling time). Returns true when eviction ran.
+ */
+export function evictConversationMessagesIfSafe(conversationId: string): boolean {
+  const state = useConversationStoreSQLite.getState()
+  const conv = state.conversations.find((c) => c.id === conversationId)
+  if (!conv || conv.messagesLoaded === false) return false
+  if (conv.messages.length < EVICTION_MIN_MESSAGES) return false
+  if (state.activeConversationId === conversationId) return false
+  if (conv.status !== 'idle') return false
+  if (conv.draftAssistant) return false
+
+  const runtimeState = useConversationRuntimeStore.getState()
+  if ((runtimeState.mountedConversations.get(conversationId) ?? 0) > 0) return false
+  if ((runtimeState.pendingMessageQueues.get(conversationId)?.length ?? 0) > 0) return false
+  if (persistSchedulers.has(conversationId)) return false
+  if (unloadedWriteQueues.has(conversationId)) return false
+
+  // LRU keep-set: the newest conversations with loaded messages stay cached so
+  // recently-used ones reopen instantly.
+  const keepSet = new Set(
+    state.conversations
+      .filter((c) => c.messagesLoaded !== false && c.messages.length > 0)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, EVICTION_LRU_KEEP)
+      .map((c) => c.id),
+  )
+  if (keepSet.has(conversationId)) return false
+
+  const messageCount = conv.messages.length
+  useConversationStoreSQLite.setState((draft) => {
+    const c = draft.conversations.find((x) => x.id === conversationId)
+    if (c && c.messagesLoaded !== false) {
+      c.messages = []
+      c.messagesLoaded = false
+    }
+  })
+  // Baseline must go too: it pins references to every evicted message object.
+  invalidatePersistBaseline(conversationId)
+  // Release the mirrored runtime entry as well (idle leftovers only).
+  useConversationRuntimeStore.setState((draft) => {
+    const rt = draft.runtimes.get(conversationId)
+    if (rt && rt.status === 'idle' && !rt.activeRunId && !rt.draftAssistant) {
+      draft.runtimes.delete(conversationId)
+    }
+  })
+  console.info('[conversation.store] Evicted conversation messages from memory', {
+    conversationId,
+    messageCount,
+  })
+  return true
 }
 
 export const useConversationStoreSQLite = create<ConversationState>()(
@@ -522,10 +707,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           try {
             const msgRepo = getMessageRepository()
             const activeMessages = await msgRepo.findByConversation(activeId)
+            primePersistBaseline(activeId, activeMessages as Message[])
             set((state) => {
               const conv = state.conversations.find((c) => c.id === activeId)
               if (conv) {
                 conv.messages = activeMessages as Message[]
+                conv.messagesLoaded = true
                 // Auto-heal: restore compression baseline from context_summary messages
                 healCompressionBaseline(conv)
               }
@@ -622,18 +809,20 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       })
 
       if (id) {
-        // Lazy-load messages if not already loaded
+        // Lazy-load messages if not already loaded (or if they were evicted)
         const conv = get().conversations.find((c) => c.id === id)
-        if (conv && conv.messages.length === 0) {
+        if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
           try {
             const msgRepo = getMessageRepository()
             const tFetch = performance.now()
             const messages = await msgRepo.findByConversation(id)
             const tDeserialize = performance.now()
+            primePersistBaseline(id, messages as Message[])
             set((state) => {
               const c = state.conversations.find((c) => c.id === id)
-              if (c && c.messages.length === 0) {
+              if (c && (c.messages.length === 0 || c.messagesLoaded === false)) {
                 c.messages = messages as Message[]
+                c.messagesLoaded = true
                 // Auto-heal: restore compression baseline from context_summary messages
                 // for conversations created before the persistence fix.
                 healCompressionBaseline(c)
@@ -662,6 +851,15 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     addMessage: (conversationId, message) => {
+      // Metadata-only conversation: pushing onto `messages: []` would corrupt
+      // seq order and title logic — reload history first, then append.
+      const conv0 = get().conversations.find((c) => c.id === conversationId)
+      if (conv0 && conv0.messagesLoaded === false) {
+        writeWithMessagesLoaded(conversationId, () => {
+          get().addMessage(conversationId, message)
+        })
+        return
+      }
       set((state) => {
         const conv = state.conversations.find((c) => c.id === conversationId)
         if (conv) {
@@ -704,6 +902,23 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     updateMessages: (conversationId, messages) => {
+      // The caller built `messages` from in-memory state; for a metadata-only
+      // conversation that snapshot is a fragment ([userMsg]), and applying it
+      // directly truncates history — the incremental persist then deletes the
+      // missing DB rows. Reload first, then merge strictly additively (a
+      // snapshot built from empty memory can never be a legitimate
+      // replacement of a longer history).
+      const conv0 = get().conversations.find((c) => c.id === conversationId)
+      if (conv0 && conv0.messagesLoaded === false) {
+        writeWithMessagesLoaded(conversationId, () => {
+          const current =
+            useConversationStoreSQLite
+              .getState()
+              .conversations.find((c) => c.id === conversationId)?.messages ?? []
+          get().updateMessages(conversationId, mergeUnloadedWriteSnapshot(current, messages))
+        })
+        return
+      }
       set((state) => {
         const conv = state.conversations.find((c) => c.id === conversationId)
         if (conv) {
@@ -1106,6 +1321,19 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         agentLoop.cancel()
       }
       deleteStreamingQueues(id)
+      // A pending eviction check for a deleted conversation is pointless.
+      cancelScheduledEviction(id)
+      // Subagent runtime keyed by conversation id keeps every task (loops,
+      // tool contexts, transcripts) alive until explicitly disposed — dispose
+      // it here and drop the per-agent drafts it owned, plus the conversation's
+      // runtime entry itself.
+      const subagentAgentIds = disposeSubagentRuntime(id)
+      useConversationRuntimeStore.setState((state) => {
+        state.runtimes.delete(id)
+        for (const agentId of subagentAgentIds) {
+          state.subagentDrafts.delete(agentId)
+        }
+      })
       // Authorization grants/yolo are conversation-scoped (redesign §3.8):
       // once the conversation is deleted there is no re-opening path, so any
       // remembered "always allow" or yolo grant must die with it. Without
@@ -1299,7 +1527,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       options?: { background?: boolean }
     ) =>
       runAgentImpl(
-        { handleSubagentStepNotification } as unknown as ConversationAgentRunInternals,
+        { handleSubagentStepNotification, scheduleConversationEviction } as unknown as ConversationAgentRunInternals,
         set,
         get,
         conversationId,
@@ -1409,6 +1637,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               toast.error('停止后保存草稿失败，部分内容可能丢失')
             })
         }
+        // Cancelled → idle: eviction candidate (guards re-checked after delay).
+        scheduleConversationEviction(conversationId)
         return
       }
 
@@ -1717,6 +1947,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           persistMessageReplace(conversationId, finalMessages).catch((err) => {
             console.error('[conversation.store] Failed to persist after compact:', err)
           })
+          // Compact finished → idle: eviction candidate.
+          scheduleConversationEviction(conversationId)
         }
       } catch (error) {
         if (!committed) {
@@ -1777,10 +2009,16 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 
     // ── Runtime state actions ──
     setConversationStatus: (id: string, status: ConversationStatus) => {
+      let becameIdle = false
       set((state) => {
         const c = state.conversations.find((c) => c.id === id)
-        if (c) c.status = status
+        if (c) {
+          becameIdle = status === 'idle' && c.status !== 'idle'
+          c.status = status
+        }
       })
+      // Run completion → eviction candidate (guards re-checked after the delay).
+      if (becameIdle) scheduleConversationEviction(id)
     },
 
     appendStreamingContent: (id: string, delta: string) => {
@@ -2051,3 +2289,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 // (external importers and tests resolve these names here).
 export { findSpawnStepInDraft } from './conversation-message-ops'
 export { reconcileMessageSnapshot } from './conversation-message-ops'
+
+// ---------------------------------------------------------------------------
+// Eviction trigger: last view unmounted
+// ---------------------------------------------------------------------------
+// The live mount ref-counts live in the RUNTIME store (useConversationLogic
+// mounts/unmounts through its actions). When a conversation's count drops to
+// zero the user can no longer see it, making it an eviction candidate.
+useConversationRuntimeStore.subscribe((state, prev) => {
+  if (state.mountedConversations === prev.mountedConversations) return
+  for (const [id, count] of prev.mountedConversations) {
+    if (count > 0 && (state.mountedConversations.get(id) ?? 0) === 0) {
+      scheduleConversationEviction(id)
+    }
+  }
+})
