@@ -133,6 +133,9 @@ const {
     selector(runtimeState)) as unknown as typeof import('@/store/conversation-runtime.store').useConversationRuntimeStore
   ;(useConversationRuntimeStoreMock as unknown as { getState: () => typeof runtimeState }).getState =
     () => runtimeState
+  // conversation.store.sqlite.ts subscribes to mount-count changes at import time
+  ;(useConversationRuntimeStoreMock as unknown as { subscribe: ReturnType<typeof vi.fn> }).subscribe =
+    vi.fn()
 
   const useSettingsStoreMock = (selector?: (state: unknown) => unknown) => {
     const state = {

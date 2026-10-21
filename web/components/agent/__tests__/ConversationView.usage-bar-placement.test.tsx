@@ -66,8 +66,8 @@ vi.mock('@/store/conversation.store', () => ({
   useConversationStore: useConversationStoreMock,
 }))
 
-vi.mock('@/store/conversation-runtime.store', () => ({
-  useConversationRuntimeStore: (selector?: (state: unknown) => unknown) => {
+vi.mock('@/store/conversation-runtime.store', () => {
+  const useConversationRuntimeStore = (selector?: (state: unknown) => unknown) => {
     const state = {
       runtimes: new Map(),
       pendingMessageQueues: new Map(),
@@ -84,8 +84,12 @@ vi.mock('@/store/conversation-runtime.store', () => ({
       resetConversationState: vi.fn(),
     }
     return selector ? selector(state) : state
-  },
-}))
+  }
+  // conversation.store.sqlite.ts subscribes to mount-count changes at import time
+  ;(useConversationRuntimeStore as unknown as { subscribe: ReturnType<typeof vi.fn> }).subscribe =
+    vi.fn()
+  return { useConversationRuntimeStore }
+})
 
 vi.mock('@/store/agent.store', () => ({
   useAgentStore: (selector?: (state: { directoryHandle: null }) => unknown) => {
