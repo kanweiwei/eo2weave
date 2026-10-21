@@ -21,10 +21,10 @@
 import { useState, useCallback, useEffect, useMemo, useRef, memo } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, ChevronDown, Folder, FolderOpen, RefreshCw, Copy, MousePointer2, Cloud, Trash2 } from 'lucide-react'
-import { Icon } from '@iconify/react'
 import micromatch from 'micromatch'
 import { BrandButton, BrandBadge } from '@creatorweave/ui'
 import { formatBytes } from '@/lib/utils'
+import { FileIcon } from '@/lib/file-icons'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
@@ -163,93 +163,6 @@ type FileTreePanelProps =
       onDirectorySelect?: (path: string, handle: FileSystemDirectoryHandle) => void
       onInspect?: (path: string, handle: FileSystemFileHandle | null) => void
     })
-
-/** Icon name by file extension (using vscode-icons) */
-function getFileIconName(name: string, kind: 'file' | 'directory'): string {
-  if (kind === 'directory') {
-    return 'vscode-icons:folder-type-open'
-  }
-
-  const ext = name.split('.').pop()?.toLowerCase()
-  const iconMap: Record<string, string> = {
-    // Code files
-    ts: 'vscode-icons:file-type-ts',
-    tsx: 'vscode-icons:file-type-tsreact',
-    js: 'vscode-icons:file-type-js',
-    jsx: 'vscode-icons:file-type-react',
-    mjs: 'vscode-icons:file-type-js-official',
-    cjs: 'vscode-icons:file-type-js',
-
-    // Other languages
-    rs: 'vscode-icons:file-type-rust',
-    go: 'vscode-icons:file-type-go',
-    py: 'vscode-icons:file-type-python',
-    java: 'vscode-icons:file-type-java',
-    cpp: 'vscode-icons:file-type-cpp',
-    c: 'vscode-icons:file-type-c',
-    cs: 'vscode-icons:file-type-csharp',
-    php: 'vscode-icons:file-type-php',
-    rb: 'vscode-icons:file-type-ruby',
-    swift: 'vscode-icons:file-type-swift',
-    kt: 'vscode-icons:file-type-kotlin',
-    dart: 'vscode-icons:file-type-dart',
-
-    // Web
-    html: 'vscode-icons:file-type-html',
-    css: 'vscode-icons:file-type-css',
-    scss: 'vscode-icons:file-type-scss',
-    less: 'vscode-icons:file-type-less',
-    svg: 'vscode-icons:file-type-svg',
-    xml: 'vscode-icons:file-type-xml',
-
-    // Data & Config
-    json: 'vscode-icons:file-type-json',
-    yaml: 'vscode-icons:file-type-yaml',
-    yml: 'vscode-icons:file-type-yaml',
-    toml: 'vscode-icons:file-type-toml',
-    ini: 'vscode-icons:file-type-ini',
-    env: 'vscode-icons:file-type-env',
-
-    // Docs
-    md: 'vscode-icons:file-type-md',
-    txt: 'vscode-icons:file-type-txt',
-    pdf: 'vscode-icons:file-type-pdf2',
-    doc: 'vscode-icons:file-type-word',
-    docx: 'vscode-icons:file-type-word2',
-    ppt: 'vscode-icons:file-type-powerpoint',
-    pptx: 'vscode-icons:file-type-powerpoint2',
-    xls: 'vscode-icons:file-type-excel',
-    xlsx: 'vscode-icons:file-type-excel2',
-    csv: 'vscode-icons:file-type-csv',
-
-    // Images
-    png: 'vscode-icons:file-type-png',
-    jpg: 'vscode-icons:file-type-jpg',
-    jpeg: 'vscode-icons:file-type-jpg',
-    gif: 'vscode-icons:file-type-gif',
-    webp: 'vscode-icons:file-type-webp',
-    ico: 'vscode-icons:file-type-ico',
-    bmp: 'vscode-icons:file-type-bmp',
-
-    // Archives
-    zip: 'vscode-icons:file-type-zip',
-    gz: 'vscode-icons:file-type-zip',
-    tar: 'vscode-icons:file-type-zip',
-    rar: 'vscode-icons:file-type-zip',
-    '7z': 'vscode-icons:file-type-zip',
-
-    // Build & Lock
-    lock: 'vscode-icons:file-type-lock',
-    wasm: 'vscode-icons:file-type-wasm',
-
-    // Git & CI
-    git: 'vscode-icons:file-type-git',
-    gitignore: 'vscode-icons:file-type-git',
-    dockerfile: 'vscode-icons:file-type-docker',
-  }
-
-  return iconMap[ext || ''] || 'vscode-icons:file-type-default'
-}
 
 /** Pending status badge using brand badge component */
 function PendingIndicator({ type }: { type: PendingChange['type'] | null }) {
@@ -426,7 +339,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
           )
         ) : (
           <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-            <Icon icon={getFileIconName(node.name, 'file')} className="h-3.5 w-3.5 shrink-0" />
+            <FileIcon filename={node.name} className="h-3.5 w-3.5 shrink-0" />
           </span>
         )}
 

@@ -59,6 +59,9 @@ vi.mock('@/store/conversation-context.store', () => {
 vi.mock('@/utils/change-helpers', () => ({
   getChangeTypeInfo: (type: string) => ({ label: type, bg: '', color: '' }),
   formatFileSize: (size?: number) => `${size || 0} B`,
+}))
+
+vi.mock('@/lib/file-icons', () => ({
   FileIcon: () => <span data-testid="file-icon" />,
 }))
 

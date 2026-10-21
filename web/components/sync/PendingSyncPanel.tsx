@@ -20,7 +20,8 @@ import {
   BrandDialogFooter,
 } from '@creatorweave/ui'
 import { RefreshCw, ChevronRight, X, Check, AlertTriangle, FileInput } from 'lucide-react'
-import { getChangeTypeInfo, formatFileSize, FileIcon } from '@/utils/change-helpers'
+import { getChangeTypeInfo, formatFileSize } from '@/utils/change-helpers'
+import { FileIcon } from '@/lib/file-icons'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
 import { useSyncDialogStore, type SyncExecutor, type NotifyFn } from '@/store/sync-dialog.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'

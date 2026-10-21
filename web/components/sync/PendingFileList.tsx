@@ -12,7 +12,8 @@
 
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { type ChangeDetectionResult, type FileChange } from '@/opfs/types/opfs-types'
-import { getChangeTypeInfo, formatFileSize, FileIcon } from '@/utils/change-helpers'
+import { getChangeTypeInfo, formatFileSize } from '@/utils/change-helpers'
+import { FileIcon } from '@/lib/file-icons'
 import { BrandButton, BrandCheckbox } from '@creatorweave/ui'
 import { Badge } from '@/components/ui/badge'
 import { RefreshCw, Trash2, X, ChevronDown, ChevronRight, MousePointer2, Copy, ClipboardCopy } from 'lucide-react'
