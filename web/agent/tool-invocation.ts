@@ -91,16 +91,6 @@ export async function invokeTool(
         abortSignal,
         currentToolCallId: toolCallId,
         deferContext: emit,
-        ...(call.parentCallId
-          ? {
-              onReadImageSuccess: (
-                payload: Parameters<NonNullable<ToolContext['onReadImageSuccess']>>[0]
-              ) => {
-                emit(payload.contentParts)
-                return true
-              },
-            }
-          : {}),
         codeTools:
           toolName === 'run_code'
             ? {

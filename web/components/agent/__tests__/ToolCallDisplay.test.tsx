@@ -57,6 +57,33 @@ describe('ToolCallDisplay', () => {
     expect(container.textContent || '').toContain('Execution Result')
   })
 
+  it('renders a read_image contentParts preview without exposing its base64 payload', () => {
+    const toolCall: ToolCall = {
+      id: 'tc-read-image',
+      type: 'function',
+      function: { name: 'read_image', arguments: JSON.stringify({ path: 'photos/chart.png' }) },
+    }
+    const result = JSON.stringify({
+      ok: true,
+      tool: 'read_image',
+      version: 2,
+      data: { path: 'photos/chart.png', mimeType: 'image/png', mode: 'vision' },
+      contentParts: [
+        { type: 'text', text: 'Read image photos/chart.png' },
+        { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+      ],
+    })
+
+    render(<ToolCallDisplay toolCall={toolCall} result={result} />)
+
+    expect(screen.getByRole('img', { name: 'Preview of photos/chart.png' })).toBeInTheDocument()
+    expect(screen.getByText('Source: photos/chart.png')).toBeInTheDocument()
+    expect(screen.queryByText(/aGVsbG8=/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'View full-size image: photos/chart.png' }))
+    expect(screen.getAllByRole('img', { name: 'Preview of photos/chart.png' })).toHaveLength(2)
+  })
+
   it('passes the conversation ID to recovered subagent detail panels', async () => {
     const toolCall: ToolCall = {
       id: 'tc-1',

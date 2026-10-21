@@ -202,8 +202,6 @@ export const conversation = {
       invalidImage: "The file could not be decoded as a valid image.",
       browserUnsupported: "This browser cannot decode image files for safe processing.",
       normalizeFailed: "Unable to prepare the image for model input.",
-      handoffUnavailable: "Unable to queue the image as a follow-up conversation message. Try again.",
-      handoffQueued: "The image has been added as a new user message for the next turn. Do not call more tools; answer directly from that next message.",
       readFailed: "Unable to read image: {message}",
     },
     // Codex OAuth error

@@ -47,6 +47,7 @@ import './tool-renderers/ExecRenderer'
 import './tool-renderers/ProcessesRenderer'
 import './tool-renderers/ImageGenRenderer'
 import './tool-renderers/PageScreenshotRenderer'
+import './tool-renderers/ReadImageRenderer'
 import './tool-renderers/SearchConversationsRenderer'
 
 // ─── Subagent types (kept local) ──────────────────────────────
@@ -228,7 +229,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
   const toolName = toolCall.function.name
   const [expanded, setExpanded] = useState(
     (isSubagentTool && (!result || isInterruptedResult)) ||
-    toolName === 'page_screenshot'
+    toolName === 'page_screenshot' ||
+    toolName === 'read_image'
   )
 
   // ── 1. ask_user_question → interactive QuestionCard ──

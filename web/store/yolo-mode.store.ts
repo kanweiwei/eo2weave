@@ -7,10 +7,17 @@
  * writes, page-action writes), not just page writes.
  *
  * Scope model (redesign doc §3.8) — intentional tightening:
- * - Purely in-memory; refresh clears it.
- * - Keyed by conversation: switching or closing a conversation drops the
- *   grant. An approval mindset ("I trust THIS task") must not silently
- *   bleed into unrelated conversations.
+ * - Persisted to localStorage so a refresh keeps the per-conversation grant
+ *   (matches the persistence story of agentMode / autoApplyOnRunComplete —
+ *   those are also remembered across refreshes via workspace-preferences
+ *   store, so yolo now follows the same rule). Stale entries for closed
+ *   conversations stay in localStorage until the conversation is deleted
+ *   (see conversation.store.sqlite's delete flow, which calls setYolo(id,
+ *   false) to drop the grant before the row is removed).
+ * - Keyed by conversation: switching to a different conversation hides the
+ *   grant (AgentModeSelect only shows YOLO for the active conv). Opening a
+ *   different conversation does NOT inherit another's yolo — the per-conv
+ *   map keeps grants isolated.
  * - forbidden tools are never covered by yolo (enforced in policy-engine,
  *   not here). LLM cannot enable yolo — switch_agent_mode force-clears it.
  *
@@ -22,7 +29,21 @@
  */
 
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
+
+/**
+ * Sentinel key used for YOLO toggles made on the WelcomeScreen BEFORE a
+ * conversation exists (bare URL). The pre-conversation pick is stored under
+ * this key so it (a) actually persists into yoloByConversation instead of
+ * being dropped on the floor, and (b) survives a refresh via the localStorage
+ * layer above. The sentinel is intentionally NOT cleared after migration:
+ * WorkspaceLayout.handleStartConversation reads it as the user's default YOLO
+ * preference and carries it onto EVERY new conversation created from the bare
+ * URL. It only changes when the user explicitly picks plan/act on the
+ * WelcomeScreen (setYolo(null, false) writes the sentinel as false).
+ */
+export const YOLO_WELCOME_SENTINEL = '__welcome__'
 
 interface YoloModeState {
   /** conversationId -> yolo on */
@@ -34,18 +55,33 @@ interface YoloModeState {
   clearAll: () => void
 }
 
-export const useYoloModeStore = create<YoloModeState>((set) => ({
-  yoloByConversation: {},
+export const useYoloModeStore = create<YoloModeState>()(
+  persist(
+    (set) => ({
+      yoloByConversation: {},
 
-  setYolo: (conversationId, on) =>
-    set((state) => {
-      if (!conversationId) return state
-      if (Boolean(state.yoloByConversation[conversationId]) === on) return state
-      return { yoloByConversation: { ...state.yoloByConversation, [conversationId]: on } }
+      setYolo: (conversationId, on) =>
+        set((state) => {
+          // Map null/undefined onto the welcome sentinel so the pre-conversation
+          // pick is recorded (and persisted). Without this, toggling YOLO on
+          // the bare URL would silently no-op and the choice would vanish on
+          // refresh.
+          const key = conversationId ?? YOLO_WELCOME_SENTINEL
+          if (Boolean(state.yoloByConversation[key]) === on) return state
+          return { yoloByConversation: { ...state.yoloByConversation, [key]: on } }
+        }),
+
+      clearAll: () => set({ yoloByConversation: {} }),
     }),
-
-  clearAll: () => set({ yoloByConversation: {} }),
-}))
+    {
+      name: 'creatorweave-yolo-mode',
+      version: 1,
+      // Only persist the per-conversation map; methods are stable references
+      // and don't need to survive a refresh.
+      partialize: (state) => ({ yoloByConversation: state.yoloByConversation }),
+    },
+  ),
+)
 
 /**
  * Engine-facing read: is yolo currently on for the given conversation?

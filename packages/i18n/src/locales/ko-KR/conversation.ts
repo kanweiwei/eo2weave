@@ -173,8 +173,6 @@ export const conversation = {
       invalidImage: "파일을 유효한 이미지로 디코딩할 수 없습니다.",
       browserUnsupported: "이 브라우저에서는 이미지 파일을 안전하게 디코딩할 수 없습니다.",
       normalizeFailed: "모델 입력을 위해 이미지를 처리할 수 없습니다.",
-      handoffUnavailable: "이미지를 후속 대화 메시지에 추가할 수 없습니다. 다시 시도하세요.",
-      handoffQueued: "이미지가 다음 턴의 새 사용자 메시지로 추가되었습니다. 더 이상 도구를 호출하지 말고 다음 메시지의 이미지를 바탕으로 직접 답변하세요.",
       readFailed: "이미지를 읽을 수 없습니다: {message}",
     },
     codex: {
