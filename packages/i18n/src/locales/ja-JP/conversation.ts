@@ -61,6 +61,10 @@ export const conversation = {
       slashCommands: {
         groupBuiltin: "組み込みコマンド",
         groupSkill: "Skills",
+        compact: {
+          label: "圧縮",
+          description: "会話のコンテキストを圧縮し、重要な情報を保持",
+        },
         summary: { label: "要約", description: "ページや選択範囲を要約", chipPageMode: "ページモード", noContent: "要約する内容がありません — テキストを選択してください" },
         translate: { label: "翻訳", description: "選択範囲を翻訳（/translate zh|en|ja…）", chipPageMode: "ページモード", noContent: "翻訳する内容がありません — テキストを選択してください" },
         explain: { label: "解説", description: "選択したコードや用語を解説", chipPageMode: "ページモード", noContent: "解説する内容がありません — テキストを選択してください" },

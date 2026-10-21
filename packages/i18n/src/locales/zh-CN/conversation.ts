@@ -62,6 +62,10 @@ export const conversation = {
       slashCommands: {
         groupBuiltin: "内置命令",
         groupSkill: "Skills",
+        compact: {
+          label: "压缩",
+          description: "压缩对话上下文，保留关键信息",
+        },
         summary: {
           label: "总结",
           description: "总结内容（/summary 要点文字，或侧边栏总结页面/选中）",

@@ -62,6 +62,10 @@ export const conversation = {
       slashCommands: {
         groupBuiltin: "Built-in",
         groupSkill: "Skills",
+        compact: {
+          label: "Compact",
+          description: "Compact the conversation context while keeping key information",
+        },
         summary: {
           label: "Summarize",
           description: "Summarize the page or selection into key points",
