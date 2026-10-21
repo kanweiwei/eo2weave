@@ -147,6 +147,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         task.updated_at = now
         task.last_activity_at = now
         this.clearRunTimeout(task)
+        // Abort any in-flight LLM run so the subagent loop actually stops.
+        task.loop?.cancel()
         // Close transcript if open (fire-and-forget)
         if (task.transcriptWriter) {
           task.transcriptWriter.close().catch(() => {})
@@ -155,6 +157,32 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       }
     }
     this.persistToSQLite()
+  }
+
+  /** All agentIds owned by this runtime (for caller-side UI state cleanup). */
+  agentIds(): string[] {
+    return Array.from(this.tasks.keys())
+  }
+
+  /**
+   * Drop the live AgentLoop / ToolContext references of a terminal task.
+   *
+   * These closures (provider, a sub-ContextManager with its own message list,
+   * tool registry references) are the heavy live objects retained per
+   * subagent; without this, a workspace that spawns many subagents keeps one
+   * loop per task alive for the lifetime of the runtime — a monotonic memory
+   * leak. Dropping them is safe: `ensureLoop` recreates both on a later
+   * resume, and the task's `messages` (needed for persistence and the detail
+   * panel's DB fallback) are untouched.
+   */
+  private releaseTaskRuntime(task: SubagentTaskInternal): void {
+    if (task.status !== 'completed' && task.status !== 'failed' && task.status !== 'killed') return
+    // A resumed task re-enters processing with a fresh loop — never release
+    // while a run is in flight (the ensureProcessing finally will re-check).
+    if (task.processing) return
+    task.loop = undefined
+    task.toolContext = undefined
+    task.currentToolCallId = undefined
   }
 
   async spawn(
@@ -642,6 +670,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       timestamp: Date.now(),
     })
     task.loop?.cancel()
+    // Pending tasks never enter ensureProcessing, so nothing would release
+    // their refs; mid-run kills are covered by the processing guard inside
+    // releaseTaskRuntime (the ensureProcessing finally re-releases).
+    this.releaseTaskRuntime(task)
   }
 
   private getByIdOrName(idOrName: string): SubagentTaskInternal | undefined {
@@ -661,6 +693,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       task.processing = false
       task.processingPromise = undefined
       this.persistToSQLite()
+      // Queue drained into a terminal state — release the live loop/context.
+      this.releaseTaskRuntime(task)
     })
     return task.processingPromise
   }
@@ -1609,4 +1643,21 @@ export function getOrCreateSubagentRuntime(input: {
   runtimeRegistry.set(key, created)
   registerBeforeunload()
   return created
+}
+
+/**
+ * Dispose the runtime owned by a workspace — used when the workspace's
+ * conversation is deleted. Without this, runtimeRegistry keeps one
+ * SubagentRuntime (with every task it ever spawned) alive forever.
+ *
+ * @returns the agentIds that belonged to the disposed runtime, so callers can
+ *          clean up their own per-agent UI state (subagentDrafts etc.).
+ */
+export function disposeSubagentRuntime(workspaceId: string): string[] {
+  const key = workspaceId || 'default'
+  const runtime = runtimeRegistry.get(key)
+  if (!runtime) return []
+  runtimeRegistry.delete(key)
+  runtime.shutdown()
+  return runtime.agentIds()
 }
