@@ -6,7 +6,7 @@ describe('getDefaultPinnedModels', () => {
   it('returns curated defaults as-is when no catalog is given (blind seed)', () => {
     expect(getDefaultPinnedModels('deepseek')).toEqual(['deepseek-flash'])
     expect(getDefaultPinnedModels('glm')).toEqual(['glm-5.3-flash'])
-    expect(getDefaultPinnedModels('llm-gateway')).toEqual(['deepseek-v4.1-flash'])
+    expect(getDefaultPinnedModels('llm-gateway')).toEqual(['DeepSeek-V4.1-Flash-1017'])
     expect(getDefaultPinnedModels('codex-oauth')).toEqual([])
   })
 
