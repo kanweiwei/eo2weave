@@ -502,7 +502,7 @@ export function ModelQuickSwitch({
                 sideOffset={8}
                 onMouseEnter={openThinkingPopover}
                 onMouseLeave={scheduleThinkingClose}
-                className="w-[190px] rounded-lg border-border/80 bg-background p-2 shadow-md shadow-black/5"
+                className="w-[190px] rounded-lg border-border/80 bg-white p-2 shadow-md shadow-black/5 dark:bg-neutral-900"
               >
                 <div className="flex items-center justify-between px-1.5 pb-1.5">
                   <span className="text-xs font-semibold text-secondary">{t('conversation.thinkingMode')}</span>
