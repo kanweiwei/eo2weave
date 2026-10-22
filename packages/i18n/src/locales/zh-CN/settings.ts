@@ -140,6 +140,8 @@ export const settings = {
     experimentalWarningDesc: "开启后可能存在稳定性问题，且部分功能依赖服务商并发能力支持。",
     batchSpawn: "并行子代理 (batch_spawn)",
     batchSpawnDesc: "允许 AI 同时启动多个子任务并行处理。需要服务商支持高并发，否则可能导致速率限制错误。",
+    scheduleToggle: "定时任务",
+    scheduleToggleDesc: "开启后可在侧边栏管理定时任务（实验性）",
 
 
     // Sync panel
