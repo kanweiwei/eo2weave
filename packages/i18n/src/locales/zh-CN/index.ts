@@ -36,6 +36,7 @@ import { execPolicy } from './execPolicy'
 import { assets } from './assets'
 import { processes } from './processes'
 import { tools } from './tools'
+import { schedule } from './schedule'
 export const zhCN = {
   common,
   app,
@@ -94,4 +95,5 @@ export const zhCN = {
   assets,
   processes,
   tools,
+  schedule,
 } as const
