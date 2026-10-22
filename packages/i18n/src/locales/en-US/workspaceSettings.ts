@@ -50,11 +50,8 @@ export const workspaceSettings = {
     },
     data: {
       title: "Data Management",
-      description: "Manage recent files and workspace preferences",
-      recentFilesTitle: "Recent Files",
-      recentFilesCount: "{count} file(s) total",
+      description: "Manage workspace preferences",
       clear: "Clear",
-      clearRecentConfirm: "Are you sure you want to clear recent files?",
       warningTitle: "Warning:",
       warningDescription:
         "The following actions will affect current workspace settings.",

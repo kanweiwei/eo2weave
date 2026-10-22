@@ -70,13 +70,3 @@ export const officePreview = {
     retry: "再試行",
     openInNewTab: "新しいタブでプレビュー",
 } as const
-
-// 最近使ったファイル
-export const recentFiles = {
-    title: "最近使ったファイル",
-    empty: "最近使ったファイルはありません",
-    emptyHint: "開いたファイルがここに表示されます",
-    remove: "最近から削除",
-    confirmClear: "最近使ったファイルをすべてクリアしますか？",
-    count: "{count} 件の最近使ったファイル",
-} as const

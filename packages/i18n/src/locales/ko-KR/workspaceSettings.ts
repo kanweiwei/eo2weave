@@ -51,10 +51,7 @@ export const workspaceSettings = {
     data: {
       title: "데이터 관리",
       description: "최근 파일과 워크스페이스 설정을 관리합니다",
-      recentFilesTitle: "최근 파일",
-      recentFilesCount: "총 {count}개 파일",
       clear: "지우기",
-      clearRecentConfirm: "최근 파일 기록을 지우시겠습니까?",
       warningTitle: "주의:",
       warningDescription: "아래 작업은 현재 워크스페이스 설정에 영향을 줍니다.",
       resetAllTitle: "모든 설정 초기화",

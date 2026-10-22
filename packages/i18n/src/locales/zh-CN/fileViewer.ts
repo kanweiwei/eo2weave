@@ -68,13 +68,3 @@ export const officePreview = {
     retry: "重试",
     openInNewTab: "在新标签页中预览",
 } as const
-
-// Phase 4: 工作区功能
-export const recentFiles = {
-    title: "最近文件",
-    empty: "暂无最近文件",
-    emptyHint: "您打开的文件将显示在这里",
-    remove: "从最近移除",
-    confirmClear: "确定要清除所有最近文件吗？",
-    count: "{count} 个最近文件",
-} as const

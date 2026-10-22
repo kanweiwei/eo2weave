@@ -25,7 +25,6 @@ export const tools = {
   searchActions: 'アクションを検索...',
   suggestedForYou: 'おすすめ',
   refreshSuggestions: '提案を更新',
-  recentFiles: '最近のファイル',
   typeScriptActions: 'TypeScript アクション',
   analyzeTypes: '型とインターフェースを分析',
   findReactComponents: 'React コンポーネントを検索',

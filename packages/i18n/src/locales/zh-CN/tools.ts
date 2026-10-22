@@ -25,7 +25,6 @@ export const tools = {
   searchActions: '搜索操作...',
   suggestedForYou: '为你推荐',
   refreshSuggestions: '刷新推荐',
-  recentFiles: '最近文件',
   typeScriptActions: 'TypeScript 操作',
   analyzeTypes: '分析类型和接口',
   findReactComponents: '查找 React 组件',

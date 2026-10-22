@@ -27,10 +27,6 @@ export const commandPalette = {
         label: "打开文件...",
         description: "从工作区打开文件",
       },
-      "recent-files": {
-        label: "最近文件",
-        description: "查看最近访问的文件",
-      },
       "toggle-sidebar": {
         label: "切换侧边栏",
         description: "显示或隐藏侧边栏",

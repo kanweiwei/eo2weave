@@ -28,10 +28,6 @@ export const commandPalette = {
         label: "파일 열기...",
         description: "워크스페이스에서 파일을 엽니다",
       },
-      "recent-files": {
-        label: "최근 파일",
-        description: "최근에 접근한 파일을 봅니다",
-      },
       "toggle-sidebar": {
         label: "사이드바 전환",
         description: "사이드바를 표시하거나 숨깁니다",
