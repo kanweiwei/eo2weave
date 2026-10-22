@@ -157,6 +157,11 @@ export const conversation = {
         '3:2': "写真",
         '2:3': "ポスター",
       },
+      /** Composer image-model picker (ImageGenDropdown). */
+      selectModel: "画像モデル",
+      searchPlaceholder: "モデルを検索...",
+      noModelFound: "一致するモデルがありません",
+      aspectRatioLabel: "アスペクト比",
     },
     readImage: {
       label: "AI が読み取った画像",
