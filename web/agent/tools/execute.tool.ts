@@ -60,7 +60,8 @@ Important:
 - /mnt/ reads from OPFS, NOT directly from disk. If you see "A requested file or directory could not be found", the file exists on disk but not in OPFS. Use \`sync(paths=["path/to/file"])\` to copy it to OPFS first, then retry.
 - For user-uploaded files (CSV, images, etc.), read from /mnt_assets/.
 - Output path policy (must follow strictly):
-  - If the final result is a normal workspace/project file, write it to /mnt/{rootName}/...
+  - In Plan Mode: write to /mnt_assets/ ONLY — workspace files under /mnt/{rootName}/... must NOT be modified. To work on a workspace file, copy it into the assets sandbox first (shutil.copy2('/mnt/{rootName}/data.csv', '/mnt_assets/data.csv')) and do all reads/writes/execution on that copy. Use sync-to-opfs to pull the file from disk into OPFS if it is not there yet.
+  - In Act Mode: if the final result is a normal workspace/project file, write it to /mnt/{rootName}/...
   - /mnt_assets/ is temporary asset storage in OPFS assets and is NOT the default location for normal project deliverables.
   - Use /mnt_assets/ only for temporary intermediate files or when the user explicitly asks for asset-style attachments.
   - Do not default final deliverables to /mnt_assets/ when the expected outcome is a regular workspace file.

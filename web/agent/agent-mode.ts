@@ -37,7 +37,7 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   ['run_python', {
     name: 'run_python',
     category: 'read',
-    planModeDescription: 'Execute Python code in sandbox (read-only in plan mode - no file modifications persisted)'
+    planModeDescription: 'Execute Python code in sandbox (in Plan mode, write outputs only to /mnt_assets/ — never to workspace files under /mnt/)'
   }],
   ['bash', {
     name: 'bash',
@@ -100,8 +100,19 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   // Snapshot write tools (OPFS undo/restore — NOT real git)
   ['snapshot_restore', { name: 'snapshot_restore', category: 'write' }],
 
-  // Sync tools (writes to OPFS)
-  ['sync-to-opfs', { name: 'sync-to-opfs', category: 'write' }],
+  // Sync disk → OPFS — EXEMPT from the Plan-mode write gate. The tool only
+  // copies files INTO the OPFS files/ cache (mounted at /mnt/ in Pyodide) and
+  // never overwrites a file that already exists there (the OPFS copy may hold
+  // agent edits / pending changes). It never writes to the real disk, so Plan
+  // mode can pull workspace files into OPFS before `run_python` without a mode
+  // switch. Classified 'read' following the same precedent as run_python/bash
+  // (sandboxed side effects) and generate_image (OPFS-scoped writes);
+  // planModeDescription documents the limited write scope for UI/prompt use.
+  ['sync-to-opfs', {
+    name: 'sync-to-opfs',
+    category: 'read',
+    planModeDescription: 'Copy files from disk into the OPFS cache (writes limited to OPFS files/ — never overwrites existing OPFS files, never touches the real disk)',
+  }],
 
   // Image generation — EXEMPT from the Plan-mode write gate (decided
   // 2026-09-10, image-generation PRD R2.3): the tool only writes generated

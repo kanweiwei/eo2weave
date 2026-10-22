@@ -34,9 +34,10 @@ describe('generate_image Plan-mode exemption (R2.3)', () => {
   })
 
   it('did not accidentally loosen the real write tools', () => {
-    // Guardrail: the exemption is for generate_image only — workspace-mutating
-    // tools must stay write-gated in Plan mode.
-    for (const name of ['write', 'edit', 'delete', 'snapshot_restore', 'sync-to-opfs']) {
+    // Guardrail: the exemptions are scoped to OPFS-cache-only tools
+    // (generate_image, sync-to-opfs) — workspace-mutating tools must stay
+    // write-gated in Plan mode.
+    for (const name of ['write', 'edit', 'delete', 'snapshot_restore']) {
       expect(getToolCategory(name)).toBe('write')
       expect(isToolAllowedInMode(name, 'plan')).toBe(false)
     }
