@@ -380,9 +380,9 @@ describe('ProjectHome — new homepage layout', () => {
       />,
     )
 
-    // Open from the hero CTA — there are now two New Project buttons
-    // (header right + hero). Use the first one found.
-    await user.click(screen.getAllByRole('button', { name: 'New Project' })[0])
+    // Open from the hero CTA — the homepage keeps a single "New Project"
+    // entry (the hero button).
+    await user.click(screen.getByRole('button', { name: 'New Project' }))
 
     await user.type(
       screen.getByPlaceholderText('Enter project name'),
@@ -422,7 +422,7 @@ describe('ProjectHome — new homepage layout', () => {
       />,
     )
 
-    await user.click(screen.getAllByRole('button', { name: 'New Project' })[0])
+    await user.click(screen.getByRole('button', { name: 'New Project' }))
     await user.type(screen.getByPlaceholderText('Enter project name'), 'Project With Folders')
     await user.click(screen.getByRole('button', { name: 'Choose folder' }))
     await user.click(screen.getByRole('button', { name: 'Add another' }))
@@ -467,7 +467,7 @@ describe('ProjectHome — new homepage layout', () => {
       />,
     )
 
-    await user.click(screen.getAllByRole('button', { name: 'New Project' })[0])
+    await user.click(screen.getByRole('button', { name: 'New Project' }))
     await user.type(screen.getByPlaceholderText('Enter project name'), 'Native Host Project')
     await user.click(screen.getByRole('button', { name: 'Authorize local' }))
 

@@ -315,7 +315,6 @@ export function ProjectHome({
           onArchiveToggle={handleArchiveClick}
           onDeleteProject={handleDeleteClick}
           onExportUsage={onExportProjectUsage ? handleExportUsage : undefined}
-          onCreateClick={handleCreateClick}
         />
 
         {/* Activity */}
