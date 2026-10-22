@@ -190,6 +190,12 @@ import {
   imageGenExecutor,
   imageGenPromptDoc,
 } from './tools/image-gen.tool'
+// Schedule management tool (restored 2026-09; kept behind settings experimental gate)
+import {
+  manageScheduleDefinition,
+  manageScheduleExecutor,
+  schedulePromptDoc,
+} from './tools/schedule.tool'
 import { onModelsUpdated } from './providers/model-store'
 
 // Unified external tool bridge (replaces separate MCP + WebMCP tool pairs)
@@ -253,6 +259,8 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
   { definition: resumeSubagentDefinition, executor: resumeSubagentExecutor },
   { definition: getSubagentStatusDefinition, executor: getSubagentStatusExecutor },
   { definition: listSubagentsDefinition, executor: listSubagentsExecutor },
+  // Schedule management
+  { definition: manageScheduleDefinition, executor: manageScheduleExecutor },
 ]
 
 /**
@@ -289,6 +297,7 @@ const ALL_PROMPT_DOCS: ToolPromptDoc[] = [
   unifiedExternalToolsPromptDoc,
   getPageToolsPromptDoc,
   imageGenPromptDoc,
+  schedulePromptDoc,
   pageReadPromptDoc,
   pageWritePromptDoc,
   execPromptDoc,
