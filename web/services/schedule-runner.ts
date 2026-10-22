@@ -49,6 +49,42 @@ export async function runSchedule(scheduleId: string, options?: { force?: boolea
     return
   }
 
+  // Orphan check: the bound conversation may have been deleted since the
+  // schedule was created. Without this, the headless run would write its
+  // summary into a deleted conversation (appendConversationSummary inserts
+  // via the DB even when the conversation row is gone) and the schedule
+  // would fire forever on a dead target. Force runs skip this so users can
+  // still re-point a schedule via run-now after editing.
+  if (!options?.force) {
+    try {
+      const { getConversationRepository } = await import('@/sqlite/repositories/conversation.repository')
+      const conv = await getConversationRepository().findById(schedule.workspaceId)
+      if (!conv) {
+        console.warn(
+          `[ScheduleRunner] Bound conversation ${schedule.workspaceId} no longer exists — ` +
+          `disabling schedule "${schedule.name}" (${scheduleId})`
+        )
+        await saveSchedule({
+          ...schedule,
+          enabled: false,
+          error: 'CONV_DELETED',
+          updatedAt: Date.now(),
+        })
+        if (schedule.notification?.onFailure) {
+          await showScheduleNotification(
+            `⏸️ 定时任务已停用：${schedule.name}`,
+            '绑定的对话已被删除'
+          )
+        }
+        return
+      }
+    } catch (orphanCheckError) {
+      // The check itself must never block a run (e.g. transient DB error) —
+      // a false-negative just means one run proceeds as before.
+      console.warn('[ScheduleRunner] Orphan check failed (continuing):', orphanCheckError)
+    }
+  }
+
   const startedAt = Date.now()
   console.info(`[ScheduleRunner] Starting run for "${schedule.name}" (${scheduleId})`)
 
@@ -63,6 +99,9 @@ export async function runSchedule(scheduleId: string, options?: { force?: boolea
 
     let toolIndex = 0
     let llmIndex = 0
+    // Per-run map: tool index → start time (ms). Scoped here so concurrent
+    // schedule runs don't share (and leak entries into) a module-level map.
+    const toolStartTimes = new Map<number, number>()
 
     const agentLoop = new AgentLoop({
       provider,
@@ -81,19 +120,19 @@ export async function runSchedule(scheduleId: string, options?: { force?: boolea
         }
         toolCalls.push(entry)
         // Store start time on a temporary map
-        _toolStartTimes.set(toolIndex, Date.now())
+        toolStartTimes.set(toolIndex, Date.now())
         return undefined // don't block
       },
       afterToolCall: ({ toolName, content, isError }) => {
         const entry = toolCalls[toolCalls.length - 1]
         if (entry && entry.tool === toolName) {
-          const startTime = _toolStartTimes.get(entry.index) ?? Date.now()
+          const startTime = toolStartTimes.get(entry.index) ?? Date.now()
           entry.duration = Date.now() - startTime
           entry.response = truncateForLog(content)
           if (isError) {
             entry.error = content
           }
-          _toolStartTimes.delete(entry.index)
+          toolStartTimes.delete(entry.index)
         }
         return undefined
       },
@@ -185,9 +224,6 @@ export async function runSchedule(scheduleId: string, options?: { force?: boolea
 // ---------------------------------------------------------------------------
 // Runtime dependencies
 // ---------------------------------------------------------------------------
-
-/** Temporary map: tool index → start time (ms) */
-const _toolStartTimes = new Map<number, number>()
 
 async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof loadSchedule>>>): Promise<{
   provider: PiAIProvider
