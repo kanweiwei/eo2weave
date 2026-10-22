@@ -12,7 +12,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
-import { AlertTriangle, RefreshCw, WifiOff, KeyRound, ScanEye, Loader2 } from 'lucide-react'
+import { AlertTriangle, RefreshCw, WifiOff, KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { presentLlmError } from './llm-error'
@@ -44,58 +44,11 @@ import { AssetsPopover } from './AssetsPopover'
 import { ProcessesPopover } from './ProcessesPopover'
 import { ConversationActionContext } from './ConversationActionContext'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
+import { VisionCapabilityIndicator } from './VisionCapabilityIndicator'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { useAssetStore } from '@/store/asset.store'
 import { PageScreenshotCropDialog } from './PageScreenshotCropDialog'
 import { FlowCanvasPanel } from './FlowCanvasPanel'
-
-const VisionCapabilityIndicator = memo(function VisionCapabilityIndicator({
-  modelName,
-  providerType,
-  canCapture,
-  isCapturing,
-  onCapture,
-}: {
-  modelName: string
-  providerType: string
-  canCapture: boolean
-  isCapturing: boolean
-  onCapture: () => void
-}) {
-  const t = useT()
-  const supportsVision = supportsImageInput(modelName, providerType || undefined)
-  const label = !supportsVision
-    ? t('agent.vision.unsupported')
-    : canCapture
-      ? t('agent.vision.capture')
-      : t('agent.vision.supported')
-
-  return (
-    <TooltipProvider delayDuration={250}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex">
-            <button
-              type="button"
-              aria-label={label}
-              disabled={!canCapture || isCapturing}
-              onClick={onCapture}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                !supportsVision
-                  ? 'bg-neutral-50 text-neutral-400 dark:bg-neutral-900 dark:text-neutral-600'
-                  : 'bg-primary-50 text-primary-600 dark:bg-primary-50/40 dark:text-primary-700'
-              }`}
-            >
-              {isCapturing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <ScanEye className="h-3.5 w-3.5" aria-hidden="true" />}
-            </button>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6}>{label}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
-})
 
 /**
  * Memoized usage bar — the outer flex column re-renders while its scroll
