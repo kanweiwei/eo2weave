@@ -51,10 +51,7 @@ export const workspaceSettings = {
     data: {
       title: "データ管理",
       description: "最近使ったファイルと設定を管理します",
-      recentFilesTitle: "最近使ったファイル",
-      recentFilesCount: "合計 {count} 件",
       clear: "クリア",
-      clearRecentConfirm: "最近使ったファイル履歴をクリアしますか？",
       warningTitle: "注意:",
       warningDescription: "以下の操作は現在のワークスペース設定に影響します。",
       resetAllTitle: "すべての設定をリセット",

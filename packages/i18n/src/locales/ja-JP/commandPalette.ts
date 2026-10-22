@@ -28,10 +28,6 @@ export const commandPalette = {
         label: "ファイルを開く...",
         description: "ワークスペースからファイルを開く",
       },
-      "recent-files": {
-        label: "最近使ったファイル",
-        description: "最近アクセスしたファイルを表示",
-      },
       "toggle-sidebar": {
         label: "サイドバーを切り替え",
         description: "サイドバーの表示/非表示",

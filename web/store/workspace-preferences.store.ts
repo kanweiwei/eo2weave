@@ -2,7 +2,7 @@
  * Workspace Preferences Store - manages UI layout and user preferences.
  *
  * Persists to localStorage using zustand persist middleware.
- * Handles panel sizes, active panels, recent files, and display settings.
+ * Handles panel sizes, active panels, and display settings.
  */
 
 import { create } from 'zustand'
@@ -13,15 +13,6 @@ import { useWorkspaceStore } from './workspace.store'
 
 // Enable Immer Map/Set support
 enableMapSet()
-
-/**
- * Recent file entry with metadata
- */
-export interface RecentFile {
-  path: string
-  timestamp: number
-  directoryHandleName?: string
-}
 
 /**
  * Panel size configuration
@@ -60,7 +51,6 @@ export interface WorkspacePreferences {
   panelSizes: PanelSizes
   panelState: PanelState
   display: DisplayPreferences
-  recentFiles: RecentFile[]
   onboardingCompleted: boolean
   /** Agent execution mode per workspace: 'plan' (read-only) or 'act' (full access) */
   agentMode: 'plan' | 'act'
@@ -100,7 +90,6 @@ const DEFAULT_PREFERENCES: WorkspacePreferences = {
     wordWrap: false,
     showMiniMap: true,
   },
-  recentFiles: [],
   onboardingCompleted: false,
   agentMode: 'act',
   agentModeByWorkspace: {},
@@ -133,11 +122,6 @@ interface WorkspacePreferencesState extends WorkspacePreferences {
   setShowLineNumbers: (show: boolean) => void
   setWordWrap: (wrap: boolean) => void
   setShowMiniMap: (show: boolean) => void
-
-  // Recent files actions
-  addRecentFile: (file: RecentFile) => void
-  removeRecentFile: (path: string) => void
-  clearRecentFiles: () => void
 
   // Onboarding actions
   setOnboardingCompleted: (completed: boolean) => void
@@ -237,29 +221,6 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
           state.display.showMiniMap = show
         }),
 
-      // Recent files actions
-      addRecentFile: (file) =>
-        set((state) => {
-          // Remove existing entry if present
-          state.recentFiles = state.recentFiles.filter((f) => f.path !== file.path)
-          // Add to beginning
-          state.recentFiles.unshift(file)
-          // Keep only 10 most recent
-          if (state.recentFiles.length > 10) {
-            state.recentFiles = state.recentFiles.slice(0, 10)
-          }
-        }),
-
-      removeRecentFile: (path) =>
-        set((state) => {
-          state.recentFiles = state.recentFiles.filter((f) => f.path !== path)
-        }),
-
-      clearRecentFiles: () =>
-        set((state) => {
-          state.recentFiles = []
-        }),
-
       // Onboarding actions
       setOnboardingCompleted: (completed) =>
         set((state) => {
@@ -348,7 +309,6 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
         panelSizes: state.panelSizes,
         panelState: state.panelState,
         display: state.display,
-        recentFiles: state.recentFiles,
         onboardingCompleted: state.onboardingCompleted,
         agentMode: state.agentMode,
         agentModeByWorkspace: state.agentModeByWorkspace,

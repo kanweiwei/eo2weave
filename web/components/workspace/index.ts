@@ -6,7 +6,6 @@
 
 export { CommandPalette } from './CommandPalette'
 export { KeyboardShortcutsHelp } from './KeyboardShortcutsHelp'
-export { RecentFilesPanel } from './RecentFilesPanel'
 export { ThemeToggle } from './ThemeToggle'
 export { WorkspaceSettingsDialog } from './WorkspaceSettingsDialog'
 export { GoToFileDialog } from './GoToFileDialog'

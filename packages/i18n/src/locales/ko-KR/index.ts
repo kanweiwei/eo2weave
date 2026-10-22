@@ -11,7 +11,7 @@ import { skills, discover, skillCard, skillEditor, skillUpload, skillDetail, ski
 import { webContainer } from './webContainer'
 import { workflowEditor, customWorkflowManager, workflowEditorDialog, workflow } from './workflow'
 import { conversation, toolCallDisplay, questionCard, runChanges, session } from './conversation'
-import { fileViewer, standalonePreview, filePreview, recentFiles, officePreview } from './fileViewer'
+import { fileViewer, standalonePreview, filePreview, officePreview } from './fileViewer'
 import { storageStatusBanner, pendingSync } from './storage'
 import { themeToggle } from './themeToggle'
 import { mobile, offlineQueue } from './mobile'
@@ -73,8 +73,7 @@ export const koKR = {
   pluginDialog,
   htmlPreview,
   filePreview,
-  recentFiles,
-  officePreview,
+    officePreview,
   commandPalette,
   mcp,
   onboarding,

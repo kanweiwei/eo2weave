@@ -25,7 +25,6 @@ export const tools = {
   searchActions: 'Search actions...',
   suggestedForYou: 'Suggested for You',
   refreshSuggestions: 'Refresh suggestions',
-  recentFiles: 'Recent Files',
   typeScriptActions: 'TypeScript Actions',
   analyzeTypes: 'Analyze Types & Interfaces',
   findReactComponents: 'Find React Components',

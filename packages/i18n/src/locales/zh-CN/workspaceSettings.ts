@@ -51,10 +51,7 @@ export const workspaceSettings = {
     data: {
       title: "数据管理",
       description: "管理最近文件和工作区偏好设置",
-      recentFilesTitle: "最近文件",
-      recentFilesCount: "共 {count} 个文件",
       clear: "清空",
-      clearRecentConfirm: "确定要清空最近文件记录吗？",
       warningTitle: "注意：",
       warningDescription: "以下操作将影响当前工作区设置，请谨慎执行。",
       resetAllTitle: "重置所有偏好",

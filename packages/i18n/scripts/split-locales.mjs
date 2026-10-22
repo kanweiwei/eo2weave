@@ -21,7 +21,7 @@ const MERGE_MAP = {
   skills: ['skills', 'skillCard', 'skillEditor', 'skillDetail'],
   workflow: ['workflowEditor', 'customWorkflowManager', 'workflowEditorDialog', 'workflow'],
   remote: ['remote', 'session'],
-  fileViewer: ['fileViewer', 'standalonePreview', 'filePreview', 'recentFiles'],
+  fileViewer: ['fileViewer', 'standalonePreview', 'filePreview'],
   storage: ['storageStatusBanner', 'pendingSync', 'conversationStorage', 'workspaceStorage'],
   conversation: ['conversation', 'toolCallDisplay', 'questionCard'],
   mobile: ['mobile', 'offlineQueue'],

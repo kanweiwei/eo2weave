@@ -27,10 +27,6 @@ export const commandPalette = {
         label: "Open File...",
         description: "Open a file from your workspace",
       },
-      "recent-files": {
-        label: "Recent Files",
-        description: "View recently accessed files",
-      },
       "toggle-sidebar": {
         label: "Toggle Sidebar",
         description: "Show or hide the sidebar",

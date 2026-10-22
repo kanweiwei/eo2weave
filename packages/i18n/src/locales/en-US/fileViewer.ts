@@ -67,13 +67,3 @@ export const officePreview = {
     retry: "Retry",
     openInNewTab: "Preview in new tab",
 } as const
-
-// Phase 4: Workspace Features
-export const recentFiles = {
-    title: "Recent Files",
-    empty: "No recent files",
-    emptyHint: "Files you open will appear here",
-    remove: "Remove from recent",
-    confirmClear: "Are you sure you want to clear all recent files?",
-    count: "{count} recent files",
-} as const

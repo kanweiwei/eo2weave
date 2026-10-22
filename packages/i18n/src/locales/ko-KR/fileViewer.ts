@@ -68,13 +68,3 @@ export const officePreview = {
     retry: "재시도",
     openInNewTab: "새 탭에서 미리보기",
 } as const
-
-// 최근 파일
-export const recentFiles = {
-    title: "최근 파일",
-    empty: "최근 파일 없음",
-    emptyHint: "연 파일이 여기에 표시됩니다",
-    remove: "최근에서 제거",
-    confirmClear: "모든 최근 파일을 지우시겠습니까?",
-    count: "{count}개 최근 파일",
-} as const

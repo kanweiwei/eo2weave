@@ -5,14 +5,13 @@
  * - Layout preferences (panel sizes, reset to defaults)
  * - Display settings (theme, font size)
  * - Keyboard shortcuts customization
- * - Data management (clear recent files, reset workspace)
+ * - Data management (reset workspace)
  * - Persist all settings
  */
 
 import { useState, useCallback } from 'react'
 import {
   RotateCcw,
-  Trash2,
   Keyboard,
   X,
   AlertTriangle,
@@ -74,8 +73,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange }: WorkspaceSetting
     setShowLineNumbers,
     setWordWrap,
     setShowMiniMap,
-    clearRecentFiles,
-    recentFiles,
   } = useWorkspacePreferencesStore()
 
   const { setTheme, mode } = useTheme()
@@ -89,12 +86,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange }: WorkspaceSetting
   const handleResetAll = () => {
     if (confirm(t('workspaceSettings.data.resetAllConfirm'))) {
       resetToDefaults()
-    }
-  }
-
-  const handleClearRecentFiles = () => {
-    if (confirm(t('workspaceSettings.data.clearRecentConfirm'))) {
-      clearRecentFiles()
     }
   }
 
@@ -396,27 +387,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange }: WorkspaceSetting
                   </div>
 
                   <div className="space-y-4">
-                    <div className="border-subtle flex items-center justify-between rounded-md border px-4 py-3">
-                      <div>
-                        <div className="text-sm font-medium text-secondary dark:text-foreground">
-                          {t('workspaceSettings.data.recentFilesTitle')}
-                        </div>
-                        <div className="text-xs text-tertiary dark:text-muted">
-                          {t('workspaceSettings.data.recentFilesCount', {
-                            count: recentFiles.length,
-                          })}
-                        </div>
-                      </div>
-                      <BrandButton
-                        variant="outline"
-                        onClick={handleClearRecentFiles}
-                        disabled={recentFiles.length === 0}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        {t('workspaceSettings.data.clear')}
-                      </BrandButton>
-                    </div>
-
                     <div className="flex items-start gap-3 rounded-md border border-warning bg-warning-50 p-4 dark:border-warning dark:bg-warning-bg">
                       <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning dark:text-warning-200" />
                       <div>

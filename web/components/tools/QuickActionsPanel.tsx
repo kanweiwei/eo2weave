@@ -4,7 +4,6 @@
  * Provides quick access to common operations, categorized by scenario.
  * Features:
  * - Quick command templates
- * - Recently used files
  * - Quick code execution
  * - Collapsible/expandable
  */
@@ -20,7 +19,6 @@ import {
   Zap,
   Terminal,
   FolderOpen,
-  Clock,
   Sparkles,
   TrendingUp,
 } from 'lucide-react'
@@ -149,7 +147,6 @@ export function QuickActionsPanel({
   const t = useT()
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<ActionCategory>('all')
-  const [recentFiles, setRecentFiles] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<'actions' | 'smart' | 'upload'>(
     controlledTab || 'actions'
   )
@@ -172,18 +169,6 @@ export function QuickActionsPanel({
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const maxTokens = useSettingsStore((s) => s.maxTokens)
-
-  // Load recent files from localStorage
-  useState(() => {
-    try {
-      const stored = localStorage.getItem('recent-files')
-      if (stored) {
-        setRecentFiles(JSON.parse(stored).slice(0, 5))
-      }
-    } catch {
-      // Ignore
-    }
-  })
 
   // Load smart suggestions
   useEffect(() => {
@@ -426,26 +411,6 @@ export function QuickActionsPanel({
                   )
                 })}
               </div>
-
-              {/* Recent Files */}
-              {recentFiles.length > 0 && (
-                <div className="mt-6">
-                  <h3 className="mb-3 text-xs font-medium uppercase tracking-wide text-tertiary dark:text-muted">
-                    {t('tools.recentFiles')}
-                  </h3>
-                  <div className="space-y-1">
-                    {recentFiles.map((file, idx) => (
-                      <button
-                        key={idx}
-                        className="group flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-muted dark:hover:bg-muted"
-                      >
-                        <Clock className="h-4 w-4 text-tertiary group-hover:text-secondary" />
-                        <span className="truncate text-sm text-secondary dark:text-muted">{file}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
