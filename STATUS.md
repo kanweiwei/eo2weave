@@ -109,6 +109,24 @@
 > through the skill manager) and don't mock `writeUserSkillMd`. Pre-existing
 > since the skills OPFS migration; not part of this pass.
 
+### Fixed 2026-10-22
+- [x] **`sync-to-opfs` exempted from the Plan-mode gate** — reclassified
+      `write` → `read` in `agent-mode.ts` with a planModeDescription limiting
+      writes to the OPFS `files/` cache. The tool copies disk → OPFS, never
+      overwrites an existing OPFS file, never registers a pending change and
+      never writes to the real disk, so Plan mode can pull workspace files
+      into OPFS before `run_python` without a mode switch (same precedent as
+      generate_image). Pinned by
+      `agent/__tests__/agent-mode.sync-opfs.test.ts`.
+- [x] **Plan-mode Python output policy** — Plan mode now treats
+      `/mnt_assets/` as the only allowed Python output location. The plan-mode
+      system prompt and the `run_python` tool description both instruct the
+      agent to copy a workspace file into the assets sandbox
+      (`shutil.copy2('/mnt/{rootName}/f', '/mnt_assets/f')`) and run all reads,
+      writes and code execution on that copy, overriding the base prompt's
+      output-path policy. Files written to `/mnt_assets/` are synced back to
+      the assets directory, so the user can still open or download them.
+
 ---
 
 ## 4. References
