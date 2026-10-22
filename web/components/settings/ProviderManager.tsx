@@ -1226,7 +1226,14 @@ export function LLMGatewayCard({
   // long enough to look logged-in even after the gateway session died. The
   // auth layer records the real state, so drive the badge from it and offer
   // a re-login instead of pushing the user to log out.
-  const sessionExpired = modelCredentialStatus === 'expired'
+  //
+  // A "missing" status while the api-key row still exists is contradictory:
+  // the auth layer found no usable token while the card found a stored key.
+  // That is a dead session whose credentials were purged (the key may even
+  // have been deleted when the session expired), so treat it as expired too.
+  const sessionExpired =
+    modelCredentialStatus === 'expired' ||
+    (modelCredentialStatus === 'missing' && isLoggedIn)
 
   // While the Device Code Flow is running (or just finished / failed) the
   // auth panel takes over the card body — this is also how a re-login for an
@@ -1374,6 +1381,11 @@ export function LLMGatewayCard({
   }, [triggerProviderRefresh, t])
 
   const handleLogout = useCallback(async () => {
+    // Drop the local flag FIRST: logoutGatewayAuth() records the credential
+    // status as "missing", and a missing status next to a still-present
+    // api-key row reads as a dead session — an explicit logout must not
+    // flash the "login expired" re-login state.
+    setIsLoggedIn(false)
     const { deleteApiKey } = await import('@/security/api-key-store')
     const keyId = getLLMGatewayApiKeyProviderKey()
     logoutGatewayAuth()
@@ -1383,7 +1395,6 @@ export function LLMGatewayCard({
     if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
       useSettingsStore.getState().setHasApiKey(false)
     }
-    setIsLoggedIn(false)
     setAllModels([])
     setAuthState({ status: 'idle' })
     // An explicit logout is not an expiry — record it so the UI shows the

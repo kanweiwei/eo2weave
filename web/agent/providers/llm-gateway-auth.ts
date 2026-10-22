@@ -278,11 +278,41 @@ function clearStoredTokens(): void {
   })()
 }
 
+/**
+ * Detect (and purge) a stale access_token shadow left behind in the
+ * api-key-store.
+ *
+ * The shadow (LLM_GATEWAY_API_KEY_ID) is written on every successful login
+ * and is the key the settings card's "Logged in" badge is derived from. When
+ * a session dies, the token pair is purged — but the shadow can survive
+ * (e.g. only the localStorage copy was lost, or purging one key failed).
+ * The card would then show "Logged in" + "Log out" while every gateway call
+ * reports "not logged in" (user-reported bug).
+ *
+ * Returns true when a shadow was found — i.e. the user HAD logged in and the
+ * session died ('expired') — and false when there was never a session
+ * ('missing').
+ */
+async function purgeStaleAccessTokenShadow(): Promise<boolean> {
+  try {
+    const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
+    const shadow = await loadApiKey(LLM_GATEWAY_API_KEY_ID)
+    if (!shadow) return false
+    await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
+    return true
+  } catch (e) {
+    // Diagnostic log on purpose — a silent failure here would keep the
+    // "logged-in badge on a dead session" state with no way to debug.
+    console.warn('[llm-gateway] failed to inspect the access_token shadow:', e)
+    return false
+  }
+}
+
 //
-// NOTE: there is deliberately no separate "clear api-key shadow" helper.
-// clearStoredTokens() purges both SQLite keys (refresh-token backup + the
-// access_token shadow) through a single dynamic import — see the comment
-// inside it.
+// NOTE: clearStoredTokens() purges both SQLite keys (refresh-token backup +
+// the access_token shadow) through a single dynamic import — see the comment
+// inside it. purgeStaleAccessTokenShadow() is the narrow counterpart for the
+// case where the token pair is ALREADY gone but the shadow survived.
 //
 // ── API Calls ──
 
@@ -574,7 +604,13 @@ export async function forceRefreshAccessToken(
   const stored = await loadStoredTokensWithFallback()
   if (!stored) {
     console.warn('[llm-gateway] forceRefresh: no stored tokens (localStorage + SQLite both empty)')
-    setCredentialStatus('missing')
+    // The token pair is gone, but the api-key-store may still hold the
+    // access_token shadow of an earlier session. That means the session DIED
+    // (the user had logged in), not that they never logged in — report
+    // 'expired' and purge the shadow so the settings card offers a re-login
+    // instead of a logout.
+    const hadSession = await purgeStaleAccessTokenShadow()
+    setCredentialStatus(hadSession ? 'expired' : 'missing')
     return null
   }
 
@@ -637,7 +673,13 @@ export async function getValidAccessToken(
   // when localStorage has been cleared
   const stored = await loadStoredTokensWithFallback()
   if (!stored) {
-    setCredentialStatus('missing')
+    // The token pair is gone, but the api-key-store may still hold the
+    // access_token shadow of an earlier session. That means the session DIED
+    // (the user had logged in), not that they never logged in — report
+    // 'expired' and purge the shadow so the settings card offers a re-login
+    // instead of a logout.
+    const hadSession = await purgeStaleAccessTokenShadow()
+    setCredentialStatus(hadSession ? 'expired' : 'missing')
     return null
   }
 

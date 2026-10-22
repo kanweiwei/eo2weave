@@ -110,6 +110,19 @@
 > since the skills OPFS migration; not part of this pass.
 
 ### Fixed 2026-10-22
+- [x] **Nutstore AI card: expired session no longer offers "Log out"** — the card
+      derived its "Logged in" badge from the api-key-store shadow alone, so a
+      dead session still showed a green badge with "Refresh" + "Log out" while
+      the gateway answered "Not logged in" (the user then had to log out before
+      they could log in again). Two fixes: (1) `llm-gateway-auth.ts` — when no
+      token pair is stored but the access_token shadow survives, the session
+      DIED (not "never logged in"): the shadow is purged and the credential
+      status is recorded as `expired`, so the gateway error reads "login
+      expired" instead of "not logged in"; (2) `ProviderManager.tsx` — the
+      card treats "no credential" + "key row present" as an expired session,
+      showing the amber "Login expired" badge and a single "Log in again"
+      button (no "Refresh", no "Log out"). Explicit logout still shows the
+      logged-out state.
 - [x] **`sync-to-opfs` exempted from the Plan-mode gate** — reclassified
       `write` → `read` in `agent-mode.ts` with a planModeDescription limiting
       writes to the OPFS `files/` cache. The tool copies disk → OPFS, never

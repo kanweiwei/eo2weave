@@ -20,10 +20,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // touches the real SQLite-backed api-key store. (No provider-module mock
 // needed: LLM_GATEWAY_API_KEY_ID now lives in llm-gateway-auth itself.)
 const deleteApiKeyMock = vi.hoisted(() => vi.fn<(provider: string) => Promise<void>>())
+const loadApiKeyMock = vi.hoisted(() =>
+  vi.fn<(provider: string) => Promise<string | null>>(async () => null)
+)
 
 vi.mock('@/security/api-key-store', () => ({
   saveApiKey: vi.fn(async () => {}),
-  loadApiKey: vi.fn(async () => null),
+  loadApiKey: loadApiKeyMock,
   deleteApiKey: (...args: unknown[]) => deleteApiKeyMock(...(args as [string])),
 }))
 
@@ -65,6 +68,8 @@ describe('llm-gateway-auth dead-session cleanup', () => {
     localStorage.clear()
     deleteApiKeyMock.mockReset()
     deleteApiKeyMock.mockResolvedValue(undefined)
+    loadApiKeyMock.mockReset()
+    loadApiKeyMock.mockResolvedValue(null)
   })
 
   /** Flush fire-and-forget dynamic-import chains before assertions. */
@@ -175,6 +180,49 @@ describe('llm-gateway-auth dead-session cleanup', () => {
       const token = await getValidAccessToken(BASE_URL, CLIENT_ID)
 
       expect(token).toBe('fresh-access-token')
+      expect(deleteApiKeyMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('stale access_token shadow without a token pair', () => {
+    /**
+     * The token pair (localStorage + SQLite refresh backup) is gone but the
+     * api-key-store still holds the access_token shadow of an earlier login.
+     * That is a session that DIED, not a user who never logged in: the
+     * settings card must offer a re-login instead of a logout, and the
+     * gateway error must say "login expired" rather than "not logged in".
+     */
+    function seedShadowOnly(): void {
+      loadApiKeyMock.mockImplementation(async (provider: string) =>
+        provider === '__llm_gateway_token__' ? 'stale-access-token' : null
+      )
+    }
+
+    it('reports "expired" and purges the shadow in getValidAccessToken', async () => {
+      seedShadowOnly()
+
+      const token = await getValidAccessToken(BASE_URL, CLIENT_ID)
+
+      expect(token).toBeNull()
+      expect(getGatewayCredentialStatus()).toBe('expired')
+      expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
+    })
+
+    it('reports "expired" and purges the shadow in forceRefreshAccessToken', async () => {
+      seedShadowOnly()
+
+      const token = await forceRefreshAccessToken(BASE_URL, CLIENT_ID)
+
+      expect(token).toBeNull()
+      expect(getGatewayCredentialStatus()).toBe('expired')
+      expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
+    })
+
+    it('still reports "missing" when there is no shadow either (never logged in)', async () => {
+      const token = await getValidAccessToken(BASE_URL, CLIENT_ID)
+
+      expect(token).toBeNull()
+      expect(getGatewayCredentialStatus()).toBe('missing')
       expect(deleteApiKeyMock).not.toHaveBeenCalled()
     })
   })

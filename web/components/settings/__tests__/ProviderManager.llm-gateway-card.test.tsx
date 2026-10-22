@@ -157,6 +157,25 @@ describe('LLMGatewayCard credential state', () => {
     expect(screen.queryByRole('button', { name: 'Log in again' })).toBeNull()
   })
 
+  it('offers a re-login when the auth layer reports no credential while a key row survives', async () => {
+    // The token pair was purged when the session expired but the api-key row
+    // survived — the card must treat this as a dead session, not as a live
+    // login (no "Log out" — there is nothing left to log out of).
+    settingsState.modelCredentialStatus = 'missing'
+    apiKeyState.key = 'stale-access-token'
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Login expired')).toBeTruthy()
+    })
+    await waitForLoggedInPanel()
+    expect(screen.getByRole('button', { name: 'Log in again' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Log out' })).toBeNull()
+    expect(screen.queryByText('Logged in')).toBeNull()
+  })
+
   it('runs the device code flow when the user asks to log in again', async () => {
     settingsState.modelCredentialStatus = 'expired'
     // The flow stays pending — the card must show the user code meanwhile.
