@@ -5,7 +5,7 @@
  * Other fields auto-filled with defaults.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   X, Eye, Save, FileCode, Lock,
 } from 'lucide-react'
@@ -18,9 +18,9 @@ import {
   BrandButton,
 } from '@creatorweave/ui'
 import { Input } from '@/components/ui/input'
+import { TextareaWithLines } from '@/components/ui/TextareaWithLines'
 import type { SkillMetadata } from '@/skills/skill-types'
 import { useSkillsStore } from '@/store/skills.store'
-import { cn } from '@/lib/utils'
 import { useT } from '@/i18n'
 
 // ============================================================================
@@ -270,82 +270,6 @@ export function SkillEditor({ skill, open, onClose, readOnly = false }: SkillEdi
         </div>
       </BrandDialogContent>
     </BrandDialog>
-  )
-}
-
-// ============================================================================
-// TextareaWithLines - Enhanced textarea with line numbers
-// ============================================================================
-
-function TextareaWithLines({
-  value, onChange, placeholder, rows,
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
-  placeholder?: string
-  rows?: number
-  className?: string
-}) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const lineNumbersRef = useRef<HTMLDivElement>(null)
-
-  const lineCount = value ? value.split('\n').length : 1
-  const displayLines = Math.max(lineCount, rows || 1)
-
-  const handleScroll = useCallback(() => {
-    if (textareaRef.current && lineNumbersRef.current) {
-      lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop
-    }
-  }, [])
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const textarea = e.currentTarget
-      const start = textarea.selectionStart
-      const end = textarea.selectionEnd
-      const newValue = value.substring(0, start) + '  ' + value.substring(end)
-      const syntheticEvent = {
-        target: { value: newValue, selectionStart: start + 2, selectionEnd: start + 2 },
-      } as React.ChangeEvent<HTMLTextAreaElement>
-      onChange(syntheticEvent)
-      requestAnimationFrame(() => {
-        textarea.selectionStart = start + 2
-        textarea.selectionEnd = start + 2
-      })
-    }
-  }, [value, onChange])
-
-  return (
-    <div className="flex overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-600">
-      {/* Line numbers */}
-      <div
-        ref={lineNumbersRef}
-        className="flex shrink-0 select-none flex-col items-end overflow-hidden bg-neutral-50 px-2 py-3 text-right font-mono text-xs leading-[1.625rem] dark:bg-neutral-800 text-neutral-600 text-neutral-600 dark:text-neutral-600"
-        aria-hidden="true"
-      >
-        {Array.from({ length: displayLines }, (_, i) => (
-          <span key={i} className="block h-[1.625rem] leading-[1.625rem]">
-            {i + 1}
-          </span>
-        ))}
-      </div>
-      {/* Textarea */}
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={onChange}
-        onKeyDown={handleKeyDown}
-        onScroll={handleScroll}
-        placeholder={placeholder}
-        rows={rows}
-        className={cn(
-          'flex-1 resize-none bg-white px-4 py-3 font-mono text-sm leading-[1.625rem] dark:bg-neutral-900 dark:text-foreground',
-          'placeholder:text-neutral-400 dark:placeholder:text-neutral-500',
-          'focus:outline-none'
-        )}
-      />
-    </div>
   )
 }
 

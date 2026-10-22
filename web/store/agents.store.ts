@@ -10,6 +10,19 @@ import { toast } from 'sonner'
 import { ProjectManager, type AgentMeta, type AgentInfo } from '@/opfs'
 import { useProjectStore } from './project.store'
 
+/**
+ * Agent 档案文件的读取结果
+ */
+export interface AgentFiles {
+  soul: string
+  identity: string
+  agents: string
+  user: string
+  memory: string
+  /** 日记日期列表，倒序（最新的在前） */
+  diaries: string[]
+}
+
 interface AgentsState {
   // 当前活跃的 agent
   activeAgentId: string | null
@@ -25,6 +38,9 @@ interface AgentsState {
 
   // ProjectManager 实例 (由外部注入)
   projectManager: ProjectManager | null
+
+  // agent 写文件后的通知计数 —— 供打开中的 Agent 档案面板感知变更并刷新
+  agentsRevision: number
 
   // Actions
   setProjectManager: (pm: ProjectManager) => void
@@ -42,6 +58,16 @@ interface AgentsState {
     file: 'soul' | 'identity' | 'agents' | 'user' | 'memory',
     content: string
   ) => Promise<boolean>
+
+  // Agent 档案读取
+  readAgentFiles: (agentId: string) => Promise<AgentFiles | null>
+  readAgentDiary: (agentId: string, date: string) => Promise<string | null>
+
+  // Agent 档案写入（按日期的日记）
+  updateAgentDiary: (agentId: string, date: string, content: string) => Promise<boolean>
+
+  // 通知 agent 档案面板 agent 文件已变更
+  bumpAgentsRevision: () => void
 
   // 日记
   appendTodayLog: (agentId: string, content: string) => Promise<boolean>
@@ -61,6 +87,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
     isInitialized: false,
     error: null,
     projectManager: null,
+    agentsRevision: 0,
 
     setProjectManager: (pm) => {
       set({ projectManager: pm })
@@ -318,6 +345,82 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         return true
       } catch (e) {
         console.error('[AgentsStore] updateAgentFile failed:', e)
+        return false
+      }
+    },
+
+    readAgentFiles: async (agentId) => {
+      const { projectManager } = get()
+      if (!projectManager) return null
+
+      try {
+        const currentProjectId = useProjectStore.getState().activeProjectId
+        if (!currentProjectId) return null
+
+        const project = await projectManager.getProject(currentProjectId)
+        if (!project) return null
+
+        const am = project.agentManager
+        const [soul, identity, agents, user, memory, diaries] = await Promise.all([
+          am.readSoul(agentId),
+          am.readIdentity(agentId),
+          am.readAgents(agentId),
+          am.readUser(agentId),
+          am.readMemory(agentId),
+          am.listDiaries(agentId),
+        ])
+
+        return {
+          soul: soul ?? '',
+          identity: identity ?? '',
+          agents: agents ?? '',
+          user: user ?? '',
+          memory: memory ?? '',
+          diaries,
+        }
+      } catch (e) {
+        console.error('[AgentsStore] readAgentFiles failed:', e)
+        return null
+      }
+    },
+
+    readAgentDiary: async (agentId, date) => {
+      const { projectManager } = get()
+      if (!projectManager) return null
+
+      try {
+        const currentProjectId = useProjectStore.getState().activeProjectId
+        if (!currentProjectId) return null
+
+        const project = await projectManager.getProject(currentProjectId)
+        if (!project) return null
+
+        return await project.agentManager.readPath(agentId, `memory/${date}.md`)
+      } catch (e) {
+        console.error('[AgentsStore] readAgentDiary failed:', e)
+        return null
+      }
+    },
+
+    bumpAgentsRevision: () => {
+      set((state) => ({ agentsRevision: state.agentsRevision + 1 }))
+    },
+
+    updateAgentDiary: async (agentId, date, content) => {
+      const { projectManager } = get()
+      if (!projectManager) return false
+
+      try {
+        const currentProjectId = useProjectStore.getState().activeProjectId
+        if (!currentProjectId) return false
+
+        const project = await projectManager.getProject(currentProjectId)
+        if (!project) return false
+
+        await project.agentManager.writePath(agentId, `memory/${date}.md`, content)
+        return true
+      } catch (e) {
+        console.error('[AgentsStore] updateAgentDiary failed:', e)
         return false
       }
     },

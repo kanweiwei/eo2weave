@@ -1,0 +1,21 @@
+// Agent Profile Panel
+export const agentProfile = {
+    title: "Agent Profile",
+    editProfile: "Edit Profile",
+    switchAgent: "Switch agent",
+    soul: "Personality",
+    identity: "Identity",
+    agents: "Working Rules",
+    user: "About You",
+    memory: "Long-term Memory",
+    diary: "Diary",
+    save: "Save",
+    saved: "Saved",
+    saving: "Saving...",
+    edit: "Edit",
+    preview: "Preview",
+    loadFailed: "Failed to load agent profile",
+    retry: "Retry",
+    noDiaries: "No diary entries yet",
+    emptyContent: "This file is empty",
+} as const

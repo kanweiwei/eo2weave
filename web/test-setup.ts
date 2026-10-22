@@ -87,6 +87,24 @@ if (
   }
 }
 
+// Pointer capture polyfill for happy-dom.
+//
+// Radix UI primitives (Select, DropdownMenu, Popover) call
+// `hasPointerCapture` on the pointer event target while handling an
+// interaction. happy-dom does not implement the Pointer Events capture API,
+// so opening a Radix dropdown throws
+// "target.hasPointerCapture is not a function". Stub the three capture
+// methods as no-ops so those interactions stay testable. On environments
+// that already implement them (jsdom, real browsers) this is a no-op.
+if (typeof Element !== 'undefined') {
+  const elementProto = Element.prototype as any
+  if (typeof elementProto.hasPointerCapture !== 'function') {
+    elementProto.hasPointerCapture = () => false
+    elementProto.setPointerCapture = () => {}
+    elementProto.releasePointerCapture = () => {}
+  }
+}
+
 // Mock URL.createObjectURL and revokeObjectURL
 global.URL.createObjectURL = vi.fn(() => 'blob:mock-url')
 global.URL.revokeObjectURL = vi.fn()

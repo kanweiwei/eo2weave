@@ -4,8 +4,9 @@
 
 import { createPortal } from 'react-dom'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Info, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, Info, Pencil, Trash2 } from 'lucide-react'
 import { useT } from '@/i18n'
+import { useAgentProfileStore } from '@/store/agent-profile.store'
 import type { AgentMeta } from '@/opfs'
 
 interface AgentDropdownProps {
@@ -22,6 +23,7 @@ export function AgentDropdown({
   deleteAgent,
 }: AgentDropdownProps) {
   const t = useT()
+  const openProfile = useAgentProfileStore((s) => s.open)
   const [isOpen, setIsOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -145,6 +147,22 @@ export function AgentDropdown({
                 </div>
               )
             })}
+          </div>
+
+          {/* Edit agent profile */}
+          <div className="border-t border-neutral-100 dark:border-neutral-800">
+            <button
+              type="button"
+              data-testid="agent-dropdown-edit-profile"
+              onClick={() => {
+                openProfile(activeAgentId || 'default')
+                setIsOpen(false)
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-xs text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              <Pencil className="h-3 w-3" />
+              {t('agentProfile.editProfile')}
+            </button>
           </div>
 
           {/* Guide hint — only show when there is just the default agent */}

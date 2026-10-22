@@ -331,6 +331,29 @@ export class AgentManager {
   // ==================== 日记记忆 ====================
 
   /**
+   * 列出 Agent 的日记日期（倒序，最新的在前）
+   *
+   * @returns 日期字符串数组，如 ['2026-10-22', '2026-10-21']
+   */
+  async listDiaries(id: string): Promise<string[]> {
+    const dates: string[] = []
+
+    try {
+      const agentDir = await this.agentsDir.getDirectoryHandle(id)
+      const memoryDir = await agentDir.getDirectoryHandle(MEMORY_DIR)
+      for await (const [name, handle] of memoryDir.entries()) {
+        if (handle.kind === 'file' && name.endsWith('.md')) {
+          dates.push(name.replace(/\.md$/, ''))
+        }
+      }
+    } catch {
+      // 目录或 agent 不存在
+    }
+
+    return dates.sort().reverse()
+  }
+
+  /**
    * 获取今日日记路径
    */
   private getTodayLogPath(): string {
