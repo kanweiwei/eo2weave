@@ -1250,8 +1250,8 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
         {/* Toolbar row — persistent affordances: attach · screenshot · @ · /
             on the left, send/stop on the right. */}
         <TooltipProvider delayDuration={250}>
-        <div className="flex items-center justify-between border-t border-neutral-100 px-1.5 py-1 dark:border-neutral-800">
-          <div className="flex items-center gap-0.5">
+        <div className="flex min-w-0 items-center justify-between border-t border-neutral-100 px-1.5 py-1 dark:border-neutral-800">
+          <div className="flex shrink-0 items-center gap-0.5">
             {/* Upload attachment button */}
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1338,9 +1338,9 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
             </Tooltip>
           </div>
           {sendState && (
-            <div className="flex min-w-0 items-center gap-1 pr-1">
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-1 pr-1">
               {beforeSendAccessory && (
-                <div className="min-w-0 shrink flex items-center gap-1">
+                <div className="flex min-w-0 flex-1 items-center gap-1">
                   {beforeSendAccessory}
                 </div>
               )}

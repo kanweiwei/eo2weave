@@ -23,7 +23,7 @@ interface FlatModel {
 }
 
 interface ModelQuickSwitchProps {
-  /** Use the narrower trigger sizing when rendered beside the send button. */
+  /** Show the thinking level beside the model when rendered in the composer toolbar. */
   compact?: boolean
   enableThinking?: boolean
   thinkingLevel?: ExtendedThinkingLevel
@@ -277,7 +277,7 @@ export function ModelQuickSwitch({
       <PopoverTrigger asChild>
         <BrandButton
           variant="ghost"
-          className={`h-7 min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs ${compact ? 'w-[132px] max-w-[132px]' : 'w-full max-w-[280px]'}`}
+          className="h-7 w-fit max-w-full min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs"
         >
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="min-w-0 truncate text-secondary" title={currentModelLabel}>
