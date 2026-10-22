@@ -94,7 +94,57 @@ async function tick(): Promise<void> {
     // If next run is in the future, skip
     if (nextRun > now) continue
 
-    // Due! Enqueue a run
+    // ── Missed-run handling ────────────────────────────────────────────
+    // The scheduled time is in the past. Distinguish "genuinely due right
+    // now" (page was open, the 60s tick caught it within one interval) from
+    // "missed while the page was closed" (the scheduled time is more than
+    // one interval old). Missed runs are NOT auto-executed: the user may
+    // not want N merged catch-up runs, so we count what was missed, notify,
+    // advance lastRunAt past the missed window, and let the user trigger
+    // the run manually via Run Now if they still want it.
+    const scheduledTime = nextRun
+    const followingRun = getNextRunTime(schedule.schedule.expression, scheduledTime)
+    const intervalMs = followingRun !== null ? followingRun - scheduledTime : 0
+    const isMissed = intervalMs > 0 && now - scheduledTime > intervalMs
+
+    if (isMissed) {
+      // Count occurrences between scheduledTime and now (capped for safety)
+      let missedCount = 1
+      let cursor = scheduledTime
+      while (missedCount < 50) {
+        const next = getNextRunTime(schedule.schedule.expression, cursor)
+        if (next === null || next > now) break
+        missedCount++
+        cursor = next
+      }
+
+      console.info(
+        `[ScheduleHeartbeat] Schedule "${schedule.name}" (${schedule.id}) MISSED ${missedCount} ` +
+          `occurrence(s) while the page was closed — notifying instead of auto-running`
+      )
+
+      // Advance lastRunAt past the missed window so this doesn't re-trigger
+      // on every tick. The run itself is left to the user (Run Now).
+      const updated = {
+        ...schedule,
+        lastRunAt: now,
+        error: `MISSED_RUNS:${missedCount}`,
+        updatedAt: now,
+      }
+      try {
+        const { saveSchedule, showScheduleNotification } = await import('@/services/schedule-storage')
+        await saveSchedule(updated)
+        showScheduleNotification(
+          `⏰ 定时任务错过执行：${schedule.name}`,
+          `页面关闭期间错过了 ${missedCount} 次计划运行。如需执行，请在任务列表中手动运行。`
+        )
+      } catch (err) {
+        console.warn('[ScheduleHeartbeat] Failed to record missed-run state:', err)
+      }
+      continue
+    }
+
+    // Genuinely due (tick caught it within one interval) — enqueue a run
     console.info(`[ScheduleHeartbeat] Schedule "${schedule.name}" (${schedule.id}) is due, enqueuing run`)
     runningSchedules.add(schedule.id)
 
