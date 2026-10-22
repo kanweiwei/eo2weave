@@ -1373,6 +1373,28 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         )
       }
 
+      // Cascade: delete scheduled tasks bound to this conversation. Schedules
+      // live in a global OPFS namespace (schedules/{id}.json), so they would
+      // otherwise keep firing against a dead conversation. Best-effort — a
+      // failed cascade leaves the schedule, which the runner's orphan check
+      // (CONV_DELETED) disables on its next tick as a fallback.
+      try {
+        const { getSchedulesForWorkspace, deleteSchedule } = await import(
+          '@/services/schedule-storage'
+        )
+        const bound = await getSchedulesForWorkspace(id)
+        for (const schedule of bound) {
+          await deleteSchedule(schedule.id)
+        }
+        if (bound.length > 0) {
+          const { useScheduleStore } = await import('@/store/schedule.store')
+          useScheduleStore.getState().refresh()
+          console.log(`[conversation.store] Cascade-deleted ${bound.length} schedule(s) for deleted conversation ${id}`)
+        }
+      } catch (error) {
+        console.warn('[conversation.store] Schedule cascade delete failed (non-fatal):', error)
+      }
+
       // If the conversation record itself could not be deleted from the DB,
       // keep the in-memory state in sync with the DB and surface the error.
       if (convDeleteResult.status === 'rejected') {
