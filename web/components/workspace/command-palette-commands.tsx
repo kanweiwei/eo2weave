@@ -91,15 +91,6 @@ export function buildEnhancedCommands(
       keywords: ['open', 'file', 'browse', 'select'],
       handler: handlers.onOpenFile,
     },
-    {
-      id: 'recent-files',
-      label: 'Recent Files',
-      description: 'View recently accessed files',
-      category: COMMAND_CATEGORIES.FILES,
-      icon: <History className="h-4 w-4" />,
-      keywords: ['recent', 'history', 'accessed'],
-      handler: handlers.onShowRecentFiles,
-    },
 
     // ========== View ==========
     {
@@ -216,7 +207,6 @@ export interface CommandHandlers {
 
   // Files
   onOpenFile: () => void
-  onShowRecentFiles: () => void
 
   // View
   onToggleSidebar: () => void
@@ -241,7 +231,6 @@ export function createDefaultHandlers(overrides: Partial<CommandHandlers> = {}):
     onNewConversation: () => console.log('[CommandPalette] New conversation'),
     onContinueLast: () => console.log('[CommandPalette] Continue last conversation'),
     onOpenFile: () => console.log('[CommandPalette] Open file dialog'),
-    onShowRecentFiles: () => console.log('[CommandPalette] Show recent files'),
     onToggleSidebar: () => console.log('[CommandPalette] Toggle sidebar'),
     onToggleTheme: () => console.log('[CommandPalette] Toggle theme'),
     onOpenSkills: () => console.log('[CommandPalette] Open skills manager'),

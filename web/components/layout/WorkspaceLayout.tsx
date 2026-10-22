@@ -47,7 +47,6 @@ import { useSkillsStore } from '@/store/skills.store'
 import {
   CommandPalette,
   KeyboardShortcutsHelp,
-  RecentFilesPanel,
   GoToFileDialog,
   buildEnhancedCommands,
   type Command,
@@ -191,7 +190,6 @@ export function WorkspaceLayout({
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false)
   const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('workspace-layout')
-  const [showRecentFiles, setShowRecentFiles] = useState(false)
   const [showMcpSettings, setShowMcpSettings] = useState(false)
   const [showGoToFile, setShowGoToFile] = useState(false)
   // React to "open in preview" requests from sidebar/list rows
@@ -378,7 +376,6 @@ export function WorkspaceLayout({
     onOpenFile: () => {
       setShowGoToFile(true)
     },
-    onShowRecentFiles: () => setShowRecentFiles(true),
 
     // View
     onToggleSidebar: () => setSidebarCollapsed(!panelState.sidebarCollapsed),
@@ -593,8 +590,6 @@ export function WorkspaceLayout({
           setShowShortcutsHelp(false)
         } else if (showWorkspaceSettings) {
           setShowWorkspaceSettings(false)
-        } else if (showRecentFiles) {
-          setShowRecentFiles(false)
         } else if (quickActionsOpen) {
           setQuickActionsOpen(false)
         } else if (toolsPanelOpen) {
@@ -613,7 +608,6 @@ export function WorkspaceLayout({
     showGoToFile,
     showShortcutsHelp,
     showWorkspaceSettings,
-    showRecentFiles,
     quickActionsOpen,
     toolsPanelOpen,
     skillsManagerOpen,
@@ -1077,25 +1071,6 @@ export function WorkspaceLayout({
         onOpenChange={() => setShowWorkspaceSettings(false)}
         initialTab={settingsInitialTab}
       />
-
-      {/* Phase 4: Recent Files Panel */}
-      {showRecentFiles && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setShowRecentFiles(false)}
-        >
-          <div className="h-[60vh] w-[400px]" onClick={(e) => e.stopPropagation()}>
-            <RecentFilesPanel
-              onFileSelect={(path) => {
-                setShowRecentFiles(false)
-                // Find and select file — CSS.escape prevents injection via path
-                const file = document.querySelector(`[data-file-path="${CSS.escape(path)}"]`) as HTMLElement
-                file?.click()
-              }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Export Panel */}
       {isExportOpen && (
