@@ -51,10 +51,8 @@ export const DEFAULT_PINNED_MODELS: Partial<Record<string, readonly string[]>> =
 
   // ── Dynamic providers ──
   // Nutstore AI (坚果云 AI) gateway — catalog comes from GET /v1/models;
-  // DeepSeek-V4.1-Flash-1017 is the curated value default (exact served id —
-  // the 1017 suffix is a release tag, not a YYYYMMDD date, so the
-  // dated-suffix match rule does not apply; keep the id exact).
-  'llm-gateway': ['DeepSeek-V4.1-Flash-1017'],
+  // deepseek-v4.1-flash is the curated value default.
+  'llm-gateway': ['deepseek-v4.1-flash'],
 }
 
 /**
