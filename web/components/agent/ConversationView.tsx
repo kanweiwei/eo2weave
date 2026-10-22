@@ -502,7 +502,7 @@ export function ConversationView({
                   />
                 )}
                 beforeSendAccessory={(
-                  <div className="flex min-w-0 items-center gap-1">
+                  <div className="flex w-full min-w-0 items-center gap-1">
                     {hasImageModels && <ImageGenDropdown compact />}
                     <ModelThinkingControls
                       enableThinking={enableThinking}

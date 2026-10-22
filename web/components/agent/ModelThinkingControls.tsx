@@ -16,7 +16,7 @@ export function ModelThinkingControls({
   setThinkingLevel,
 }: ModelThinkingControlsProps) {
   return (
-    <div className="flex min-w-0 shrink items-center">
+    <div className="flex min-w-0 w-full items-center justify-end">
       <ModelQuickSwitch
         compact
         enableThinking={enableThinking}
