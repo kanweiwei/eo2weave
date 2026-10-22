@@ -566,13 +566,6 @@ export const settings = {
       hint: "APIキーを保存すると残高を確認できます",
     },
 
-    imageGen: {
-      aspectRatio: "アスペクト比",
-      arHint: "--ar 16:9 で一時指定も可能",
-      searchModel: "モデルを検索...",
-      noModelFound: "一致するモデルがありません",
-    },
-
     notifications: {
       title: "通知",
       description: "エージェントループ完了時のシステム通知。",

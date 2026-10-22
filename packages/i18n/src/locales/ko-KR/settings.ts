@@ -559,13 +559,6 @@ export const settings = {
       hint: "API 키를 저장하면 계정 잔액을 확인할 수 있습니다",
     },
 
-    imageGen: {
-      aspectRatio: "가로세로 비율",
-      arHint: "--ar 16:9로 임시 지정 가능",
-      searchModel: "모델 검색...",
-      noModelFound: "일치하는 모델이 없습니다",
-    },
-
     notifications: {
       title: "알림",
       description: "에이전트 루프 완료 시 시스템 알림.",
