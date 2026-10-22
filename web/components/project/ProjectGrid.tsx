@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Search, ChevronDown, Plus } from 'lucide-react'
-import { BrandButton } from '@creatorweave/ui'
+import { Search, ChevronDown } from 'lucide-react'
 import type { Project, ProjectStats } from '@/sqlite/repositories/project.repository'
 import { useT } from '@/i18n'
 import { ProjectCard } from './ProjectCard'
@@ -22,7 +21,6 @@ export interface ProjectGridProps {
   onArchiveToggle: (project: Project, isArchived: boolean) => void
   onDeleteProject: (project: Project) => void
   onExportUsage?: (project: Project) => void
-  onCreateClick: () => void
 }
 
 const FILTER_OPTIONS: ProjectStatusFilter[] = ['all', 'active', 'archived']
@@ -45,7 +43,6 @@ export function ProjectGrid({
   onArchiveToggle,
   onDeleteProject,
   onExportUsage,
-  onCreateClick,
 }: ProjectGridProps) {
   const t = useT()
   const [search, setSearch] = useState('')
@@ -148,16 +145,6 @@ export function ProjectGrid({
               </ul>
             )}
           </div>
-
-          <BrandButton
-            variant="primary"
-            onClick={onCreateClick}
-            disabled={isDisabled}
-            className="h-9"
-          >
-            <Plus className="mr-1.5 h-4 w-4" />
-            {t('projectHome.grid.newProject')}
-          </BrandButton>
         </div>
       </header>
 
