@@ -43,12 +43,14 @@ import {
   DropdownMenuTrigger,
 } from '@creatorweave/ui'
 import { useConversationStore } from '@/store/conversation.store'
+import { useScheduleStore } from '@/store/schedule.store'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
+import { useSettingsStore } from '@/store/settings.store'
 import { FileTreePanel } from '@/components/file-viewer/FileTreePanel'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
 import { SnapshotList } from '@/components/sync/SnapshotList'
@@ -75,6 +77,7 @@ interface ConversationItemData {
   isEditing: boolean
   isArchived: boolean
   isPinned: boolean
+  hasSchedule: boolean
 }
 
 interface ConversationItemProps extends ConversationItemData {
@@ -151,6 +154,7 @@ const ConversationItem = memo(function ConversationItem({
   isEditing,
   isArchived,
   isPinned,
+  hasSchedule,
   href,
   onSelect,
   onStartRename,
@@ -276,6 +280,9 @@ const ConversationItem = memo(function ConversationItem({
               {pendingReviewCount}
             </span>
           )}
+          {hasSchedule && !isEditing && (
+            <Clock className="h-3 w-3 shrink-0 text-primary-400" />
+          )}
         </Link>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-48">
@@ -324,6 +331,7 @@ const ConversationItem = memo(function ConversationItem({
     prev.pendingReviewCount === next.pendingReviewCount &&
     prev.isEditing === next.isEditing &&
     prev.isPinned === next.isPinned &&
+    prev.hasSchedule === next.hasSchedule &&
     prev.isArchived === next.isArchived &&
     prev.editingTitle === next.editingTitle &&
     prev.composing === next.composing &&
@@ -819,6 +827,8 @@ export const Sidebar = memo(function Sidebar({
   )
 
   // Schedule badges: subscribe to workspaceScheduleCount map (only re-renders when counts change)
+  const workspaceScheduleCount = useScheduleStore((s) => s.workspaceScheduleCount)
+  const enableSchedules = useSettingsStore((s) => s.enableSchedules)
   const scopedConversationIds = useMemo(() => scopedConversations.map((conv) => conv.id), [scopedConversations])
   const conversationRatio = panelSizes.conversationRatio
   const [clearConversationsDialogOpen, setClearConversationsDialogOpen] = useState(false)
@@ -1299,6 +1309,7 @@ export const Sidebar = memo(function Sidebar({
                   isEditing={isEditing}
                   isArchived={isArchived}
                   isPinned={isPinned}
+                  hasSchedule={enableSchedules && (workspaceScheduleCount.get(conv.id) ?? 0) > 0}
                   href={projectWorkspacePath(activeProjectId, conv.id)}
                   onSelect={handleItemSelect}
                   onStartRename={startRename}

@@ -58,6 +58,7 @@ import { ExtensionBanner, ExtensionOutdatedBanner } from '@/components/extension
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { MCPSettingsDialog } from '@/components/mcp'
 import { SettingsDialog, type SettingsTab } from '@/components/settings/SettingsDialog'
+import { ScheduleDrawer } from '@/components/schedule/ScheduleDrawer'
 import { useLocale, useT } from '@/i18n'
 import { WebContainerPanel } from '@/components/webcontainer/WebContainerPanel'
 import { useWebContainerStore } from '@/store/webcontainer.store'
@@ -190,6 +191,7 @@ export function WorkspaceLayout({
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false)
   const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('workspace-layout')
+  const [scheduleDrawerOpen, setScheduleDrawerOpen] = useState(false)
   const [showMcpSettings, setShowMcpSettings] = useState(false)
   const [showGoToFile, setShowGoToFile] = useState(false)
   // React to "open in preview" requests from sidebar/list rows
@@ -290,6 +292,32 @@ export function WorkspaceLayout({
     const cleanup = initializeTheme()
     return cleanup
   }, [])
+
+  // Start schedule heartbeat on mount (only when experimental feature is on)
+  const enableSchedules = useSettingsStore((s) => s.enableSchedules)
+  useEffect(() => {
+    if (!enableSchedules) return
+    let cancelled = false
+    import('@/services/schedule-heartbeat').then(({ startHeartbeat, stopHeartbeat }) => {
+      if (cancelled) {
+        stopHeartbeat()
+        return
+      }
+      startHeartbeat()
+    }).catch(err => {
+      console.warn('[WorkspaceLayout] Failed to start schedule heartbeat:', err)
+    })
+    // Also load schedule badges for sidebar
+    import('@/store/schedule.store').then(({ useScheduleStore }) => {
+      if (!cancelled) useScheduleStore.getState().refresh()
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+      import('@/services/schedule-heartbeat').then(({ stopHeartbeat }) => {
+        stopHeartbeat()
+      }).catch(() => {})
+    }
+  }, [enableSchedules])
 
   // Phase 4: Load conversations on mount (independent of Sidebar rendering).
   // Also re-run when `loadError` flips (null→error or error→null): a failed
@@ -819,6 +847,7 @@ export function WorkspaceLayout({
         onManageProjects={onManageProjects}
         projectSwitcherOpen={projectSwitcherOpen}
         onProjectSwitcherOpenChange={setProjectSwitcherOpen}
+        onScheduleDrawerOpen={() => setScheduleDrawerOpen(true)}
         onWorkflowOpen={() => useFlowStore.getState().setPanelOpen(true)}
         onNewConversation={() => {
           const newConv = createNew('New conversation')
@@ -1094,6 +1123,21 @@ export function WorkspaceLayout({
 
       <MCPSettingsDialog open={showMcpSettings} onOpenChange={setShowMcpSettings} />
       <WebContainerPanel isOpen={isWebContainerPanelOpen} onClose={closeWebContainerPanel} />
+
+      {/* Schedule Drawer (experimental feature) */}
+      {enableSchedules && (
+      <ScheduleDrawer
+        workspaceId={activeConversationId ?? ''}
+        open={scheduleDrawerOpen}
+        onClose={() => setScheduleDrawerOpen(false)}
+        onScheduleChanged={() => {
+          // Refresh schedule badges in sidebar after any mutation
+          import('@/store/schedule.store').then(({ useScheduleStore }) => {
+            useScheduleStore.getState().refresh()
+          })
+        }}
+      />
+      )}
     </div>
   )
 }
