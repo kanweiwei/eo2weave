@@ -92,16 +92,37 @@ export default defineContentScript({
 
       // Our own outgoing messages (responses, stream chunks) also carry the
       // bridge marker and postMessage re-delivers them to THIS listener.
-      // Drop them: without this guard every reply falls into the allow-list
-      // rejection branch below, which posts another reply, which re-enters
-      // the listener — an infinite self-posting loop that pins a CPU core
-      // and leaks memory in the tab.
+      // Drop them here as well as by the typeless check below — this guard is
+      // the fast path, the typeless check is what makes the loop impossible.
       if (event.data.__agentWebResponse === true || event.data.__agentWebStream === true) return;
 
       const { id, type, payload } = event.data;
       if (!id) return;
 
-      if (typeof type !== 'string' || !RELAYABLE_MESSAGE_TYPES.has(type)) {
+      // A stream cancel is a control message, not a request: it carries no
+      // `type`. Handle it before the request checks below — otherwise the
+      // allow-list rejects it and the upstream port is never cancelled.
+      if (event.data.__agentWebStreamCancel === true) {
+        const streamPort = streamingPorts.get(id)
+        if (streamPort) {
+          streamingPorts.delete(id)
+          try { streamPort.postMessage({ type: 'cancel' }) } catch {}
+          try { streamPort.disconnect() } catch {}
+        }
+        return
+      }
+
+      // Only requests carry a `type`. Our own replies (responses, stream
+      // chunks, error replies) do not, and postMessage re-delivers them to
+      // THIS listener. Dropping every typeless message here means the relay
+      // can never answer itself: without this check a reply falls into the
+      // allow-list rejection branch, which posts another reply, which
+      // re-enters the listener — an infinite self-posting loop that pins a
+      // CPU core and leaks memory in the tab (observed at 3.6 MB/s, i.e.
+      // ~13 GB/hour, on a build that had the allow-list but not this check).
+      if (typeof type !== 'string' || !type) return;
+
+      if (!RELAYABLE_MESSAGE_TYPES.has(type)) {
         // Unknown/unauthorized type — do NOT forward. Reply with an error so
         // a legitimate caller misbehaving fails loudly instead of timing out.
         window.postMessage({
@@ -116,18 +137,6 @@ export default defineContentScript({
         }, '*');
         return;
       }
-
-      if (event.data.__agentWebStreamCancel === true) {
-        const streamPort = streamingPorts.get(id)
-        if (streamPort) {
-          streamingPorts.delete(id)
-          try { streamPort.postMessage({ type: 'cancel' }) } catch {}
-          try { streamPort.disconnect() } catch {}
-        }
-        return
-      }
-
-      if (!type) return;
 
       // ── Streaming request: use port-based messaging ──
       if (STREAMING_MESSAGE_TYPES.has(type)) {
