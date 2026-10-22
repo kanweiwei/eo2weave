@@ -24,6 +24,7 @@ import { useProjectStore } from '@/store/project.store'
 import { useSettingsStore } from '@/store/settings.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
+import { useAgentProfileStore } from '@/store/agent-profile.store'
 import { useYoloModeStore, YOLO_WELCOME_SENTINEL } from '@/store/yolo-mode.store'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
 import { useMobile } from '@/components/mobile/useMobile'
@@ -31,6 +32,7 @@ import { useUnloadGuard } from '@/hooks/useUnloadGuard'
 import { TopBar } from './TopBar'
 import { Sidebar } from './Sidebar'
 import { ConversationView } from '@/components/agent/ConversationView'
+import { AgentProfileDrawer } from '@/components/agent/AgentProfileDrawer'
 import { FilePreview } from '@/components/file-viewer/FilePreview'
 import { WelcomeScreen } from '@/components/WelcomeScreen'
 import { SyncPreviewPanel } from '@/components/sync'
@@ -679,6 +681,20 @@ export function WorkspaceLayout({
     setSelectedFileBlob(null)
   }, [])
 
+  // ── Agent profile panel ───────────────────────────────────────────────
+  // The profile panel and the file preview compete for the same split slot —
+  // only one can be side-by-side with the conversation. The profile wins:
+  // opening it closes the file preview.
+  const isAgentProfileOpen = useAgentProfileStore((s) => s.isOpen)
+  const closeAgentProfile = useAgentProfileStore((s) => s.close)
+  const profileInSplit = isAgentProfileOpen && filePreviewMode === 'split' && !isMobile
+
+  useEffect(() => {
+    if (isAgentProfileOpen) {
+      handleCloseFilePreview()
+    }
+  }, [isAgentProfileOpen, handleCloseFilePreview])
+
   // Handle asset preview from AssetsPopover — opens the FilePreview drawer with a pre-loaded blob
   const handleAssetPreview = useCallback((fileName: string, blob: Blob) => {
     setSelectedFilePath(fileName)
@@ -905,6 +921,39 @@ export function WorkspaceLayout({
             )}
           </main>
 
+          {/* Agent profile — split (side-by-side) or overlay (drawer) mode.
+              Takes priority over the file preview: only one panel can occupy
+              the split slot at a time. */}
+          {profileInSplit ? (
+            <>
+              {/* Draggable resize handle */}
+              <div
+                onMouseDown={startPreviewResize}
+                className="group relative w-1 shrink-0 cursor-col-resize bg-transparent transition-colors"
+                title=""
+              >
+                {/* Wider hit area */}
+                <div className="absolute inset-y-0 -left-1.5 -right-1.5 z-10" />
+                {/* Visible divider line on hover/drag */}
+                <div
+                  className={`absolute inset-y-0 left-0 w-px transition-colors ${
+                    dragPreviewWidth !== null ? 'bg-blue-500' : 'bg-neutral-200 group-hover:bg-blue-400 dark:border-neutral-700'
+                  }`}
+                />
+              </div>
+              <aside
+                className="h-full shrink-0 overflow-hidden"
+                style={{
+                  width: `${dragPreviewWidth ?? panelSizes.previewRatio}%`,
+                  minWidth: 280,
+                  maxWidth: '80%',
+                }}
+              >
+                <AgentProfileDrawer />
+              </aside>
+            </>
+          ) : null}
+
           {/* File preview — split (side-by-side) or overlay (drawer) mode */}
           {filePreviewMode === 'split' && !isMobile && selectedFilePath ? (
             <>
@@ -953,6 +1002,16 @@ export function WorkspaceLayout({
               />
             </Drawer>
           )}
+
+          {/* Agent profile as Drawer (overlay) — used when split mode is off
+              or on mobile. Mutually exclusive with the split branch above. */}
+          <Drawer
+            open={isAgentProfileOpen && !profileInSplit}
+            onClose={closeAgentProfile}
+            width={isMobile ? '100vw' : `${panelSizes.previewRatio}vw`}
+          >
+            <AgentProfileDrawer />
+          </Drawer>
 
           {/* Sync preview as Drawer (overlay, no squeeze) */}
           <Drawer

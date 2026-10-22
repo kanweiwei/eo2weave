@@ -1412,7 +1412,10 @@ export async function runAgentImpl(
                 })
                 if (touchesAgents) {
                   import('./agents.store').then(({ useAgentsStore }) => {
-                    useAgentsStore.getState().refreshAgents()
+                    const agentsStore = useAgentsStore.getState()
+                    agentsStore.refreshAgents()
+                    // Notify open agent profile panels that agent files changed.
+                    agentsStore.bumpAgentsRevision()
                   })
                 }
               }

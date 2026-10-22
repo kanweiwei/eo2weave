@@ -1,0 +1,21 @@
+// Agent プロファイルパネル
+export const agentProfile = {
+    title: "Agent プロファイル",
+    editProfile: "プロファイルを編集",
+    switchAgent: "Agent を切り替え",
+    soul: "性格",
+    identity: "アイデンティティ",
+    agents: "作業ルール",
+    user: "あなたについて",
+    memory: "長期記憶",
+    diary: "日記",
+    save: "保存",
+    saved: "保存しました",
+    saving: "保存中...",
+    edit: "編集",
+    preview: "プレビュー",
+    loadFailed: "Agent プロフィールの読み込みに失敗しました",
+    retry: "再試行",
+    noDiaries: "日記はまだありません",
+    emptyContent: "このファイルは空です",
+} as const

@@ -1,0 +1,21 @@
+// Agent 档案面板
+export const agentProfile = {
+    title: "Agent 档案",
+    editProfile: "编辑档案",
+    switchAgent: "切换 Agent",
+    soul: "人格设定",
+    identity: "身份",
+    agents: "工作约定",
+    user: "关于你",
+    memory: "长期记忆",
+    diary: "日记",
+    save: "保存",
+    saved: "已保存",
+    saving: "保存中...",
+    edit: "编辑",
+    preview: "预览",
+    loadFailed: "加载 Agent 档案失败",
+    retry: "重试",
+    noDiaries: "还没有日记",
+    emptyContent: "该文件为空",
+} as const

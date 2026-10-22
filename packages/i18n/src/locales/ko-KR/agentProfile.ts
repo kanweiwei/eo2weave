@@ -1,0 +1,21 @@
+// Agent 프로파일 패널
+export const agentProfile = {
+    title: "Agent 프로파일",
+    editProfile: "프로파일 편집",
+    switchAgent: "Agent 전환",
+    soul: "성격",
+    identity: "정체성",
+    agents: "작업 규칙",
+    user: "당신에 대해",
+    memory: "장기 기억",
+    diary: "일기",
+    save: "저장",
+    saved: "저장됨",
+    saving: "저장 중...",
+    edit: "편집",
+    preview: "미리보기",
+    loadFailed: "Agent 프로파일을 불러오지 못했습니다",
+    retry: "다시 시도",
+    noDiaries: "아직 일기가 없습니다",
+    emptyContent: "이 파일은 비어 있습니다",
+} as const

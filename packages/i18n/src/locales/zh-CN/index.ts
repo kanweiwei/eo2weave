@@ -26,6 +26,7 @@ import { workspace } from './workspace'
 import { projectHome, siteFooter } from './projectHome'
 import { fileTree } from './fileTree'
 import { agent } from './agent'
+import { agentProfile } from './agentProfile'
 import { sidebar } from './sidebar'
 import { goToFile } from './goToFile'
 import { keyboardShortcuts } from './keyboardShortcuts'
@@ -81,6 +82,7 @@ export const zhCN = {
   siteFooter,
   fileTree,
   agent,
+  agentProfile,
   sidebar,
   goToFile,
   keyboardShortcuts,
