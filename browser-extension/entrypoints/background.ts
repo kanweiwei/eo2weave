@@ -7,6 +7,8 @@ import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
+import { getXhsCdpInput } from './webmcp/xiaohongshu-cdp-input'
+import { XHS_INPUT_MESSAGE } from './webmcp/xiaohongshu/xiaohongshu-input-protocol'
 import { createTabWebMCPApi } from './webmcp/tab-api'
 import {
   getHostAuthorizationMap,
@@ -1373,6 +1375,12 @@ export default defineBackground(() => {
   void webmcpNativeBridge.resumeIfEnabled()
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    // Xiaohongshu CDP input requests: scoped to an open input session and the
+    // sender's own tab, so a hostile page cannot drive another tab's input.
+    if (message?.type === XHS_INPUT_MESSAGE) {
+      void Promise.resolve().then(() => getXhsCdpInput().handle(message, _sender)).then(sendResponse).catch((error: Error) => sendResponse({ ok: false, error: error.message }))
+      return true
+    }
     // Only claim OUR message types — an unconditional `return true` would
     // keep the sendResponse channel open for unrelated messages and race
     // the main listener above.
@@ -2191,7 +2199,22 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'webmcp_invoke_tool') {
-          sendResponse(await invokeWebMCPTool(message));
+          const request = {
+            groupKey: message.groupKey,
+            fullToolName: message.fullToolName,
+            args: message.args,
+            preferredTabId: message.preferredTabId,
+          }
+          if (message.binding !== undefined) {
+            const requiredTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
+            if (requiredTabId === null) {
+              sendResponse({ ok: false, errorCode: 'BOUND_TAB_UNAVAILABLE', error: 'The side-panel tab binding is invalid or unavailable.' })
+              return
+            }
+            sendResponse(await invokeWebMCPTool({ ...request, requiredTabId }))
+            return
+          }
+          sendResponse(await invokeWebMCPTool(request));
           return;
         }
 

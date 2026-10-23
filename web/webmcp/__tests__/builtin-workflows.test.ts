@@ -131,7 +131,7 @@ it('validates all 48 bundled workflow contracts without claiming browser behavio
     }
     expect(() => validatePackage(manifest, sources, manifest.id)).not.toThrow()
   }
-  expect(count).toBe(48)
+  expect(count).toBe(70)
 })
 
 const restoreFixtures: Array<() => void> = []

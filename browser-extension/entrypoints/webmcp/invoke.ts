@@ -17,6 +17,9 @@ import type {
 } from './types'
 import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
+import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
+import { getXhsCdpInput } from './xiaohongshu-cdp-input'
+import { isXhsPreparationTool, isXhsMainSiteInputTool, isXhsInputTool, xhsInputTimeout } from './xiaohongshu/xiaohongshu-input-protocol'
 import type { ExecutionResult } from '@creatorweave/quickjs-runtime'
 
 let invokeAdapter: ((tabId: number, name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<ExecutionResult | null>) | undefined
@@ -99,13 +102,14 @@ async function invokeViaRelay(
       resolve(value)
     }
 
+    const timeoutMs = isXhsInputTool(toolName) ? xhsInputTimeout(toolName) + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
     const timeout = setTimeout(() => {
       finish({
         ok: false,
         errorCode: 'RELAY_TIMEOUT',
-        error: `WebMCP relay invoke timed out after ${INVOKE_RELAY_TIMEOUT_MS}ms`,
+        error: `WebMCP relay invoke timed out after ${timeoutMs}ms`,
       })
-    }, INVOKE_RELAY_TIMEOUT_MS)
+    }, timeoutMs)
 
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) { abort(); return }
@@ -270,6 +274,12 @@ async function pickTargetTabId(
   hostname: string,
   request: WebMCPInvokeRequest,
 ): Promise<number | null> {
+  if (typeof request.requiredTabId === 'number') {
+    return (await tabMatchesGroup(request.requiredTabId, groupKey, hostname))
+      ? request.requiredTabId
+      : null
+  }
+
   if (typeof request.preferredTabId === 'number') {
     return await tabMatchesGroup(request.preferredTabId, groupKey, hostname) ? request.preferredTabId : null
   }
@@ -440,13 +450,33 @@ export async function invokeWebMCPTool(
       hostname,
       toolName,
       fullToolName: request.fullToolName,
-      errorCode: 'TOOL_TARGET_NOT_FOUND',
-      error: `No open tab found for WebMCP group: ${groupKey}`,
+      errorCode: typeof request.requiredTabId === 'number' ? 'BOUND_TAB_UNAVAILABLE' : 'TOOL_TARGET_NOT_FOUND',
+      error: typeof request.requiredTabId === 'number'
+        ? 'The bound tab no longer exposes this WebMCP tool group'
+        : `No open tab found for WebMCP group: ${groupKey}`,
     }
   }
 
+  let inputSession: string | undefined
   try {
-    const result = await executeWebMCPToolInTab(tabId, toolName, request.args || {})
+    // XHS publish tools transfer image bytes through the SW (host permissions
+    // permit the cross-origin fetch); comment/like tools open a CDP input
+    // session so retained elements are driven as real user input.
+    const isXhsPublish = hostname === 'creator.xiaohongshu.com' && isXhsPreparationTool(toolName)
+    const isXhsMainInput = hostname === 'www.xiaohongshu.com' && isXhsMainSiteInputTool(toolName)
+    const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : { ...request.args || {} }
+    // The existing invocation gates and bound-tab routing have already passed.
+    // Attach only for the authorized actions that use browser input.
+    if (isXhsMainInput || (isXhsPublish && ['prepare', 'configure'].includes(String(invokeArgs.action)))) {
+      inputSession = isXhsMainInput
+        ? await getXhsCdpInput().open(tabId, { hostname, timeoutMs: xhsInputTimeout(toolName) })
+        : await getXhsCdpInput().open(tabId)
+      invokeArgs._eo2_input_session = inputSession
+    }
+    if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
+      return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: toolName === 'xhs_publish_video' ? 'VIDEO_MESSAGE_TOO_LARGE' : 'IMAGE_TRANSFER_TOO_LARGE', error: 'File transfer message exceeds Chrome 64 MiB message capacity.' }
+    }
+    const result = await executeWebMCPToolInTab(tabId, toolName, invokeArgs)
 
     if (!result.ok) {
       return {
@@ -499,5 +529,7 @@ export async function invokeWebMCPTool(
       errorCode: 'INVOKE_FAILED',
       error: typeof error?.message === 'string' ? error.message : String(error),
     }
+  } finally {
+    if (inputSession) await getXhsCdpInput().close(inputSession).catch(() => {})
   }
 }
