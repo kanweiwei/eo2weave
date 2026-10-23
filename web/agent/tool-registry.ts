@@ -190,7 +190,7 @@ import {
   imageGenExecutor,
   imageGenPromptDoc,
 } from './tools/image-gen.tool'
-// Schedule management tool (restored 2026-09; kept behind settings experimental gate)
+// Schedule management tool (first-class feature)
 import {
   manageScheduleDefinition,
   manageScheduleExecutor,

@@ -40,7 +40,6 @@ import {
 } from '@creatorweave/ui'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useFlowStore } from '@/store/flow.store'
-import { useSettingsStore } from '@/store/settings.store'
 
 /** Stable tooltip wrapper — defined at module level to avoid recreating on every render. */
 const ActionTooltip = ({
@@ -111,9 +110,18 @@ export function TopBar({
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const mobileMorePanelRef = useRef<HTMLDivElement | null>(null)
   const flowPanelOpen = useFlowStore((s) => s.panelOpen)
-  const enableSchedules = useSettingsStore((s) => s.enableSchedules)
   const t = useT()
   const conversationName = activeConversationName ?? activeWorkspaceName
+
+  useEffect(() => {
+    if (!mobileMoreOpen) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMoreOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [mobileMoreOpen])
 
   useEffect(() => {
     if (!mobileMoreOpen) return
@@ -156,9 +164,7 @@ export function TopBar({
       <TooltipProvider delayDuration={200}>
         <header
           className={`relative flex shrink-0 items-center justify-between border-b border-neutral-200 bg-background dark:border-border ${
-            isMobile
-              ? 'min-h-11 px-2 py-0.5 max-[599px]:flex-wrap max-[599px]:gap-y-0.5'
-              : 'h-12 px-4'
+            isMobile ? 'min-h-11 px-2 py-0.5' : 'h-12 px-4'
           }`}
         >
           {/* Skip link — first focusable element for keyboard / screen reader users */}
@@ -210,6 +216,11 @@ export function TopBar({
               )}
             </div>
           )}
+          {isMobile && (
+            <div className="flex min-w-0 shrink items-center">
+              <FolderSelector />
+            </div>
+          )}
         </div>
 
         {/* Right: Actions */}
@@ -235,12 +246,13 @@ export function TopBar({
             </ActionTooltip>
 
             {/* More menu */}
-            <ActionTooltip label={t('topbar.tooltips.appSettings')}>
+            <ActionTooltip label={t('topbar.tooltips.more')}>
               <BrandButton
                 iconButton
                 className="h-7 w-7"
                 onClick={() => setMobileMoreOpen(true)}
-                aria-label={t('topbar.tooltips.appSettings')}
+                aria-label={t('topbar.tooltips.more')}
+                aria-expanded={mobileMoreOpen}
               >
                 <MoreHorizontal className="h-[14px] w-[14px]" />
               </BrandButton>
@@ -255,7 +267,7 @@ export function TopBar({
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <BrandButton iconButton aria-label={t('topbar.mobile.more')}>
+                <BrandButton iconButton aria-label={t('topbar.tooltips.more')}>
                   <MoreHorizontal className="h-[14px] w-[14px]" />
                 </BrandButton>
               </DropdownMenuTrigger>
@@ -263,6 +275,10 @@ export function TopBar({
                 <DropdownMenuItem onSelect={() => onToolsPanelOpen?.()}>
                   <List className="h-3.5 w-3.5" />
                   {t('topbar.tooltips.toolsPanel')}
+                </DropdownMenuItem>
+                <DropdownMenuItem data-tour="schedules" onSelect={() => onScheduleDrawerOpen?.()}>
+                  <Clock className="h-3.5 w-3.5" />
+                  {t('topbar.tooltips.schedules')}
                 </DropdownMenuItem>
                 {conversationName && onWorkflowOpen && (
                   <DropdownMenuItem onSelect={onWorkflowOpen}>
@@ -291,15 +307,6 @@ export function TopBar({
 
             <div className="h-5 w-px bg-muted" />
 
-            {/* Schedule / Timer (experimental) */}
-            {enableSchedules && (
-            <ActionTooltip label={t('topbar.tooltips.schedules')}>
-              <BrandButton iconButton className="shrink-0" onClick={onScheduleDrawerOpen} data-tour="schedules">
-                <Clock className="h-[14px] w-[14px]" />
-              </BrandButton>
-            </ActionTooltip>
-            )}
-
             <ActionTooltip label={t('topbar.tooltips.appSettings')}>
               <BrandButton iconButton className="shrink-0" onClick={() => openSettings()}>
                 <Settings className="h-[14px] w-[14px]" />
@@ -310,35 +317,60 @@ export function TopBar({
       </header>
 
       {isMobile && mobileMoreOpen && (
-        <div className="fixed inset-0 z-40 bg-black/20" onClick={closeMobileMorePanel} />
+        <button
+          type="button"
+          className="fixed inset-0 z-40 cursor-default bg-black/20"
+          aria-label={t('common.close')}
+          onClick={closeMobileMorePanel}
+        />
       )}
 
       {isMobile && mobileMoreOpen && (
         <div
           ref={mobileMorePanelRef}
+          role="region"
+          aria-label={t('topbar.tooltips.more')}
           className="fixed right-2 top-14 z-50 w-[min(92vw,340px)] rounded-xl border border-neutral-200 bg-white p-2 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
         >
-            {/* Workspace settings */}
-            <div className="mb-2 rounded-lg border border-neutral-200 bg-neutral-50/60 p-2 dark:border-neutral-700 dark:bg-neutral-800/60">
-              <div className="mb-1.5 text-[11px] font-medium text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
-                {t('topbar.mobile.workDirectory')}
-              </div>
-              <FolderSelector />
-            </div>
-
-            {/* Quick actions grid */}
+            {/* Quick actions grid — mirror the desktop tools menu */}
             <div className="grid grid-cols-2 gap-1.5">
               <BrandButton
                 variant="ghost"
                 className="h-9 justify-start gap-2 text-xs"
                 onClick={() => {
-                  openSettings()
+                  onToolsPanelOpen?.()
                   closeMobileMorePanel()
                 }}
               >
-                <Settings className="h-3.5 w-3.5" />
-                {t('topbar.tooltips.appSettings')}
+                <List className="h-3.5 w-3.5" />
+                {t('topbar.tooltips.toolsPanel')}
               </BrandButton>
+              <BrandButton
+                variant="ghost"
+                className="h-9 justify-start gap-2 text-xs"
+                data-tour="schedules"
+                onClick={() => {
+                  onScheduleDrawerOpen?.()
+                  closeMobileMorePanel()
+                }}
+              >
+                <Clock className="h-3.5 w-3.5" />
+                {t('topbar.tooltips.schedules')}
+              </BrandButton>
+              {conversationName && onWorkflowOpen && (
+                <BrandButton
+                  variant="ghost"
+                  className="h-9 justify-start gap-2 text-xs"
+                  onClick={() => {
+                    onWorkflowOpen()
+                    closeMobileMorePanel()
+                  }}
+                >
+                  <Workflow className="h-3.5 w-3.5" />
+                  {t('topbar.tooltips.workflow')}
+                  {flowPanelOpen && <span className="ml-auto text-xs text-primary">●</span>}
+                </BrandButton>
+              )}
               <BrandButton
                 variant="ghost"
                 className="h-9 justify-start gap-2 text-xs"
@@ -360,6 +392,17 @@ export function TopBar({
               >
                 <Keyboard className="h-3.5 w-3.5" />
                 {t('topbar.mobile.commandPalette')}
+              </BrandButton>
+              <BrandButton
+                variant="ghost"
+                className="h-9 justify-start gap-2 text-xs"
+                onClick={() => {
+                  openSettings()
+                  closeMobileMorePanel()
+                }}
+              >
+                <Settings className="h-3.5 w-3.5" />
+                {t('topbar.tooltips.appSettings')}
               </BrandButton>
               {isSidePanelMode() && (
                 <BrandButton
