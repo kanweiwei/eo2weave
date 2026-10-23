@@ -51,4 +51,5 @@ export const schedule = {
     hourly: '매시간',
   },
   testSuccess: '테스트 실행이 시작되었습니다. 대화에서 결과를 확인하세요.',
+  emptyWorkspace: '예약 작업은 대화에 연결되어야 합니다',
 } as const

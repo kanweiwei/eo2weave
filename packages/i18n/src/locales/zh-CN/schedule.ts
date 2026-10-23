@@ -51,4 +51,5 @@ export const schedule = {
     hourly: '每小时',
   },
   testSuccess: '测试运行已触发，请查看对话中的运行结果',
+  emptyWorkspace: '定时任务必须绑定对话',
 } as const

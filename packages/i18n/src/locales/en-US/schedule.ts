@@ -51,4 +51,5 @@ export const schedule = {
     hourly: 'Hourly',
   },
   testSuccess: 'Test run triggered. Check the conversation for results.',
+  emptyWorkspace: 'Schedules must be bound to a conversation',
 } as const

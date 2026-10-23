@@ -51,4 +51,5 @@ export const schedule = {
     hourly: '毎時',
   },
   testSuccess: 'テスト実行がトリガーされました。会話で結果を確認してください。',
+  emptyWorkspace: '定時タスクは会話に紐付ける必要があります',
 } as const
