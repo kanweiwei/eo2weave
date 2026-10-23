@@ -123,4 +123,84 @@ describe('ToolCallDisplay', () => {
       'subagent-failed-1:conversation-2'
     )
   })
+
+  // ─── Failure-badge regression coverage ───────────────────────
+  // The badge logic must trust structured envelope fields only; scanning the
+  // raw result for the literal "error" flagged successful calls whose payload
+  // merely embeds arbitrary content (fetched bodies, stdout, inner traces).
+
+  function renderTool(name: string, result: string) {
+    const toolCall: ToolCall = {
+      id: 'tc-badge',
+      type: 'function',
+      function: { name, arguments: JSON.stringify({}) },
+    }
+    return render(<ToolCallDisplay toolCall={toolCall} result={result} isExecuting={false} />)
+  }
+
+  function queryStatusIcon(container: HTMLElement) {
+    // StatusIcon renders XCircle (red, failed) or CheckCircle2 (green, done)
+    return {
+      failed: container.querySelector('.text-red-500') !== null,
+      succeeded: container.querySelector('.text-green-500') !== null,
+    }
+  }
+
+  it('shows SUCCESS when a v2 ok envelope embeds the literal "error" in nested data', () => {
+    const { container } = renderTool('web_fetch', JSON.stringify({
+      ok: true, tool: 'web_fetch', version: 2,
+      data: { status: 200, body: '{"error": "not_found"}' },
+    }))
+    expect(queryStatusIcon(container).succeeded).toBe(true)
+    expect(queryStatusIcon(container).failed).toBe(false)
+  })
+
+  it('shows SUCCESS when ok envelope carries error:null (legacy schedule payload shape)', () => {
+    const { container } = renderTool('get_schedule', JSON.stringify({
+      ok: true, tool: 'get_schedule', version: 2,
+      data: { id: 's1', error: null },
+    }))
+    expect(queryStatusIcon(container).succeeded).toBe(true)
+    expect(queryStatusIcon(container).failed).toBe(false)
+  })
+
+  it('shows SUCCESS for run_code whose inner tool trace failed (meta.calls embeds error)', () => {
+    const { container } = renderTool('run_code', JSON.stringify({
+      ok: true, tool: 'run_code', version: 2,
+      data: { value: 42 },
+      meta: { calls: [{ id: 't1', name: 'read', status: 'failed', result: '{"error":"no such file"}' }] },
+    }))
+    expect(queryStatusIcon(container).succeeded).toBe(true)
+    expect(queryStatusIcon(container).failed).toBe(false)
+  })
+
+  it('shows SUCCESS when Python stdout mentions "error" (execute tool)', () => {
+    const { container } = renderTool('execute', JSON.stringify({
+      ok: true, tool: 'execute', version: 2,
+      data: { stdout: 'print: {"error": "handled gracefully"}', executionTime: 12 },
+    }))
+    expect(queryStatusIcon(container).succeeded).toBe(true)
+    expect(queryStatusIcon(container).failed).toBe(false)
+  })
+
+  it('still shows FAILURE for ok:false envelope', () => {
+    const { container } = renderTool('read', JSON.stringify({
+      ok: false, tool: 'read', version: 2,
+      error: { code: 'NOT_FOUND', message: 'no such file', retryable: false },
+    }))
+    expect(queryStatusIcon(container).failed).toBe(true)
+  })
+
+  it('still shows FAILURE for legacy top-level error value (non-null)', () => {
+    const { container } = renderTool('legacy_tool', JSON.stringify({ error: 'boom' }))
+    expect(queryStatusIcon(container).failed).toBe(true)
+  })
+
+  it('still shows FAILURE for success:false payloads', () => {
+    const { container } = renderTool('delete', JSON.stringify({
+      success: false, total: 2, deleted: ['a'], deletedDirs: [],
+      failed: [{ path: 'b', reason: 'locked' }],
+    }))
+    expect(queryStatusIcon(container).failed).toBe(true)
+  })
 })

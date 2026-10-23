@@ -482,7 +482,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       last_activity_at: task.last_activity_at,
       queue_depth: task.queue.length,
       usage: task.usage,
-      error: task.error,
+      // Omit when unset: a top-level `error: null` in the tool payload makes
+      // the tool card render a failure badge even though the call succeeded.
+      ...(task.error ? { error: task.error } : {}),
     }
   }
 
