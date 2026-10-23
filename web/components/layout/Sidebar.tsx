@@ -17,8 +17,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useShallow } from 'zustand/react/shallow'
-import { usePathname, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { projectWorkspacePath } from '@/lib/route-paths'
 import { createPortal } from 'react-dom'
 import { BrushCleaningIcon } from '@/components/icons/BrushCleaningIcon'
@@ -110,7 +110,7 @@ const NewWorkspaceButton = memo(function NewWorkspaceButton({
 }: {
   onClick: () => void
   label: string
-  /** Highlighted when in draft state (?new=1) — the draft "is" the new conversation */
+  /** Highlighted while the new-conversation view is active */
   isActive?: boolean
 }) {
   return (
@@ -361,8 +361,8 @@ interface SidebarProps {
   onRevealComplete?: () => void
   /** Called when user selects a workspace from the sidebar. Should navigate URL. */
   onSelectWorkspace?: (workspaceId: string) => void
-  /** Enter the route owner's draft state without creating a conversation. */
-  onNewDraft?: () => void
+  /** Create a new conversation immediately (persisted) and navigate to it. */
+  onCreateConversation?: () => void
 }
 
 /** Memoized wrapper for FileTreePanel with stable callbacks per root */
@@ -685,16 +685,11 @@ export const Sidebar = memo(function Sidebar({
   revealTargetPath,
   onRevealComplete,
   onSelectWorkspace,
-  onNewDraft,
+  onCreateConversation,
 }: SidebarProps) {
   const t = useT()
+  const router = useRouter()
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
-  // Draft mode: URL is /projects/:id?new=1 (user clicked 新对话, conversation
-  // not yet created). Used to highlight the 新对话 button.
-  const pathname = usePathname()
-  const isDraftMode =
-    useSearchParams().get('new') === '1' && pathname === `/projects/${activeProjectId}`
-
   // Use selectors to avoid re-rendering on every streaming delta.
   // Sidebar only needs id/title for the list — not streamingContent/toolCalls/etc.
   // NOTE: intentionally exclude updatedAt — cancelAgent writes updatedAt which would
@@ -1063,13 +1058,12 @@ export const Sidebar = memo(function Sidebar({
     [conversationRatio, setConversationRatio]
   )
 
-  // The route owner derives the target from URL params rather than this
-  // sidebar's potentially stale project-store state (notably during project
-  // switches). A conversation is still materialized only after first send.
+  // The route owner owns navigation (URL params are the source of truth,
+  // notably during project switches); the sidebar only closes itself.
   const handleCreateNewWorkspace = useCallback(() => {
-    onNewDraft?.()
+    onCreateConversation?.()
     closeMobileSidebar()
-  }, [onNewDraft, closeMobileSidebar])
+  }, [onCreateConversation, closeMobileSidebar])
 
   // Stable callback for editing title change
   const handleEditingTitleChange = useCallback((title: string) => setEditingTitle(title), [])
@@ -1167,12 +1161,18 @@ export const Sidebar = memo(function Sidebar({
       const newActiveId = useConversationContextStore.getState().activeWorkspaceId
       if (newActiveId && onSelectWorkspace) {
         onSelectWorkspace(newActiveId)
+      } else if (!newActiveId) {
+        // Last conversation deleted: fall back to the bare project URL so
+        // syncFromRoute settles the WelcomeScreen (empty) state.
+        if (activeProjectId) {
+          router.push(projectWorkspacePath(activeProjectId))
+        }
       }
     } catch (error) {
       console.error('[Sidebar] Failed to delete conversation:', error)
       toast.error(t('sidebar.deleteWorkspaceFailed'))
     }
-  }, [deleteConversation, t, onSelectWorkspace])
+  }, [deleteConversation, t, onSelectWorkspace, activeProjectId, router])
 
   // collapsed sidebar view — single container with animated width
   return (
@@ -1283,7 +1283,6 @@ export const Sidebar = memo(function Sidebar({
             <NewWorkspaceButton
               onClick={handleCreateNewWorkspace}
               label={t('sidebar.newWorkspace')}
-              isActive={isDraftMode}
             />
           )}
 
@@ -1524,6 +1523,10 @@ export const Sidebar = memo(function Sidebar({
                     const newActiveId = useConversationContextStore.getState().activeWorkspaceId
                     if (newActiveId && onSelectWorkspace) {
                       onSelectWorkspace(newActiveId)
+                    } else if (!newActiveId && activeProjectId) {
+                      // Last conversation deleted: settle on the bare
+                      // project URL (WelcomeScreen state).
+                      router.push(projectWorkspacePath(activeProjectId))
                     }
                   } catch (error) {
                     console.error('[Sidebar] Failed to delete conversation:', error)

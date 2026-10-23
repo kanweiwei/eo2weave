@@ -56,8 +56,15 @@ describe('FolderSelector permission restoration', () => {
   async function restore() {
     render(<FolderSelector />)
     const user = userEvent.setup()
-    await user.click(screen.getByText('photos'))
-    await user.click(screen.getByText('projectRoots.restorePermission'))
+    // Open the roots popover, then the per-root actions menu (PR #46 redesign
+    // replaced the old chip dropdown with a DropdownMenu per root row), then
+    // trigger "restore permission" for the needs-activation root.
+    await user.click(screen.getByRole('button', { name: 'projectRoots.title' }))
+    await user.click(screen.getByRole('button', { name: 'projectRoots.menuLabel: photos' }))
+    const items = screen.getAllByText('projectRoots.restorePermission')
+    // The row subtitle also reads "restore permission" — the action is the
+    // dropdown item (last match inside the menu).
+    await user.click(items[items.length - 1])
   }
 
   it('requests restoration in a full tab instead of prompting from the side panel', async () => {

@@ -622,6 +622,7 @@ function WorkspaceLayoutPanel() {
 /** Editor display panel — font size, line numbers, word wrap, minimap */
 function WorkspaceEditorPanel() {
   const t = useT()
+  const { mode: themeMode, setTheme } = useTheme()
   const {
     display,
     setFontSize,
@@ -630,8 +631,41 @@ function WorkspaceEditorPanel() {
     setShowMiniMap,
   } = useWorkspacePreferencesStore()
 
+  const themeOptions: { value: ThemeMode; label: string; icon: React.ReactNode }[] = [
+    { value: 'light', label: t('settings.themeLight'), icon: <Sun className="h-4 w-4" /> },
+    { value: 'dark', label: t('settings.themeDark'), icon: <Moon className="h-4 w-4" /> },
+    { value: 'system', label: t('settings.themeSystem'), icon: <Monitor className="h-4 w-4" /> },
+  ]
+
   return (
     <div className="space-y-6 py-1">
+      {/* Appearance/Theme Section — moved here from General: users look for
+          color/theme under the appearance tab, not under "General" */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Sun className="h-4 w-4 text-tertiary" />
+          <h3 className="text-sm font-medium text-secondary">{t('settings.theme')}</h3>
+        </div>
+        <p className="text-xs text-tertiary">{t('settings.themeDescription')}</p>
+        <div className="grid grid-cols-3 gap-2">
+          {themeOptions.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setTheme(opt.value)}
+              className={`flex flex-col items-center gap-1.5 rounded-lg border px-3 py-3 text-sm transition-colors ${
+                themeMode === opt.value
+                  ? 'border-primary-100 bg-primary-50 font-medium text-primary-700 dark:border-primary-700 dark:bg-primary-100/30 dark:text-primary-700'
+                  : 'border-neutral-200 text-secondary hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800'
+              }`}
+            >
+              {opt.icon}
+              <span className="text-xs">{opt.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div>
         <h3 className="text-lg font-semibold text-secondary dark:text-foreground">
           {t('workspaceSettings.display.editorTitle')}
@@ -798,7 +832,6 @@ const SettingsDialogContent = forwardRef<
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false)
   const t = useT()
   const [locale, setLocale] = useLocale()
-  const { mode: themeMode, setTheme } = useTheme()
 
   // Jump to initialTab when the dialog opens
   useEffect(() => {
@@ -814,12 +847,6 @@ const SettingsDialogContent = forwardRef<
   }, [open])
 
   const docsUrl = locale === 'zh-CN' ? '/docs/zh' : '/docs/en'
-
-  const themeOptions: { value: ThemeMode; label: string; icon: React.ReactNode }[] = [
-    { value: 'light', label: t('settings.themeLight'), icon: <Sun className="h-4 w-4" /> },
-    { value: 'dark', label: t('settings.themeDark'), icon: <Moon className="h-4 w-4" /> },
-    { value: 'system', label: t('settings.themeSystem'), icon: <Monitor className="h-4 w-4" /> },
-  ]
 
   const tabGroups: { id: string; label: string; tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] }[] = [
     {
@@ -981,31 +1008,6 @@ const SettingsDialogContent = forwardRef<
                 </div>
               </div>
 
-              {/* Theme Section */}
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Sun className="h-4 w-4 text-tertiary" />
-                  <h3 className="text-sm font-medium text-secondary">{t('settings.theme')}</h3>
-                </div>
-                <p className="text-xs text-tertiary">{t('settings.themeDescription')}</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {themeOptions.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setTheme(opt.value)}
-                      className={`flex flex-col items-center gap-1.5 rounded-lg border px-3 py-3 text-sm transition-colors ${
-                        themeMode === opt.value
-                          ? 'border-primary-100 bg-primary-50 font-medium text-primary-700 dark:border-primary-700 dark:bg-primary-100/30 dark:text-primary-700'
-                          : 'border-neutral-200 text-secondary hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800'
-                      }`}
-                    >
-                      {opt.icon}
-                      <span className="text-xs">{opt.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
 
               {/* Documentation Link */}
               <div className="space-y-2">

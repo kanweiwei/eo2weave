@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { toast } from 'sonner'
 import { Loader2, AlertTriangle, CheckCircle, RefreshCw, ChevronDown, Clock3 } from 'lucide-react'
 import {
   BrandButton,
@@ -138,6 +139,13 @@ export function ScheduleForm({
 
   const handleSave = async () => {
     if (!canSave || saving) return
+    // Defensive guard: a schedule without a conversation binding could never
+    // execute (the runner resolves its target workspace by workspaceId).
+    // The agent-side tool enforces the same rule (schedule.tool.ts).
+    if (!workspaceId.trim()) {
+      toast.error(t('schedule.emptyWorkspace'))
+      return
+    }
     setSaving(true)
     setTestResult(null)
 

@@ -10,7 +10,7 @@ import { isSidePanelMode } from '@/agent/workspace-assistant-context'
  * Edge (#222) reloads the panel whenever its live URL diverges from the path
  * registered via sidePanel.setOptions. The settle protocol pins the URL at
  * panel open, but the app legitimately keeps navigating afterwards (workspace
- * resolution replaces the bare project URL with /workspaces/:id, draft ?new=1,
+ * resolution replaces the bare project URL with /workspaces/:id,
  * project switches...). Every such change re-opens the reload window.
  *
  * First run of each page load also performs reload-recovery: if a settle's

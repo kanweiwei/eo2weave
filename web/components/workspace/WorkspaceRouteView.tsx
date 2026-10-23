@@ -1,11 +1,11 @@
 'use client'
 
-import { useRouter, useParams, useSearchParams } from 'next/navigation'
+import { useRouter, useParams } from 'next/navigation'
 import { WorkspaceLayout } from '@/components/layout/WorkspaceLayout'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { useWorkspaceRouteSync } from '@/hooks/useWorkspaceRouteSync'
-import { projectWorkspacePath, projectsPath, newDraftPath } from '@/lib/route-paths'
+import { projectWorkspacePath, projectsPath } from '@/lib/route-paths'
 
 /**
  * WorkspaceRouteView — the real view for all three workspace URL shapes:
@@ -26,7 +26,6 @@ import { projectWorkspacePath, projectsPath, newDraftPath } from '@/lib/route-pa
 export default function WorkspaceRouteView() {
   const router = useRouter()
   const params = useParams<{ projectId: string; workspaceId?: string }>()
-  const isNewDraft = useSearchParams().get('new') === '1'
 
   // Next's App Router already decodes URI components in route params.
   const projectId = params.projectId ?? ''
@@ -58,17 +57,9 @@ export default function WorkspaceRouteView() {
         router.push(projectWorkspacePath(projectId, wsId))
       }}
       onDraftConversationCreated={(wsId: string) => {
-        // First message sent from the draft (WelcomeScreen on bare URL):
-        // replace, not push, so the draft state leaves no history entry.
+        // First message sent from the WelcomeScreen (bare URL): replace, not
+        // push, so the welcome state leaves no history entry.
         router.replace(projectWorkspacePath(projectId, wsId))
-      }}
-      onNewDraft={() => {
-        // Use the route params as the source of truth. Going straight to the
-        // draft URL avoids both a stale project-store id and the bare-route
-        // synchronizer redirect that could otherwise restore the prior chat.
-        if (!isNewDraft || workspaceId) {
-          router.replace(newDraftPath(projectId))
-        }
       }}
     />
   )

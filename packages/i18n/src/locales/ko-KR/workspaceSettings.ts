@@ -4,7 +4,7 @@ export const workspaceSettings = {
     done: "완료",
     tabs: {
       layout: "레이아웃",
-      display: "표시",
+      display: "모양",
       shortcuts: "단축키",
       data: "데이터",
       ariaLabel: "설정 옵션",
