@@ -1,13 +1,14 @@
 /**
- * Regression tests for the draft-attachment loss bug (?new=1 first send).
+ * Regression tests for the welcome-input attachment loss bug (first send
+ * right after the WelcomeScreen → conversation transition).
  *
  * Root cause being guarded: AgentRichInput's reset effect used to run its
  * "clear editor + useAssetStore.clearAll()" body on the render where the
  * tiptap editor instance FIRST becomes available (`immediatelyRender: false`
  * → editor is null on mount, instance arrives on a later render). Because
  * ConversationView remounts AgentRichInput under key={convId} during the
- * draft → conversation transition, that first run wiped the GLOBAL pending
- * asset store before sendMessage could read the staged attachments.
+ * WelcomeScreen → conversation transition, that first run wiped the GLOBAL
+ * pending asset store before sendMessage could read the staged attachments.
  *
  * Contract under test: the reset body (clearAll) must only run when
  * `resetToken` actually changes after the editor instance exists.
@@ -88,7 +89,7 @@ describe('AgentRichInput reset effect does not clear pending assets on editor mo
       await new Promise((r) => setTimeout(r, 0))
     })
 
-    // Simulate the ?new=1 draft → conversation transition: the component is
+    // Simulate the WelcomeScreen → conversation transition: the component is
     // remounted (key change) while resetToken is still the initial value.
     rerender(<Harness remountKey="conv-1" resetToken={0} />)
     await act(async () => {

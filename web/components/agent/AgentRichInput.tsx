@@ -982,10 +982,10 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   // effect's first run sees the initial token — that is editor readiness, NOT
   // a send-reset. Gating on an actual token change (vs. initial token) fixes
   // two silent asset-loss bugs:
-  //   1. Draft → conversation transition (?new=1 first send): the input
+  //   1. WelcomeScreen → conversation transition (first send): the input
   //      remounts under key={convId}; the old code's first run would
   //      clearAll() the GLOBAL pending-asset store before sendMessage read
-  //      it, dropping the staged attachments from the draft input.
+  //      it, dropping the staged attachments from the welcome input.
   //   2. Plain conversation switches: key={convId} remount → editor rebuild
   //      → same first-run clearAll(), wiping staged-but-unsent attachments.
   // StrictMode note: comparing against the token the editor was created with

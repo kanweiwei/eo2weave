@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useT } from '@/i18n'
 import { useProjectStore } from '@/store/project.store'
-import { useSearchParams } from 'next/navigation'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { projectWorkspacePath } from '@/lib/route-paths'
@@ -27,9 +26,6 @@ import { projectWorkspacePath } from '@/lib/route-paths'
  */
 export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
   const router = useRouter()
-  // ?new=1 marks "draft state": user clicked 新对话 on the bare URL and no
-  // conversation should be activated/created until the first message is sent.
-  const isNewDraft = useSearchParams().get('new') === '1'
 
   const setActiveProject = useProjectStore((s) => s.setActiveProject)
   const initialized = useProjectStore((s) => s.initialized)
@@ -117,22 +113,7 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
       }
 
       // Fallback: use active workspace or pick most recent.
-      // Draft mode (?new=1) skips this — we stay on the bare URL with no
-      // active conversation (WelcomeScreen renders the draft input).
       if (!targetWorkspaceId) {
-        if (isNewDraft) {
-          // Clear BOTH stores: conversation store drives the main view
-          // (WelcomeScreen draft), workspace store drives the sidebar
-          // highlight. Leaving activeWorkspaceId set would keep the previous
-          // conversation highlighted in the list while in draft mode.
-          if (useConversationStore.getState().activeConversationId) {
-            await useConversationStore.getState().setActive(null)
-          }
-          if (useConversationContextStore.getState().activeWorkspaceId !== null) {
-            useConversationContextStore.setState({ activeWorkspaceId: null })
-          }
-          return
-        }
         if (activeWorkspaceId && scopedWorkspaceIds.includes(activeWorkspaceId)) {
           targetWorkspaceId = activeWorkspaceId
         } else if (scopedWorkspaceIds.length > 0) {
@@ -194,5 +175,5 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
     return () => {
       cancelled = true
     }
-  }, [projectId, workspaceId, isNewDraft, setActiveProject, router, t, initialized, projectLoading])
+  }, [projectId, workspaceId, setActiveProject, router, t, initialized, projectLoading])
 }
