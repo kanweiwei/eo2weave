@@ -186,7 +186,7 @@ const SuggestionDropdown = forwardRef(
       <div
         role="listbox"
         aria-label="Suggestions"
-        className={`absolute bottom-full left-0 z-20 mb-2 ${width} overflow-hidden rounded-lg border border-neutral-200 bg-card shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
+        className={`absolute bottom-full left-0 z-20 mb-2 ${width} overflow-hidden rounded-lg border border-border bg-card shadow-lg`}
       >
         <div ref={scrollContainerRef} className="max-h-96 overflow-y-auto py-1">
           {items.map((item, idx) => {
@@ -196,7 +196,7 @@ const SuggestionDropdown = forwardRef(
             return (
               <div key={getItemKey(item)}>
               {showGroupHeader && (
-                <div className="sticky top-0 z-10 bg-card px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:bg-neutral-900 dark:text-neutral-500">
+                <div className="sticky top-0 z-10 bg-card px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
                   <span className="not-italic">{group}</span>
                 </div>
               )}
@@ -1134,7 +1134,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
         }}
       />
       <div
-        className="w-full overflow-hidden rounded-2xl border border-neutral-200 bg-card transition-all focus-within:border-primary-400 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-within:border-primary-500"
+        className="w-full overflow-hidden rounded-2xl border border-border bg-card transition-all focus-within:border-primary-400 dark:focus-within:border-primary-500"
         style={{
           // Embossed (raised) feel to separate the composer from the message
           // area — replaces the removed border-t divider. A crisp light edge
