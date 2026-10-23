@@ -154,7 +154,6 @@ export function FolderSelector() {
         url.search = `?projectId=${encodeURIComponent(activeProjectId)}`
         url.pathname = '/folder-pick'
         window.open(url.toString(), '_blank', 'noopener')
-        setActiveChip(null)
         return
       }
       try {
