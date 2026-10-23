@@ -40,7 +40,6 @@ import {
 } from '@creatorweave/ui'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useFlowStore } from '@/store/flow.store'
-import { useSettingsStore } from '@/store/settings.store'
 
 /** Stable tooltip wrapper — defined at module level to avoid recreating on every render. */
 const ActionTooltip = ({
@@ -111,7 +110,6 @@ export function TopBar({
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const mobileMorePanelRef = useRef<HTMLDivElement | null>(null)
   const flowPanelOpen = useFlowStore((s) => s.panelOpen)
-  const enableSchedules = useSettingsStore((s) => s.enableSchedules)
   const t = useT()
   const conversationName = activeConversationName ?? activeWorkspaceName
 
@@ -291,14 +289,12 @@ export function TopBar({
 
             <div className="h-5 w-px bg-muted" />
 
-            {/* Schedule / Timer (experimental) */}
-            {enableSchedules && (
+            {/* Schedule / Timer */}
             <ActionTooltip label={t('topbar.tooltips.schedules')}>
               <BrandButton iconButton className="shrink-0" onClick={onScheduleDrawerOpen} data-tour="schedules">
                 <Clock className="h-[14px] w-[14px]" />
               </BrandButton>
             </ActionTooltip>
-            )}
 
             <ActionTooltip label={t('topbar.tooltips.appSettings')}>
               <BrandButton iconButton className="shrink-0" onClick={() => openSettings()}>

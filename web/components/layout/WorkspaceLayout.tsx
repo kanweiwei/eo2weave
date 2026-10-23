@@ -293,10 +293,8 @@ export function WorkspaceLayout({
     return cleanup
   }, [])
 
-  // Start schedule heartbeat on mount (only when experimental feature is on)
-  const enableSchedules = useSettingsStore((s) => s.enableSchedules)
+  // Start schedule heartbeat on mount
   useEffect(() => {
-    if (!enableSchedules) return
     let cancelled = false
     import('@/services/schedule-heartbeat').then(({ startHeartbeat, stopHeartbeat }) => {
       if (cancelled) {
@@ -317,7 +315,7 @@ export function WorkspaceLayout({
         stopHeartbeat()
       }).catch(() => {})
     }
-  }, [enableSchedules])
+  }, [])
 
   // Phase 4: Load conversations on mount (independent of Sidebar rendering).
   // Also re-run when `loadError` flips (null→error or error→null): a failed
@@ -1124,8 +1122,7 @@ export function WorkspaceLayout({
       <MCPSettingsDialog open={showMcpSettings} onOpenChange={setShowMcpSettings} />
       <WebContainerPanel isOpen={isWebContainerPanelOpen} onClose={closeWebContainerPanel} />
 
-      {/* Schedule Drawer (experimental feature) */}
-      {enableSchedules && (
+      {/* Schedule Drawer */}
       <ScheduleDrawer
         workspaceId={activeConversationId ?? ''}
         open={scheduleDrawerOpen}
@@ -1137,7 +1134,6 @@ export function WorkspaceLayout({
           })
         }}
       />
-      )}
     </div>
   )
 }

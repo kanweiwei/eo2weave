@@ -139,8 +139,6 @@ export const settings = {
     experimentalWarningDesc: "Enabling them may cause stability issues. Some features depend on your provider's concurrency capacity.",
     batchSpawn: "Parallel Subagents (batch_spawn)",
     batchSpawnDesc: "Allow AI to launch multiple subtasks in parallel. Requires provider support for high concurrency, otherwise rate limit errors may occur.",
-    scheduleToggle: "Scheduled tasks",
-    scheduleToggleDesc: "Enable scheduled task management in the sidebar (experimental)",
 
 
     // Sync panel

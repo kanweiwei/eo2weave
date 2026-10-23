@@ -140,7 +140,7 @@ export function ScheduleDrawer({
     <Drawer open={open} onClose={onClose} title={t('schedule.drawerTitle')} width="440px">
       <div className="flex h-full flex-col overflow-hidden">
         {/* Header */}
-        <div className="shrink-0 border-b p-4">
+        <div className="shrink-0 border-b px-5 py-3">
           {view === 'list' ? (
             <BrandButton
               className="w-full"
@@ -153,17 +153,22 @@ export function ScheduleDrawer({
               {t('schedule.create')}
             </BrandButton>
           ) : (
-            <BrandButton
-              variant="ghost"
-              className="w-full"
-              onClick={() => {
-                setEditingSchedule(null)
-                setView('list')
-              }}
-            >
-              <X className="h-4 w-4" />
-              {t('schedule.backToList')}
-            </BrandButton>
+            <div className="flex items-center justify-between gap-3">
+              <BrandButton
+                variant="ghost"
+                className="w-auto px-2"
+                onClick={() => {
+                  setEditingSchedule(null)
+                  setView('list')
+                }}
+              >
+                <X className="h-4 w-4" />
+                {t('schedule.backToList')}
+              </BrandButton>
+              <span className="truncate text-sm font-medium text-muted">
+                {view === 'edit' ? t('schedule.edit') : t('schedule.create')}
+              </span>
+            </div>
           )}
         </div>
 

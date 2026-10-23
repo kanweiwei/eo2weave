@@ -10,11 +10,22 @@
  */
 
 import { useState, useEffect } from 'react'
-import { Loader2, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react'
-import { BrandButton } from '@creatorweave/ui'
+import { Loader2, AlertTriangle, CheckCircle, RefreshCw, ChevronDown, Clock3 } from 'lucide-react'
+import {
+  BrandButton,
+  BrandInput,
+  BrandTextarea,
+  BrandCheckbox,
+  BrandSelect,
+  BrandSelectTrigger,
+  BrandSelectValue,
+  BrandSelectContent,
+  BrandSelectItem,
+} from '@creatorweave/ui'
 import { useT } from '@/i18n'
 import {
   createSchedule,
+  deleteSchedule,
   saveSchedule,
   type Schedule,
 } from '@/services/schedule-storage'
@@ -96,6 +107,34 @@ export function ScheduleForm({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const canSave = name.trim() && cronExpression.trim() && !cronError && prompt.trim()
+  const parsedSchedule = parseCron(cronExpression)
+  const cronFields = parsedSchedule.ok ? parsedSchedule.fields : null
+  const [advancedCron, setAdvancedCron] = useState(false)
+  const [frequency, setFrequency] = useState(() => {
+    if (!cronFields) return 'custom'
+    if (cronFields.hour === '*' && cronFields.dayOfMonth === '*' && cronFields.month === '*' && cronFields.dayOfWeek === '*') return 'hourly'
+    if (cronFields.hour !== '*' && cronFields.dayOfMonth === '*' && cronFields.month === '*' && cronFields.dayOfWeek === '*') return 'daily'
+    if (cronFields.hour !== '*' && cronFields.dayOfMonth === '*' && cronFields.month === '*' && cronFields.dayOfWeek !== '*') return 'weekly'
+    if (cronFields.hour !== '*' && cronFields.dayOfMonth !== '*' && cronFields.month === '*' && cronFields.dayOfWeek === '*') return 'monthly'
+    return 'custom'
+  })
+  const [scheduleHour, setScheduleHour] = useState(() => cronFields?.hour !== '*' ? Number(cronFields?.hour ?? 9) : 9)
+  const [scheduleMinute, setScheduleMinute] = useState(() => Number(cronFields?.minute ?? 0))
+  const [weekday, setWeekday] = useState(() => cronFields?.dayOfWeek !== '*' ? Number(cronFields?.dayOfWeek ?? 1) : 1)
+  const [monthday, setMonthday] = useState(() => cronFields?.dayOfMonth !== '*' ? Number(cronFields?.dayOfMonth ?? 1) : 1)
+
+  const applyFrequency = (nextFrequency: string, hour = scheduleHour, minute = scheduleMinute) => {
+    setFrequency(nextFrequency)
+    if (nextFrequency === 'hourly') setCronExpression(`${minute} * * * *`)
+    else if (nextFrequency === 'daily') setCronExpression(`${minute} ${hour} * * *`)
+    else if (nextFrequency === 'weekly') setCronExpression(`${minute} ${hour} * * ${weekday}`)
+    else if (nextFrequency === 'monthly') setCronExpression(`${minute} ${hour} ${monthday} * *`)
+  }
+  const updateTime = (hour: number, minute: number) => {
+    setScheduleHour(hour)
+    setScheduleMinute(minute)
+    if (frequency !== 'custom') applyFrequency(frequency, hour, minute)
+  }
 
   const handleSave = async () => {
     if (!canSave || saving) return
@@ -116,13 +155,13 @@ export function ScheduleForm({
       }
 
       const scheduleData = {
-        projectId,
-        workspaceId,
+        projectId: isEdit && initialSchedule ? initialSchedule.projectId : projectId,
+        workspaceId: isEdit && initialSchedule ? initialSchedule.workspaceId : workspaceId,
         name: name.trim(),
         prompt: prompt.trim(),
         schedule: { type: 'cron' as const, expression: cronExpression.trim() },
         notification: { onSuccess, onFailure },
-        enabled: true,
+        enabled: isEdit && initialSchedule ? initialSchedule.enabled : true,
       }
 
       let saved: Schedule
@@ -150,121 +189,185 @@ export function ScheduleForm({
   }
 
   const handleTestRun = async () => {
-    if (saving || testing) return
+    if (saving || testing || !prompt.trim() || !cronExpression.trim() || cronError) return
     setTesting(true)
     setTestResult(null)
+    let temporaryId: string | undefined
 
     try {
-      // Temporarily save the schedule if it's new
-      let scheduleId = initialSchedule?.id
-
-      if (!scheduleId) {
-        // Quick save to get an ID
-        let projectId = ''
+      let projectId = initialSchedule?.projectId ?? ''
+      if (!initialSchedule) {
         try {
           const wsRepo = await getWorkspaceRepository()
           const ws = await wsRepo.findWorkspaceById(workspaceId)
           if (ws) projectId = ws.projectId ?? ''
-        } catch {}
-
-        const temp = await createSchedule({
-          projectId,
-          workspaceId,
-          name: name.trim() || '测试运行',
-          prompt: prompt.trim(),
-          schedule: { type: 'cron', expression: cronExpression.trim() },
-          notification: { onSuccess: false, onFailure: false },
-          enabled: false, // disabled so heartbeat won't run it
-        })
-        scheduleId = temp.id
+        } catch {
+          // Testing can proceed without project metadata.
+        }
       }
 
-      if (scheduleId) {
-        await triggerSchedule(scheduleId, { force: true })
-        setTestResult({ ok: true, message: t('schedule.testSuccess') })
-      }
+      const temp = await createSchedule({
+        projectId,
+        workspaceId: initialSchedule?.workspaceId ?? workspaceId,
+        name: name.trim() || t('schedule.form.testRun'),
+        prompt: prompt.trim(),
+        schedule: { type: 'cron', expression: cronExpression.trim() },
+        notification: { onSuccess: false, onFailure: false },
+        enabled: false,
+      })
+      temporaryId = temp.id
+      await triggerSchedule(temp.id, { force: true })
+      setTestResult({ ok: true, message: t('schedule.testSuccess') })
     } catch (err) {
       setTestResult({ ok: false, message: String(err) })
     } finally {
+      if (temporaryId) {
+        try {
+          await deleteSchedule(temporaryId)
+        } catch (err) {
+          console.warn('[ScheduleForm] Failed to clean up test schedule:', err)
+        }
+      }
       setTesting(false)
     }
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden p-4">
-      <div className="flex-1 space-y-4 overflow-y-auto">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
         {/* Name */}
-        <div className="space-y-1">
-          <label className="text-sm font-medium">{t('schedule.form.name')}</label>
-          <input
+        <div className="space-y-1.5">
+          <label htmlFor="schedule-name" className="text-sm font-medium">{t('schedule.form.name')}</label>
+          <BrandInput
+            id="schedule-name"
             type="text"
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder={t('schedule.form.namePlaceholder')}
+            className="h-10 px-3 py-2"
           />
         </div>
 
-        {/* Cron expression */}
-        <div className="space-y-1">
-          <label className="text-sm font-medium">{t('schedule.form.schedule')}</label>
+        {/* Schedule cadence */}
+        <section className="space-y-3 border-y border-border py-4">
           <div className="flex items-center gap-2">
-            <input
-              type="text"
-              className={`flex-1 rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring ${
-                cronError ? 'border-red-500' : 'border-input'
-              }`}
-              value={cronExpression}
-              onChange={e => setCronExpression(e.target.value)}
-              placeholder="0 9 * * *"
-            />
+            <Clock3 className="h-4 w-4 text-primary" aria-hidden="true" />
+            <label htmlFor="schedule-frequency" className="text-sm font-semibold">{t('schedule.form.schedule')}</label>
           </div>
+          <BrandSelect
+            value={frequency}
+            onValueChange={value => {
+              if (value === 'custom') setFrequency(value)
+              else applyFrequency(value)
+            }}
+          >
+            <BrandSelectTrigger id="schedule-frequency" aria-label={t('schedule.form.schedule')}>
+              <BrandSelectValue />
+            </BrandSelectTrigger>
+            <BrandSelectContent>
+              <BrandSelectItem value="hourly">{t('schedule.form.everyHour')}</BrandSelectItem>
+              <BrandSelectItem value="daily">{t('schedule.form.daily')}</BrandSelectItem>
+              <BrandSelectItem value="weekly">{t('schedule.form.weekly')}</BrandSelectItem>
+              <BrandSelectItem value="monthly">{t('schedule.form.monthly')}</BrandSelectItem>
+              <BrandSelectItem value="custom">{t('schedule.form.custom')}</BrandSelectItem>
+            </BrandSelectContent>
+          </BrandSelect>
 
-          {cronError && (
-            <p className="flex items-center gap-1 text-xs text-red-500">
-              <AlertTriangle className="h-3 w-3" />
-              {cronError}
-            </p>
+          {frequency !== 'custom' && frequency !== 'hourly' && (
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1 text-xs text-muted">
+                <span>{t('schedule.form.time')}</span>
+                <div className="flex items-center gap-1.5">
+                  <BrandSelect value={String(scheduleHour)} onValueChange={value => updateTime(Number(value), scheduleMinute)}>
+                    <BrandSelectTrigger aria-label={t('schedule.form.hour')} className="min-w-0 flex-1">
+                      <BrandSelectValue />
+                    </BrandSelectTrigger>
+                    <BrandSelectContent>
+                      {Array.from({ length: 24 }, (_, hour) => <BrandSelectItem key={hour} value={String(hour)}>{String(hour).padStart(2, '0')}</BrandSelectItem>)}
+                    </BrandSelectContent>
+                  </BrandSelect>
+                  <span aria-hidden="true">:</span>
+                  <BrandSelect value={String(scheduleMinute)} onValueChange={value => updateTime(scheduleHour, Number(value))}>
+                    <BrandSelectTrigger aria-label={t('schedule.form.minute')} className="min-w-0 flex-1">
+                      <BrandSelectValue />
+                    </BrandSelectTrigger>
+                    <BrandSelectContent>
+                      {Array.from({ length: 60 }, (_, minute) => <BrandSelectItem key={minute} value={String(minute)}>{String(minute).padStart(2, '0')}</BrandSelectItem>)}
+                    </BrandSelectContent>
+                  </BrandSelect>
+                </div>
+              </label>
+              {frequency === 'weekly' && (
+                <label className="space-y-1 text-xs text-muted">
+                  <span>{t('schedule.form.dayOfWeek')}</span>
+                  <BrandSelect value={String(weekday)} onValueChange={value => { const day = Number(value); setWeekday(day); setCronExpression(`${scheduleMinute} ${scheduleHour} * * ${day}`) }}>
+                    <BrandSelectTrigger aria-label={t('schedule.form.dayOfWeek')}>
+                      <BrandSelectValue />
+                    </BrandSelectTrigger>
+                    <BrandSelectContent>
+                      {(['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const).map((day, index) => <BrandSelectItem key={day} value={String(index)}>{t(`schedule.form.weekdays.${day}`)}</BrandSelectItem>)}
+                    </BrandSelectContent>
+                  </BrandSelect>
+                </label>
+              )}
+              {frequency === 'monthly' && (
+                <label className="space-y-1 text-xs text-muted">
+                  <span>{t('schedule.form.dayOfMonth')}</span>
+                  <BrandSelect value={String(monthday)} onValueChange={value => { const day = Number(value); setMonthday(day); setCronExpression(`${scheduleMinute} ${scheduleHour} ${day} * *`) }}>
+                    <BrandSelectTrigger aria-label={t('schedule.form.dayOfMonth')}>
+                      <BrandSelectValue />
+                    </BrandSelectTrigger>
+                    <BrandSelectContent>
+                      {Array.from({ length: 31 }, (_, index) => <BrandSelectItem key={index + 1} value={String(index + 1)}>{index + 1}</BrandSelectItem>)}
+                    </BrandSelectContent>
+                  </BrandSelect>
+                </label>
+              )}
+            </div>
+          )}
+
+          {frequency === 'hourly' && (
+            <p className="text-xs text-muted">{t('schedule.form.hourlyHint')}</p>
           )}
 
           {cronDescription && !cronError && (
-            <p className="text-sm text-muted">{cronDescription}</p>
+            <p className="text-sm font-medium text-foreground">{cronDescription}</p>
           )}
-
           {nextRun && !cronError && (
-            <p className="text-xs text-muted">
-              {t('schedule.form.nextRun')}: {nextRun}
-            </p>
+            <p className="flex items-center gap-1.5 text-xs text-muted"><Clock3 className="h-3 w-3" />{t('schedule.form.nextRun')}: {nextRun}</p>
           )}
 
-          {/* Quick presets */}
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {[
-              { label: t('schedule.preset.daily'), expr: '0 9 * * *' },
-              { label: t('schedule.preset.weekly'), expr: '0 9 * * 1' },
-              { label: t('schedule.preset.monthly'), expr: '0 9 1 * *' },
-              { label: t('schedule.preset.hourly'), expr: '0 * * * *' },
-            ].map(preset => (
-              <button
-                key={preset.expr}
-                type="button"
-                className="rounded border border-input bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
-                onClick={() => setCronExpression(preset.expr)}
-              >
-                {preset.label}
-              </button>
-            ))}
+          <div className="border-t border-border/70 pt-2">
+            <button type="button" className="flex items-center gap-1.5 text-xs text-muted hover:text-foreground" aria-expanded={advancedCron} onClick={() => setAdvancedCron(value => !value)}>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${advancedCron ? 'rotate-180' : ''}`} />
+              {t('schedule.form.advancedCron')}
+            </button>
+            {advancedCron && (
+              <div className="mt-2 space-y-1.5">
+                <BrandInput
+                  type="text"
+                  aria-label={t('schedule.form.cronExpression')}
+                  state={cronError ? 'error' : 'default'}
+                  className="font-mono"
+                  value={cronExpression}
+                  onChange={e => { setFrequency('custom'); setCronExpression(e.target.value) }}
+                  placeholder="0 9 * * 1"
+                />
+                {cronError && <p role="alert" className="flex items-center gap-1 text-xs text-red-500"><AlertTriangle className="h-3 w-3" />{cronError}</p>}
+              </div>
+            )}
           </div>
-        </div>
+        </section>
 
         {/* Prompt */}
-        <div className="space-y-1">
-          <label className="text-sm font-medium">{t('schedule.form.prompt')}</label>
-          <p className="text-xs text-muted">
+        <div className="space-y-2">
+          <label htmlFor="schedule-prompt" className="text-sm font-semibold">{t('schedule.form.prompt')}</label>
+          <p className="text-xs leading-relaxed text-muted">
             {t('schedule.form.promptHint')}
           </p>
-          <textarea
-            className="min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          <BrandTextarea
+            id="schedule-prompt"
+            className="min-h-[132px] resize-y text-sm leading-relaxed"
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             placeholder={t('schedule.form.promptPlaceholder')}
@@ -272,51 +375,44 @@ export function ScheduleForm({
         </div>
 
         {/* Notification preferences */}
-        <div className="space-y-1">
-          <label className="text-sm font-medium">{t('schedule.form.notification')}</label>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={onSuccess}
-                onChange={e => setOnSuccess(e.target.checked)}
-                className="rounded"
-              />
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-semibold">{t('schedule.form.notification')}</legend>
+          <div className="flex flex-col gap-2 sm:flex-row sm:gap-5">
+            <label className="flex min-h-9 cursor-pointer items-center gap-2 text-sm text-foreground">
+              <BrandCheckbox checked={onSuccess} onCheckedChange={checked => setOnSuccess(checked === true)} size="sm" aria-label={t('schedule.form.notifyOnSuccess')} />
               {t('schedule.form.notifyOnSuccess')}
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={onFailure}
-                onChange={e => setOnFailure(e.target.checked)}
-                className="rounded"
-              />
+            <label className="flex min-h-9 cursor-pointer items-center gap-2 text-sm text-foreground">
+              <BrandCheckbox checked={onFailure} onCheckedChange={checked => setOnFailure(checked === true)} size="sm" aria-label={t('schedule.form.notifyOnFailure')} />
               {t('schedule.form.notifyOnFailure')}
             </label>
           </div>
-        </div>
+        </fieldset>
 
         {/* Test result */}
-        {testResult && (
-          <div className={`flex items-center gap-2 rounded-md p-3 text-sm ${
-            testResult.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
-          }`}>
-            {testResult.ok ? (
-              <CheckCircle className="h-4 w-4 shrink-0" />
-            ) : (
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-            )}
-            {testResult.message}
-          </div>
-        )}
       </div>
 
       {/* Action buttons */}
-      <div className="shrink-0 flex flex-col gap-2 border-t pt-4">
+      <div className="shrink-0 border-t border-border bg-background px-5 py-3.5">
+        {testResult && (
+          <div role={testResult.ok ? 'status' : 'alert'} className={`mb-3 flex items-start gap-2 rounded-md px-3 py-2 text-sm ${
+            testResult.ok ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200' : 'bg-destructive/10 text-destructive'
+          }`}>
+            {testResult.ok ? <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />}
+            <span>{testResult.message}</span>
+          </div>
+        )}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+          {onCancel && (
+            <BrandButton variant="ghost" className="sm:w-auto" onClick={onCancel}>
+              {t('common.cancel')}
+            </BrandButton>
+          )}
+          <div className="flex flex-1 gap-2 sm:justify-end">
         {/* Test run */}
         <BrandButton
           variant="secondary"
-          className="w-full"
+          className="flex-1 sm:flex-none"
           disabled={!prompt.trim() || !!cronError || testing || saving}
           onClick={handleTestRun}
         >
@@ -330,7 +426,7 @@ export function ScheduleForm({
 
         {/* Save */}
         <BrandButton
-          className="w-full"
+          className="flex-1 sm:flex-none"
           disabled={!canSave || saving || testing}
           onClick={handleSave}
         >
@@ -342,12 +438,8 @@ export function ScheduleForm({
             : t('schedule.form.create')}
         </BrandButton>
 
-        {/* Cancel */}
-        {onCancel && (
-          <BrandButton variant="ghost" className="w-full" onClick={onCancel}>
-            {t('common.cancel')}
-          </BrandButton>
-        )}
+          </div>
+        </div>
       </div>
     </div>
   )

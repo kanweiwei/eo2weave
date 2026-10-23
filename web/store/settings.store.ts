@@ -119,7 +119,6 @@ interface SettingsState {
   // 实验性功能 (Experimental features, disabled by default)
   enableBatchSpawn: boolean
   enableWebMCP: boolean
-  enableSchedules: boolean
   agentLoopNotifications: {
     enabled: boolean
     onlyWhenHidden: boolean
@@ -193,7 +192,6 @@ interface SettingsState {
   setImageGenAspectRatio: (v: string) => void
   setEnableBatchSpawn: (v: boolean) => void
   setEnableWebMCP: (v: boolean) => void
-  setEnableSchedules: (v: boolean) => void
   setSnapshotHighWatermark: (n: number) => void
   setSnapshotLowWatermark: (n: number) => void
   setHasApiKey: (has: boolean) => void
@@ -385,7 +383,6 @@ export const useSettingsStore = create<SettingsState>()(
       thinkingLevel: 'medium' as ExtendedThinkingLevel,
       enableBatchSpawn: false,
       enableWebMCP: true,
-      enableSchedules: false,
       snapshotHighWatermark: 100,
       snapshotLowWatermark: 50,
       hasApiKey: false,
@@ -609,7 +606,6 @@ export const useSettingsStore = create<SettingsState>()(
       setImageGenAspectRatio: (imageGenAspectRatio) => set({ imageGenAspectRatio }),
       setEnableBatchSpawn: (enableBatchSpawn) => set({ enableBatchSpawn }),
       setEnableWebMCP: (enableWebMCP) => set({ enableWebMCP }),
-      setEnableSchedules: (enableSchedules) => set({ enableSchedules }),
       setSnapshotHighWatermark: (snapshotHighWatermark) => {
         const low = get().snapshotLowWatermark
         // Keep a strict gap: repository validation requires low < high.
@@ -1146,21 +1142,27 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'bfosa-settings',
-      version: 2,
+      version: 3,
       // Migrate older persisted states forward. v1 state doesn't have
       // agentLoopNotifications — backfill defaults on load.
+      // v3 drops enableSchedules: schedules became a first-class feature
+      // (always on), so the legacy opt-out flag is stripped from storage.
       migrate: (persistedState: unknown, version: number) => {
         if (!persistedState || typeof persistedState !== 'object') return persistedState
+        let next = persistedState as Record<string, unknown>
         if (version < 2) {
-          return {
-            ...(persistedState as Record<string, unknown>),
+          next = {
+            ...next,
             agentLoopNotifications: {
               enabled: true,
               onlyWhenHidden: true,
             },
           }
         }
-        return persistedState
+        if (version < 3) {
+          delete next.enableSchedules
+        }
+        return next
       },
       // Don't persist hasApiKey - it's derived from SQLite
       partialize: (state) => ({
@@ -1175,7 +1177,6 @@ export const useSettingsStore = create<SettingsState>()(
         thinkingLevel: state.thinkingLevel,
         enableBatchSpawn: state.enableBatchSpawn,
         enableWebMCP: state.enableWebMCP,
-        enableSchedules: state.enableSchedules,
         snapshotHighWatermark: state.snapshotHighWatermark,
         snapshotLowWatermark: state.snapshotLowWatermark,
         modelOverridesByWorkspace: state.modelOverridesByWorkspace,
