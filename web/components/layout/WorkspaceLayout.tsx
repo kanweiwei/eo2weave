@@ -86,8 +86,6 @@ interface WorkspaceLayoutProps {
    * draft → conversation transition doesn't add a history entry.
    */
   onDraftConversationCreated?: (workspaceId: string) => void
-  /** Enter draft state (bare project URL) without creating a conversation. */
-  onNewDraft?: () => void
 }
 
 export function WorkspaceLayout({
@@ -100,7 +98,6 @@ export function WorkspaceLayout({
   onManageProjects,
   onSelectWorkspace,
   onDraftConversationCreated,
-  onNewDraft,
 }: WorkspaceLayoutProps) {
   const waitForWorkspaceReady = useCallback(async (workspaceId: string, timeoutMs = 30000) => {
     const manager = await getWorkspaceManager()
@@ -282,6 +279,14 @@ export function WorkspaceLayout({
     setPendingMessage(null)
   }, [])
 
+  // New Chat entries (sidebar button): create the conversation immediately
+  // (persisted right away by createNew) and let the route owner navigate to
+  // its canonical URL. No draft state involved.
+  const handleCreateConversation = useCallback(() => {
+    const conv = createNew('New conversation')
+    onSelectWorkspace?.(conv.id)
+  }, [createNew, onSelectWorkspace])
+
   // Skills management handlers
   const handleSkillsManagerOpen = useCallback(() => {
     setSkillsManagerOpen(true)
@@ -380,16 +385,10 @@ export function WorkspaceLayout({
   const commands: Command[] = buildEnhancedCommands({
     // Conversations
     onNewConversation: () => {
-      // Deferred creation: enter draft state (bare project URL). The
-      // conversation is created only when the first message is sent
-      // (handleStartConversation). If no draft callback was provided
-      // (non-router usage), fall back to creating directly.
-      if (onNewDraft) {
-        onNewDraft()
-      } else {
-        const newConv = createNew('New conversation')
-        onSelectWorkspace?.(newConv.id)
-      }
+      // Immediate creation: the conversation row is persisted right away and
+      // the URL moves to its canonical /workspaces/:id page (no draft state).
+      const newConv = createNew('New conversation')
+      onSelectWorkspace?.(newConv.id)
     },
     onContinueLast: () => {
       const { conversations } = useConversationStore.getState()
@@ -880,7 +879,7 @@ export function WorkspaceLayout({
             revealTargetPath={revealTargetPath}
             onRevealComplete={handleRevealComplete}
             onSelectWorkspace={onSelectWorkspace}
-            onNewDraft={onNewDraft}
+            onCreateConversation={handleCreateConversation}
           />
         )}
         {isMobile && isSidebarOpen && (
@@ -894,8 +893,8 @@ export function WorkspaceLayout({
               revealTargetPath={revealTargetPath}
               onRevealComplete={handleRevealComplete}
               onSelectWorkspace={onSelectWorkspace}
-              onNewDraft={onNewDraft}
-            />
+              onCreateConversation={handleCreateConversation}
+              />
           </div>
         )}
 
