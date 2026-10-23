@@ -551,13 +551,6 @@ export const settings = {
       queryFailed: "余额查询失败",
     },
 
-    imageGen: {
-      aspectRatio: "图片宽高比",
-      arHint: "也可用 --ar 16:9 临时指定",
-      searchModel: "搜索模型...",
-      noModelFound: "未找到匹配的模型",
-    },
-
     notifications: {
       title: "通知",
       description: "agent loop 完成时的系统通知。",

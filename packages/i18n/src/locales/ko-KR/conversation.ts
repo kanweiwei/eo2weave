@@ -157,6 +157,11 @@ export const conversation = {
         '3:2': "사진",
         '2:3': "포스터",
       },
+      /** Composer image-model picker (ImageGenDropdown). */
+      selectModel: "이미지 모델",
+      searchPlaceholder: "모델 검색...",
+      noModelFound: "일치하는 모델이 없습니다",
+      aspectRatioLabel: "가로세로 비율",
     },
     readImage: {
       label: "AI가 읽은 이미지",

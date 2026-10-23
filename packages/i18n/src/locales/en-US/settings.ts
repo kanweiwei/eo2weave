@@ -564,13 +564,6 @@ export const settings = {
       hint: "Save an API key to query your account balance",
     },
 
-    imageGen: {
-      aspectRatio: "Aspect Ratio",
-      arHint: 'Use --ar 16:9 to override',
-      searchModel: "Search models...",
-      noModelFound: "No matching models found",
-    },
-
     notifications: {
       title: "Notifications",
       description: "System notifications when an agent loop completes.",

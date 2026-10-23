@@ -189,6 +189,11 @@ export const conversation = {
         '3:2': "照片",
         '2:3': "海报",
       },
+      /** Composer image-model picker (ImageGenDropdown). */
+      selectModel: "图像模型",
+      searchPlaceholder: "搜索模型...",
+      noModelFound: "未找到匹配的模型",
+      aspectRatioLabel: "宽高比",
     },
     readImage: {
       label: "AI 主动读取的图片",

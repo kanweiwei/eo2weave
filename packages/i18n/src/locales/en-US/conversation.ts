@@ -186,6 +186,11 @@ export const conversation = {
         '3:2': "Photo",
         '2:3': "Poster",
       },
+      /** Composer image-model picker (ImageGenDropdown). */
+      selectModel: "Image model",
+      searchPlaceholder: "Search models...",
+      noModelFound: "No matching models found",
+      aspectRatioLabel: "Aspect Ratio",
     },
     readImage: {
       label: "Image read by AI",

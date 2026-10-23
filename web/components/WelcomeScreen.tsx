@@ -24,7 +24,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import { FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable, CircleHelp, Puzzle } from 'lucide-react'
+import { FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ArrowRight, Check, Cable, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
@@ -58,6 +58,7 @@ import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
+import { VisionCapabilityIndicator } from '@/components/agent/VisionCapabilityIndicator'
 
 type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'mount-folder' | 'ready'
 
@@ -204,11 +205,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const gatewayAvailable = isLLMGatewayConfigured()
   const supportsVision = supportsImageInput(modelName, providerType || undefined)
   const canCaptureScreenshot = supportsVision && isPageActionAvailable()
-  const screenshotLabel = !supportsVision
-    ? t('agent.vision.unsupported')
-    : canCaptureScreenshot
-      ? t('agent.vision.capture')
-      : t('agent.vision.supported')
 
   const hasCreatedProject = typeof window !== 'undefined'
     && localStorage.getItem('creatorweave:auto-default-project-created') === '1'
@@ -805,30 +801,13 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   />
                 )}
                 leadingAccessory={(
-                  <TooltipProvider delayDuration={250}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex">
-                          <button
-                            type="button"
-                            aria-label={screenshotLabel}
-                            disabled={!canCaptureScreenshot || isCapturingScreenshot}
-                            onClick={() => void handleCaptureScreenshot()}
-                            className={`inline-flex h-8 w-8 items-center justify-center rounded-xl transition-colors disabled:cursor-not-allowed ${
-                              supportsVision
-                                ? 'bg-primary-50 text-primary-600 dark:bg-primary-50/40 dark:text-primary-700'
-                                : 'bg-neutral-50 text-neutral-400 dark:bg-neutral-900 text-neutral-600'
-                            }`}
-                          >
-                            {isCapturingScreenshot
-                              ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                              : <ImageIcon className="h-4 w-4" aria-hidden="true" />}
-                          </button>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="top" sideOffset={6}>{screenshotLabel}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                  <VisionCapabilityIndicator
+                    modelName={modelName}
+                    providerType={providerType}
+                    canCapture={canCaptureScreenshot}
+                    isCapturing={isCapturingScreenshot}
+                    onCapture={() => void handleCaptureScreenshot()}
+                  />
                 )}
               />
             </div>

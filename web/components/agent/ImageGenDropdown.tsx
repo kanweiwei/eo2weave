@@ -12,6 +12,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { ImageIcon, Search, ChevronDown } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
+import { useT } from '@/i18n'
 import { getImageModels } from '@earendil-works/pi-ai'
 import { getCachedModels, onModelsUpdated } from '@/agent/providers/model-store'
 import type { LLMProviderType } from '@/agent/providers/types'
@@ -96,6 +97,7 @@ export function useHasImageModels(): boolean {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
+  const t = useT()
   const imageGenModel = useSettingsStore((s) => s.imageGenModel)
   const setImageGenModel = useSettingsStore((s) => s.setImageGenModel)
   const imageGenAspectRatio = useSettingsStore((s) => s.imageGenAspectRatio)
@@ -133,6 +135,9 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
 
   const currentDisplay = useMemo(() => displayModelId(imageGenModel), [imageGenModel])
 
+  /** Accessible name for the icon-only trigger — the model id alone is meaningless. */
+  const triggerLabel = `${t('conversation.imageGen.selectModel')}: ${currentDisplay} · ${imageGenAspectRatio || '1:1'}`
+
   // Focus search input on open
   useEffect(() => {
     if (open) {
@@ -165,8 +170,8 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
           <BrandButton
             iconButton
             variant="ghost"
-            title={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
-            aria-label={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
+            title={triggerLabel}
+            aria-label={triggerLabel}
             className="h-7 w-7 shrink-0 p-0"
           >
             <ImageIcon className="h-3.5 w-3.5 shrink-0" />
@@ -174,8 +179,8 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
         ) : (
           <BrandButton
             variant="outline"
-            title={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
-            aria-label={`${currentDisplay} · ${imageGenAspectRatio || '1:1'}`}
+            title={triggerLabel}
+            aria-label={triggerLabel}
             className="h-8 max-w-[220px] justify-between gap-1.5 px-2.5 text-xs"
           >
             <span className="flex min-w-0 items-center gap-1.5">
@@ -197,7 +202,7 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索模型..."
+              placeholder={t('conversation.imageGen.searchPlaceholder')}
               className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
@@ -228,7 +233,7 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
           ))}
           {filtered.size === 0 && (
             <div className="px-2 py-3 text-center text-xs text-tertiary">
-              未找到匹配的模型
+              {t('conversation.imageGen.noModelFound')}
             </div>
           )}
         </div>
@@ -236,7 +241,7 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
         {/* Aspect ratio */}
         <div className="border-t border-border/60 p-2">
           <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wide text-tertiary">
-            宽高比
+            {t('conversation.imageGen.aspectRatioLabel')}
           </div>
           <div className="grid grid-cols-4 gap-1">
             {RATIOS.map(({ value, label }) => (
