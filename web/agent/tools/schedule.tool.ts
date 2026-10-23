@@ -39,14 +39,13 @@ function ok(data: Record<string, unknown>): string {
 
 /** Serialize a Schedule for tool output (omit large/internal fields) */
 function serializeSchedule(s: Schedule): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     id: s.id,
     name: s.name,
     cron: s.schedule.expression,
     cron_description: describeCron(s.schedule.expression),
     prompt: s.prompt.length > 200 ? s.prompt.slice(0, 200) + '...' : s.prompt,
     enabled: s.enabled,
-    error: s.error,
     last_run_at: s.lastRunAt ? new Date(s.lastRunAt).toISOString() : null,
     last_run_number: s.lastRunNumber,
     next_run: (() => {
@@ -57,6 +56,11 @@ function serializeSchedule(s: Schedule): Record<string, unknown> {
     created_at: new Date(s.createdAt).toISOString(),
     updated_at: new Date(s.updatedAt).toISOString(),
   }
+  // Only surface the schedule's own error when it is set. Emitting
+  // `error: null` would make the tool card render a failure badge, because
+  // the UI treats any payload carrying an `error` key as a failed call.
+  if (s.error) out.error = s.error
+  return out
 }
 
 function asString(v: unknown): string | undefined {
