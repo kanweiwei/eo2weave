@@ -177,9 +177,22 @@ function buildCtx(props: ToolCallDisplayProps): ToolRenderCtx {
     }
   }
 
-  const hasToolError = parsedResult && Object.prototype.hasOwnProperty.call(parsedResult, 'error')
-    ? true
-    : result ? result.includes('"error"') : false
+  // Failure detection relies on structured envelope fields only.
+  // ① v2 envelope: ok:false means failure. ② Legacy/loose payloads: a TOP-LEVEL
+  // `error` key with a non-null value, or `success === false`.
+  // Deliberately NOT scanning the raw string for `"error"` — that flagged
+  // successful calls whose payload merely embeds arbitrary content (fetched
+  // page bodies, Python stdout, run_code inner traces, subagent summaries)
+  // containing the literal token, rendering red badges on success.
+  const envelopeSaysError =
+    parsedResult != null &&
+    Object.prototype.hasOwnProperty.call(parsedResult, 'ok') &&
+    parsedResult.ok === false
+  const hasToolError =
+    envelopeSaysError ||
+    (parsedResult != null &&
+      Object.prototype.hasOwnProperty.call(parsedResult, 'error') &&
+      parsedResult.error != null)
   const hasExplicitFailure = parsedResult?.success === false
   const isError = hasToolError || hasExplicitFailure
   const isStreaming = streamingArgs !== undefined && !result
