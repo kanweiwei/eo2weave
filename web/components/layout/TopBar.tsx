@@ -64,6 +64,8 @@ interface TopBarProps {
   activeConversationName?: string
   /** @deprecated use activeConversationName */
   activeWorkspaceName?: string
+  /** Active conversation is kind='direct' (folder-less) — shows the 私聊 badge */
+  activeConversationIsDirect?: boolean
   /** Called when menu button is pressed on mobile */
   onMenuOpen?: () => void
   /** Whether the device is mobile */
@@ -93,6 +95,7 @@ export function TopBar({
   onBackToProjects,
   activeProjectName,
   activeConversationName,
+  activeConversationIsDirect,
   activeWorkspaceName,
   onMenuOpen,
   isMobile,
@@ -210,13 +213,21 @@ export function TopBar({
                           {conversationName}
                         </span>
                       </ActionTooltip>
+                      {activeConversationIsDirect && (
+                        <span
+                          data-testid="direct-chat-badge"
+                          className="shrink-0 rounded-full border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300"
+                        >
+                          {t('conversation.directChat.badge')}
+                        </span>
+                      )}
                     </>
                   )}
                 </>
               )}
             </div>
           )}
-          {isMobile && (
+          {isMobile && !activeConversationIsDirect && (
             <div className="flex min-w-0 shrink items-center">
               <FolderSelector />
             </div>
@@ -260,10 +271,12 @@ export function TopBar({
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            {/* Folder Selector */}
-            <div className="shrink-0">
-              <FolderSelector />
-            </div>
+            {/* Folder Selector — hidden in direct conversations (no folder semantics) */}
+            {!activeConversationIsDirect && (
+              <div className="shrink-0">
+                <FolderSelector />
+              </div>
+            )}
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

@@ -407,6 +407,8 @@ interface SidebarProps {
   selectedFilePath?: string | null
   /** Whether sidebar is rendered in mobile mode */
   isMobile?: boolean
+  /** Direct conversations have no folder semantics — hide the file/pending/snapshot tabs */
+  hideProjectResources?: boolean
   /** Request parent to close mobile sidebar */
   onRequestClose?: () => void
   /** Target file path to reveal in tree (relative path without root prefix) */
@@ -796,6 +798,7 @@ export const Sidebar = memo(function Sidebar({
   onInspect,
   selectedFilePath,
   isMobile = false,
+  hideProjectResources = false,
   onRequestClose,
   revealTargetPath,
   onRevealComplete,
@@ -1482,8 +1485,8 @@ export const Sidebar = memo(function Sidebar({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {/* Conversation list */}
           <div
-            className="flex min-h-0 flex-col overflow-hidden bg-muted/25"
-            style={{ height: `${conversationRatio}%` }}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/25"
+            style={hideProjectResources ? undefined : { height: `${conversationRatio}%` }}
           >
           {workspaceTab === 'active' && (
             <NewWorkspaceButton
@@ -1532,7 +1535,10 @@ export const Sidebar = memo(function Sidebar({
             </div>
           )}
 
-          {/* Resource tabs — memoized to avoid re-render during streaming */}
+          {/* Resource tabs — memoized to avoid re-render during streaming.
+              Direct conversations have no folder semantics: the file tree,
+              pending-changes and snapshot panels are hidden entirely. */}
+          {!hideProjectResources && (
           <div className="min-h-0 overflow-hidden" style={{ height: `${100 - conversationRatio}%` }}>
             <ResourceTabPanel
               resourceTab={resourceTab}
@@ -1551,6 +1557,7 @@ export const Sidebar = memo(function Sidebar({
               t={t}
             />
           </div>
+          )}
         </div>
         </>}
       </motion.div>

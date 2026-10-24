@@ -228,6 +228,11 @@ export function WorkspaceLayout({
   const isMobile = useMobile()
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const activeConversationName = conversationName ?? workspaceName
+  // Single kind check (isDirectConversation) — the sidebar and agent loop read
+  // the same selector, so a kind upgrade applies everywhere on next render.
+  const activeConversationIsDirect = useConversationStore(
+    (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
+  )
 
   // Guard against accidental page close when there are unsaved changes or running agent loops
   useUnloadGuard()
@@ -842,6 +847,7 @@ export function WorkspaceLayout({
         onBackToProjects={onBackToProjects}
         activeProjectName={projectName}
         activeConversationName={activeConversationName}
+        activeConversationIsDirect={activeConversationIsDirect}
         onMenuOpen={() => setIsSidebarOpen((prev) => !prev)}
         isMobile={isMobile}
         onSwitchProject={onSwitchProject}
@@ -890,6 +896,7 @@ export function WorkspaceLayout({
             onRevealComplete={handleRevealComplete}
             onSelectWorkspace={onSelectWorkspace}
             onCreateConversation={handleCreateConversation}
+            hideProjectResources={activeConversationIsDirect}
           />
         )}
         {isMobile && isSidebarOpen && (
@@ -904,6 +911,7 @@ export function WorkspaceLayout({
               onRevealComplete={handleRevealComplete}
               onSelectWorkspace={onSelectWorkspace}
               onCreateConversation={handleCreateConversation}
+              hideProjectResources={activeConversationIsDirect}
               />
           </div>
         )}
