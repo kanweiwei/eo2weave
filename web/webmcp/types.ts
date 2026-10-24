@@ -39,6 +39,7 @@ export interface WebMCPInvokeRequest {
   fullToolName: string
   args?: Record<string, unknown>
   preferredTabId?: number
+  binding?: string
 }
 
 export interface WebMCPPluginDownloadPlan {

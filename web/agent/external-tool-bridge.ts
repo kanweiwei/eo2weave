@@ -24,7 +24,7 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
-import { isSidePanelMode, getSidePanelHostname } from './workspace-assistant-context'
+import { isSidePanelMode, getSidePanelHostname, getSidePanelBindingId } from './workspace-assistant-context'
 
 // Zod validation (for WebMCP)
 import { z } from 'zod'
@@ -1033,14 +1033,37 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   const preferredTabId = store.getPreferredTabIdForTool(toolInfo.groupKey, toolInfo.fullName)
+  const boundXiaohongshuTab = isSidePanelMode() && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(toolInfo.hostname)
+  const binding = boundXiaohongshuTab ? getSidePanelBindingId() : null
+  if (boundXiaohongshuTab && !binding) {
+    return toolErrorJson('call_tool', 'BOUND_TAB_UNAVAILABLE', 'The Xiaohongshu side-panel tab binding is unavailable.', {
+      retryable: true,
+    })
+  }
 
   try {
-    const response = await bridge.webMCPInvoke({
+    let invokeArgs = toolArgs
+    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_content') {
+      const { prepareXiaohongshuImage } = await import('./tools/xiaohongshu-image-transfer')
+      try { invokeArgs = await prepareXiaohongshuImage(toolArgs, context as unknown as import('./tools/tool-types').ToolContext) }
+      catch (error) { return toolErrorJson('call_tool', 'IMAGE_TRANSFER_FAILED', error instanceof Error ? error.message : 'Image transfer failed; no image was silently skipped.', { retryable: false }) }
+      if (new TextEncoder().encode(JSON.stringify(invokeArgs)).length >= 64 * 1024 * 1024 - 4096) {
+        return toolErrorJson('call_tool', 'IMAGE_TRANSFER_TOO_LARGE', 'Image payload and bridge envelope exceed Chrome 64 MiB message capacity.', { retryable: false })
+      }
+    }
+    const invokeRequest = {
       groupKey: toolInfo.groupKey,
       fullToolName: toolInfo.fullName,
-      args: toolArgs,
+      args: invokeArgs,
       preferredTabId,
-    })
+      ...(binding ? { binding } : {}),
+    }
+    let response: import('@/webmcp/types').WebMCPInvokeResponse
+    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_video') {
+      const { invokeXiaohongshuVideo } = await import('./tools/xiaohongshu-video-transfer')
+      try { response = await invokeXiaohongshuVideo(invokeRequest, context as unknown as import('./tools/tool-types').ToolContext, (request) => bridge.webMCPInvoke(request)) }
+      catch (error) { return toolErrorJson('call_tool', 'VIDEO_TRANSFER_FAILED', error instanceof Error ? error.message : 'Video file transfer failed.', { retryable: false }) }
+    } else response = await bridge.webMCPInvoke(invokeRequest)
 
     if (!response.ok) {
       const errorMessage = response.error

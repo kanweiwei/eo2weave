@@ -22,9 +22,9 @@ it('exposes all four structured bundled packages and ignores legacy switches', a
   setup()
   const provider = await getBuiltinStorage()
   const entries = await readMountedWebMCPCatalog([providerMount('builtin-webmcp', provider)])
-  expect(entries).toHaveLength(4)
+  expect(entries).toHaveLength(5)
   expect(entries.every(entry => entry.activation === 'disabled' && !entry.diagnostics.length)).toBe(true)
-  expect(entries.flatMap(entry => entry.package!.manifest.tools)).toHaveLength(48)
+  expect(entries.flatMap(entry => entry.package!.manifest.tools)).toHaveLength(70)
   for (const entry of entries) {
     expect((await provider.readdir(entry.directory)).map(item => item.name)).toContain('workflows')
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile(`${entry.directory}/config.json`)))).toEqual({})
