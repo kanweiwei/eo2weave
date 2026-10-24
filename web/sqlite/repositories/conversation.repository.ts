@@ -127,6 +127,14 @@ export class ConversationRepository {
       )
       return rows.map((row) => this.flowInstanceBaseRowToMeta(row))
     }
+    if (hasFlowInstance) {
+      // Pre-compression DB that already has the flow column: base select plus
+      // flow parsing (the kind-tier probe rejects independently above).
+      const rows = await db.queryAll<FlowInstanceBaseMetaColumns>(
+        `${FLOW_INSTANCE_BASE_SELECT} ${orderBy}`
+      )
+      return rows.map((row) => this.flowInstanceBaseRowToMeta(row))
+    }
     if (hasCompression) {
       const rows = await db.queryAll<ExtendedMetaColumns>(
         `${EXTENDED_SELECT} ${orderBy}`
