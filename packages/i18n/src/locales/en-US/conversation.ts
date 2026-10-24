@@ -1,4 +1,8 @@
 export const conversation = {
+    directChat: {
+        badge: "Direct",
+        inputPlaceholder: "Just chat, or ask me anything…",
+    },
     thinking: "Thinking: Off",
     reasoning: "Reasoning",
     toolCall: "Tool Call",

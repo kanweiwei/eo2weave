@@ -1,5 +1,13 @@
 // Sidebar 组件
 export const sidebar = {
+    directChat: {
+        newDirectChat: "新建私聊",
+        groupLabel: "私聊",
+        projectGroupLabel: "项目对话",
+        convertToProject: "转为项目对话",
+        convertSuccess: "已转为项目对话，现在可以挂载文件夹了",
+        convertFailed: "转换失败，请重试",
+    },
     expandSidebar: "展开侧栏",
     collapseSidebar: "折叠侧栏",
     closeSidebar: "关闭侧栏",

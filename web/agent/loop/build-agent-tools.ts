@@ -42,7 +42,7 @@ export interface BuildAgentToolsInput {
 }
 
 export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
-  return input.toolRegistry.getToolDefinitionsForMode(input.mode, { includeDynamicDescriptions: !input.stableDescriptions }).map((toolDef) => ({
+  return input.toolRegistry.getToolDefinitionsForMode(input.mode, { includeDynamicDescriptions: !input.stableDescriptions, directMode: input.getToolContext().directMode }).map((toolDef) => ({
     name: toolDef.function.name,
     label: toolDef.function.name,
     description: toolDef.function.description || '',

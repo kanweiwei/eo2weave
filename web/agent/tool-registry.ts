@@ -8,7 +8,7 @@ import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 
 import type { ToolDefinition, ToolExecutor, ToolEntry, ToolContext, ToolPromptDoc } from './tools/tool-types'
 import { formatErrorForUser, withAutoRetry } from './error-handling'
-import { isToolAllowedInMode, type AgentMode } from './agent-mode'
+import { isToolAllowedInMode, isToolAllowedInDirectMode, type AgentMode } from './agent-mode'
 import { getToolPolicy, type ToolPolicy } from './policy-engine'
 import { useSettingsStore } from '@/store/settings.store'
 
@@ -348,13 +348,23 @@ export class ToolRegistry {
    * Get tool definitions filtered by agent mode and feature flags.
    * In 'plan' mode, only read-only tools are returned.
    * In 'act' mode, all tools are returned.
+   *
+   * `directMode` (folder-less conversation) additionally removes every
+   * folder-dependent tool (read/write/edit/delete/ls/search/snapshots/
+   * sync-to-opfs) in ALL modes — the agent never sees them.
    */
-  getToolDefinitionsForMode(mode: AgentMode, options?: { includeDynamicDescriptions?: boolean }): ToolDefinition[] {
+  getToolDefinitionsForMode(mode: AgentMode, options?: { includeDynamicDescriptions?: boolean; directMode?: boolean }): ToolDefinition[] {
     let definitions = Array.from(this.tools.values()).map((entry) =>
       options?.includeDynamicDescriptions === false ? entry.definition : this.withBashCommands(entry.definition, mode))
 
     // Filter by feature flags first
     definitions = this.filterByFeatureFlags(definitions)
+
+    // Direct mode: folder-dependent tools are not registered at all —
+    // applies before the plan/act split so no mode can re-introduce them.
+    if (options?.directMode) {
+      definitions = definitions.filter(tool => isToolAllowedInDirectMode(tool.function.name))
+    }
 
     if (mode === 'act') {
       return definitions

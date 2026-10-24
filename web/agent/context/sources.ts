@@ -3,6 +3,8 @@ import { ProjectManager } from '@/opfs'
 import { buildAgentPrompt } from '@/agent/prompt-builder'
 import { getAgentModeEnhancement } from '@/agent/prompts/universal-system-prompt'
 import { isHumanUserMessage } from '@/agent/message-types'
+import { t } from '@creatorweave/i18n'
+import { useI18nStore } from '@/i18n/store'
 import type { InjectEnhancementsInput } from '@/agent/loop/enhancements'
 import { collectContextSources, type ContextEntries, type ContextObservation, type ContextSource } from './journal'
 
@@ -39,11 +41,20 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
       ]))
     } },
     { id: 'workspace-roots', collect: async () => {
+      // Direct conversations have no folder authorization — omit the roots
+      // block entirely so the model never assumes file access exists.
+      if (input().toolContext.directMode) return {}
       const projectId = input().toolContext.projectId
       if (!projectId) return {}
       const { getProjectRootRepository } = await import('@/sqlite/repositories/project-root.repository')
       const roots = await getProjectRootRepository().findByProject(projectId)
       return Object.fromEntries(roots.map(root => [root.name, `Workspace root: ${root.name}${root.isDefault ? ' (default)' : ''}`]))
+    } },
+    { id: 'direct-mode-boundary', collect: () => {
+      if (!input().toolContext.directMode) return {}
+      // Localized so the capability boundary reads in the user's language
+      // (parity check enforces all four locales).
+      return scalar(t(useI18nStore.getState().locale, 'agent.directChat.systemBoundary'))
     } },
     { id: 'agents', collect: async () => {
       const project = await getProject(input().toolContext.projectId)

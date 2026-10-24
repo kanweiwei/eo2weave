@@ -1,5 +1,9 @@
 // チャット
 export const conversation = {
+    directChat: {
+        badge: "ダイレクト",
+        inputPlaceholder: "気軽に雑談したり、何でも質問してください…",
+    },
     thinking: "思考：オフ",
     reasoning: "推論プロセス",
     toolCall: "ツール呼び出し",

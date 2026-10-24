@@ -176,6 +176,40 @@ export function getModeDisplayName(mode: AgentMode): string {
 }
 
 /**
+ * Tools that depend on a disk-folder authorization (folderHandle / ProjectRoot).
+ *
+ * Direct conversations have NO folder mounted, so these tools are never
+ * registered there — stricter than plan mode (plan keeps read; direct removes
+ * even read). Everything else (page_*, run_python, bash, skills, webmcp
+ * app-tools, spawn_subagent, schedule) stays available.
+ *
+ * Table-driven by design (P1.0 decision): adding a new folder-dependent tool
+ * means adding one entry here, not grepping call sites.
+ */
+export const FOLDER_DEPENDENT_TOOLS: ReadonlySet<string> = new Set([
+  'read',
+  'write',
+  'edit',
+  'delete',
+  'ls',
+  'search',
+  'snapshot_status',
+  'snapshot_diff',
+  'snapshot_log',
+  'snapshot_show',
+  'snapshot_restore',
+  'sync-to-opfs',
+])
+
+/**
+ * Check if a tool should be excluded in direct mode (folder-less conversation).
+ * Unknown tools are kept — only the explicit folder-dependent set is removed.
+ */
+export function isToolAllowedInDirectMode(toolName: string): boolean {
+  return !FOLDER_DEPENDENT_TOOLS.has(toolName)
+}
+
+/**
  * Get mode description for UI
  */
 export function getModeDescription(mode: AgentMode): string {
