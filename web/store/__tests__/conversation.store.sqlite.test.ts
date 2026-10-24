@@ -4,7 +4,7 @@ import { useConversationRuntimeStore } from '../conversation-runtime.store'
 
 const deleteWorkspaceMock = vi.fn(() => Promise.resolve())
 const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
-const conversationRepoSaveMetaMock = vi.fn(() => Promise.resolve())
+const conversationRepoSaveMetaMock = vi.fn((..._: [Record<string, unknown>]) => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
 
@@ -1129,5 +1129,83 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(closeThink?.reasoning).toBe('分析中')
     expect(closeThink?.reasoningStep?.content).toBe('分析中')
     expect(closeThink?.content).toBe('最终答案')
+  })
+
+  // ── Direct chat (kind) coverage ────────────────────────────────────────
+
+  describe('direct chat (conversation kind)', () => {
+    it('createNew with kind:direct persists and carries the kind', () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('New direct chat', { kind: 'direct' })
+
+      expect(conv.kind).toBe('direct')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.kind).toBe('direct')
+    })
+
+    it('createNew without kind leaves kind undefined (≡ project, legacy zero migration)', () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('plain')
+
+      expect(conv.kind).toBeUndefined()
+
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.kind).toBeUndefined()
+    })
+
+    it('persisted kind survives a loadFromDB roundtrip (direct stays direct)', async () => {
+      const store = useConversationStore.getState()
+      const direct = store.createNew('direct-roundtrip', { kind: 'direct' })
+      const project = store.createNew('project-roundtrip')
+
+      // Reload from the mocked repo: findAll returns the stored metadata.
+      const { getConversationRepository } = await import('@/sqlite')
+      const repo = getConversationRepository() as any
+      const savedMetas = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0])
+      repo.findAll.mockResolvedValueOnce(savedMetas)
+
+      await useConversationStore.getState().loadFromDB()
+
+      const reloaded = useConversationStore.getState().conversations
+      expect(reloaded.find((c) => c.id === direct.id)?.kind).toBe('direct')
+      // project row roundtrips as undefined ≡ 'project'
+      expect(reloaded.find((c) => c.id === project.id)?.kind).toBeUndefined()
+    })
+
+    it('setConversationKind flips direct → project and persists', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('upgrade-me', { kind: 'direct' })
+
+      useConversationStore.getState().setConversationKind(conv.id, 'project')
+      await vi.waitFor(() => {
+        expect(conversationRepoSaveMetaMock).toHaveBeenCalled()
+      })
+
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.id).toBe(conv.id)
+      expect(metaCall?.kind).toBe('project')
+    })
+
+    it('runAgent for a direct conversation sets toolContext.directMode; project leaves it unset', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('direct-run', { kind: 'direct' })
+
+      await useConversationStore
+        .getState()
+        .runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null)
+
+      const config = (globalThis as any).__lastAgentLoopConfig
+      expect(config?.toolContext?.directMode).toBe(true)
+
+      const projectConv = store.createNew('project-run')
+      await useConversationStore
+        .getState()
+        .runAgent(projectConv.id, 'openai' as any, 'mock-model', 1024, null)
+      const projectConfig = (globalThis as any).__lastAgentLoopConfig
+      expect(projectConfig?.toolContext?.directMode).toBeFalsy()
+    })
   })
 })

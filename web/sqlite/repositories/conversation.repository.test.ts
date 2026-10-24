@@ -28,14 +28,16 @@ describe('ConversationRepository', () => {
       if (sql.includes('flow_instance_json FROM conversations LIMIT 0')) {
         return Promise.resolve(undefined)
       }
-      if (sql.includes('compressed_context_summary')) {
-        return Promise.reject(new Error('no such column: compressed_context_summary'))
+      // This test exercises the PRE-kind fallback tier: no compression and no
+      // kind column, so both probes must reject.
+      if (sql.includes('compressed_context_summary') || sql.includes('SELECT kind FROM conversations')) {
+        return Promise.reject(new Error('no such column'))
       }
       return Promise.resolve(undefined)
     })
     queryAll.mockImplementation((sql: string) => {
-      if (sql.includes('compressed_context_summary')) {
-        return Promise.reject(new Error('no such column: compressed_context_summary'))
+      if (sql.includes('compressed_context_summary') || sql.includes('SELECT kind FROM conversations')) {
+        return Promise.reject(new Error('no such column'))
       }
       return Promise.resolve([
         {
