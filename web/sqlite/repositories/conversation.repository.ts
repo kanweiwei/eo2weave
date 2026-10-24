@@ -28,6 +28,8 @@ export interface ConversationMeta {
   compressedContextSummary?: string | null
   compressedContextCutoffTimestamp?: number | null
   flowInstance?: FlowInstance | null
+  /** 'project' | 'direct' — undefined ≡ 'project' (legacy rows, zero migration) */
+  kind?: 'project' | 'direct'
   createdAt: number
   updatedAt: number
 }
@@ -53,6 +55,7 @@ const BASE_SELECT = `SELECT id, title, title_mode, context_usage_json, created_a
 const EXTENDED_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, created_at, updated_at FROM conversations`
 const FLOW_INSTANCE_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, flow_instance_json, created_at, updated_at FROM conversations`
 const FLOW_INSTANCE_BASE_SELECT = `SELECT id, title, title_mode, context_usage_json, flow_instance_json, created_at, updated_at FROM conversations`
+const KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, flow_instance_json, kind, created_at, updated_at FROM conversations`
 
 //=============================================================================
 // Conversation Repository
@@ -61,6 +64,18 @@ const FLOW_INSTANCE_BASE_SELECT = `SELECT id, title, title_mode, context_usage_j
 export class ConversationRepository {
   private _hasCompressionColumns: boolean | null = null
   private _hasFlowInstanceColumn: boolean | null = null
+  private _hasKindColumn: boolean | null = null
+
+  private async hasKindColumn(): Promise<boolean> {
+    if (this._hasKindColumn !== null) return this._hasKindColumn
+    try {
+      await getSQLiteDB().queryFirst('SELECT kind FROM conversations LIMIT 0')
+      this._hasKindColumn = true
+    } catch {
+      this._hasKindColumn = false
+    }
+    return this._hasKindColumn
+  }
 
   private async hasFlowInstanceColumn(): Promise<boolean> {
     if (this._hasFlowInstanceColumn !== null) return this._hasFlowInstanceColumn
@@ -97,15 +112,16 @@ export class ConversationRepository {
    */
   private async queryMetaAll(orderBy: string): Promise<ConversationMeta[]> {
     const db = getSQLiteDB()
-    const [hasFlowInstance, hasCompression] = await Promise.all([
+    const [hasFlowInstance, hasCompression, hasKind] = await Promise.all([
       this.hasFlowInstanceColumn(),
       this.hasCompressionColumns(),
+      this.hasKindColumn(),
     ])
-    if (hasFlowInstance && hasCompression) {
-      const rows = await db.queryAll<FlowInstanceMetaColumns>(`${FLOW_INSTANCE_SELECT} ${orderBy}`)
+    if (hasFlowInstance && hasCompression && hasKind) {
+      const rows = await db.queryAll<FlowInstanceMetaColumns>(`${KIND_SELECT} ${orderBy}`)
       return rows.map((row) => this.flowInstanceRowToMeta(row))
     }
-    if (hasFlowInstance) {
+    if (hasFlowInstance && hasCompression) {
       const rows = await db.queryAll<FlowInstanceBaseMetaColumns>(
         `${FLOW_INSTANCE_BASE_SELECT} ${orderBy}`
       )
@@ -123,10 +139,15 @@ export class ConversationRepository {
 
   private async queryMetaFirst(where: string, params: unknown[]): Promise<ConversationMeta | null> {
     const db = getSQLiteDB()
-    const [hasFlowInstance, hasCompression] = await Promise.all([
+    const [hasFlowInstance, hasCompression, hasKind] = await Promise.all([
       this.hasFlowInstanceColumn(),
       this.hasCompressionColumns(),
+      this.hasKindColumn(),
     ])
+    if (hasFlowInstance && hasCompression && hasKind) {
+      const row = await db.queryFirst<FlowInstanceMetaColumns>(`${KIND_SELECT} ${where}`, params)
+      return row ? this.flowInstanceRowToMeta(row) : null
+    }
     if (hasFlowInstance && hasCompression) {
       const row = await db.queryFirst<FlowInstanceMetaColumns>(`${FLOW_INSTANCE_SELECT} ${where}`, params)
       return row ? this.flowInstanceRowToMeta(row) : null
@@ -279,22 +300,30 @@ export class ConversationRepository {
     contextUsage?: ContextWindowUsage | null
     compressedContextSummary?: string | null
     compressedContextCutoffTimestamp?: number | null
+    kind?: 'project' | 'direct'
     createdAt: number
     updatedAt: number
   }): Promise<void> {
     const db = getSQLiteDB()
     const useExtended = await this.hasCompressionColumns()
+    const useKind = await this.hasKindColumn()
+    // kind persists ONLY when the column exists; otherwise the DB default
+    // ('project') applies. Writing an explicit 'project' over a row whose
+    // kind is 'direct' would silently downgrade it, so the non-kind branch
+    // never touches the column at all.
+    const normalizedKind = meta.kind === 'direct' ? 'direct' : 'project'
 
-    if (useExtended) {
+    if (useExtended && useKind) {
       await db.execute(
-        `INSERT INTO conversations (id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO conversations (id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, kind, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            title_mode = excluded.title_mode,
            context_usage_json = excluded.context_usage_json,
            compressed_context_summary = excluded.compressed_context_summary,
            compressed_context_cutoff_ts = excluded.compressed_context_cutoff_ts,
+           kind = excluded.kind,
            updated_at = excluded.updated_at`,
         [
           meta.id,
@@ -303,11 +332,12 @@ export class ConversationRepository {
           toJSON(meta.contextUsage || null),
           meta.compressedContextSummary || null,
           meta.compressedContextCutoffTimestamp ?? null,
+          normalizedKind,
           meta.createdAt,
           meta.updatedAt,
         ]
       )
-    } else {
+    } else if (useExtended) {
       await db.execute(
         `INSERT INTO conversations (id, title, title_mode, context_usage_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -350,6 +380,7 @@ export class ConversationRepository {
       compressedContextSummary: row.compressed_context_summary || null,
       compressedContextCutoffTimestamp: row.compressed_context_cutoff_ts ?? null,
       flowInstance: null,
+      kind: (row as { kind?: 'project' | 'direct' }).kind === 'direct' ? 'direct' : 'project',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -365,6 +396,7 @@ export class ConversationRepository {
   private flowInstanceBaseRowToMeta(row: FlowInstanceBaseMetaColumns): ConversationMeta {
     return {
       ...this.baseRowToMeta(row),
+      kind: (row as { kind?: 'project' | 'direct' }).kind === 'direct' ? 'direct' : 'project',
       flowInstance: parseJSON<FlowInstance | null>(row.flow_instance_json || '', null),
     }
   }

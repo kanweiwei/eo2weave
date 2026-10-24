@@ -266,6 +266,7 @@ export async function persistConversationMeta(conversation: Conversation): Promi
     contextUsage: conversation.lastContextWindowUsage || null,
     compressedContextSummary: conversation.compressedContextSummary || null,
     compressedContextCutoffTimestamp: conversation.compressedContextCutoffTimestamp ?? null,
+    kind: conversation.kind,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
   })
@@ -285,6 +286,7 @@ export async function loadConversationsMeta(): Promise<Conversation[]> {
     lastContextWindowUsage: meta.lastContextWindowUsage || null,
     compressedContextSummary: meta.compressedContextSummary || null,
     compressedContextCutoffTimestamp: meta.compressedContextCutoffTimestamp ?? null,
+    kind: meta.kind === 'direct' ? 'direct' : undefined,
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     status: 'idle' as const,

@@ -161,7 +161,7 @@ interface ConversationState {
 
   // Actions
   loadFromDB: () => Promise<void>
-  createNew: (title?: string, options?: { activate?: boolean }) => Conversation
+  createNew: (title?: string, options?: { activate?: boolean; kind?: 'project' | 'direct' }) => Conversation
   setActive: (id: string | null) => Promise<void>
   addMessage: (conversationId: string, message: Message) => void
   updateMessages: (conversationId: string, messages: Message[]) => void
@@ -180,6 +180,12 @@ interface ConversationState {
     failed: Array<{ id: string; error: string }>
   }>
   updateTitle: (id: string, title: string) => void
+  /**
+   * One-way kind upgrade: 'direct' → 'project' after folder authorization.
+   * No downgrade path by design (a mounted folder has no unmount→direct
+   * semantic). Persisted immediately via the same saveMeta path as updateTitle.
+   */
+  setConversationKind: (id: string, kind: 'project' | 'direct') => void
   /**
    * Generate a title for a conversation using the current model.
    *
@@ -773,8 +779,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       })
     },
 
-    createNew: (title?: string, options?: { activate?: boolean }) => {
-      const conversation = createConversation(title)
+    createNew: (title?: string, options?: { activate?: boolean; kind?: 'project' | 'direct' }) => {
+      const conversation = createConversation(title, { kind: options?.kind })
       // `activate: false` lets background creators (WebMCP app-tools) add a
       // conversation without yanking the user's current view (m-2).
       const activate = options?.activate !== false
@@ -1486,6 +1492,24 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             error
           )
           toast.error('标题修改保存失败')
+        })
+    },
+
+    setConversationKind: (id, kind) => {
+      set((state) => {
+        const conv = state.conversations.find((c) => c.id === id)
+        if (conv) {
+          conv.kind = kind
+        }
+      })
+      const conv = get().conversations.find((c) => c.id === id)
+      if (conv)
+        persistConversationMeta(conv).catch((error) => {
+          console.error(
+            '[conversation.store] Failed to persist conversation kind on setConversationKind:',
+            error
+          )
+          toast.error('对话类型修改保存失败')
         })
     },
 
@@ -2341,6 +2365,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 // (external importers and tests resolve these names here).
 export { findSpawnStepInDraft } from './conversation-message-ops'
 export { reconcileMessageSnapshot } from './conversation-message-ops'
+
+/**
+ * The single kind selector — read a conversation's direct-mode flag.
+ *
+ * The design mandates ONE check site (never scatter `kind === 'direct'`
+ * across WorkspaceLayout/ConversationView/agent-run): undefined ≡ 'project',
+ * so legacy conversations and runtime-created ones behave exactly as before.
+ */
+export function isDirectConversation(id: string | null | undefined): boolean {
+  if (!id) return false
+  return useConversationStoreSQLite.getState().conversations.find((c) => c.id === id)?.kind === 'direct'
+}
 
 // ---------------------------------------------------------------------------
 // Eviction trigger: last view unmounted
