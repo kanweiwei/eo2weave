@@ -22,7 +22,7 @@ import { useRouter } from 'next/navigation'
 import { projectWorkspacePath } from '@/lib/route-paths'
 import { createPortal } from 'react-dom'
 import { BrushCleaningIcon } from '@/components/icons/BrushCleaningIcon'
-import { Plus, Trash2, PanelLeftClose, PanelLeft, FolderTree, Clock, History, Pencil, Archive, ArchiveRestore, Download, Pin, PinOff, ChevronRight, ChevronDown, FolderOpen, Loader2, Sparkles, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, PanelLeftClose, PanelLeft, FolderTree, FolderInput, Clock, History, Pencil, Archive, ArchiveRestore, Download, Pin, PinOff, ChevronRight, ChevronDown, FolderOpen, Loader2, Sparkles, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BrandButton,
@@ -79,6 +79,7 @@ interface ConversationItemData {
   isArchived: boolean
   isPinned: boolean
   hasSchedule: boolean
+  kind?: 'project' | 'direct'
 }
 
 interface ConversationItemProps extends ConversationItemData {
@@ -92,6 +93,8 @@ interface ConversationItemProps extends ConversationItemData {
   onArchive: (id: string, archived: boolean) => void
   onDelete: (id: string) => void
   onGenerateTitle: (id: string) => void
+  /** One-way direct → project upgrade (folder authorization flow). */
+  onConvertToProject?: (id: string) => void
   editingTitle: string
   onEditingTitleChange: (title: string) => void
   onConfirmRename: () => void
@@ -137,6 +140,44 @@ const NewWorkspaceButton = memo(function NewWorkspaceButton({
 })
 
 /**
+ * 「◇ 新建私聊」— instant-create entry for folder-less direct conversations,
+ * mirroring the New Chat pattern (createNew + immediate route push).
+ */
+const NewDirectChatButton = memo(function NewDirectChatButton({
+  onClick,
+  label,
+}: {
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <div className="px-2 pb-1">
+      <BrandButton
+        variant="ghost"
+        className="h-7 w-full justify-start gap-1.5 px-2 text-xs bg-muted"
+        onClick={onClick}
+      >
+        <span aria-hidden="true" className="text-xs leading-none">◇</span>
+        {label}
+      </BrandButton>
+    </div>
+  )
+})
+
+/** Sidebar group label — the three-tier list (assistants / direct / project). */
+function ConversationGroupLabel({ label, count }: { label: string; count: number }) {
+  return (
+    <div
+      role="presentation"
+      className="mt-1 mb-1 flex items-center gap-1.5 px-1 text-[10px] font-medium uppercase tracking-wide text-tertiary dark:text-muted-foreground first:mt-0"
+    >
+      <span>{label}</span>
+      <span className="font-normal opacity-70">{count}</span>
+    </div>
+  )
+}
+
+/**
  * Memoized conversation item — prevents all 30+ ContextMenu instances from
  * re-rendering when only one item's state changes.
  *
@@ -156,6 +197,7 @@ const ConversationItem = memo(function ConversationItem({
   isArchived,
   isPinned,
   hasSchedule,
+  kind,
   href,
   onSelect,
   onStartRename,
@@ -165,6 +207,7 @@ const ConversationItem = memo(function ConversationItem({
   onArchive,
   onDelete,
   onGenerateTitle,
+  onConvertToProject,
   editingTitle,
   onEditingTitleChange,
   onConfirmRename,
@@ -313,6 +356,14 @@ const ConversationItem = memo(function ConversationItem({
           <Sparkles className="mr-2 h-3.5 w-3.5" />
           {t('sidebar.generateTitle')}
         </ContextMenuItem>
+        {kind === 'direct' && onConvertToProject && (
+          <ContextMenuItem
+            onClick={() => onConvertToProject(id)}
+          >
+            <FolderInput className="mr-2 h-3.5 w-3.5" />
+            {t('sidebar.directChat.convertToProject')}
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem
           onClick={() => onArchive(id, isArchived)}
@@ -338,6 +389,7 @@ const ConversationItem = memo(function ConversationItem({
     prev.isEditing === next.isEditing &&
     prev.isPinned === next.isPinned &&
     prev.hasSchedule === next.hasSchedule &&
+    prev.kind === next.kind &&
     prev.isArchived === next.isArchived &&
     prev.editingTitle === next.editingTitle &&
     prev.composing === next.composing &&
@@ -760,9 +812,12 @@ export const Sidebar = memo(function Sidebar({
   // useShallow ensures stable references when the extracted values haven't changed.
   const conversationListItems = useConversationStore(
     useShallow((s) =>
-      s.conversations.map((c) => ({ id: c.id, title: c.title }))
+      s.conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind }))
     )
   )
+  const createNewConversation = useConversationStore((s) => s.createNew)
+  const setConversationKind = useConversationStore((s) => s.setConversationKind)
+  const addRoot = useFolderAccessStore((s) => s.addRoot)
   const deleteConversation = useConversationStore((s) => s.deleteConversation)
   const deleteConversations = useConversationStore((s) => s.deleteConversations)
   const updateTitle = useConversationStore((s) => s.updateTitle)
@@ -879,6 +934,17 @@ export const Sidebar = memo(function Sidebar({
     },
     [scopedConversations, workspaceTab, workspaceStatusMap, pinnedIds, lastAccessedAtMap]
   )
+  // Group the displayed list by kind: direct first, then project
+  // conversations. The "Assistants" tier is a P3 placeholder — not rendered.
+  const displayedDirectConversations = useMemo(
+    () => displayedConversations.filter((conv) => conv.kind === 'direct'),
+    [displayedConversations]
+  )
+  const displayedProjectConversations = useMemo(
+    () => displayedConversations.filter((conv) => conv.kind !== 'direct'),
+    [displayedConversations]
+  )
+
   const archivedCount = useMemo(
     () => scopedConversations.filter((conv) => workspaceStatusMap.get(conv.id) === 'archived').length,
     [scopedConversations, workspaceStatusMap]
@@ -1128,6 +1194,14 @@ export const Sidebar = memo(function Sidebar({
     closeMobileSidebar()
   }, [onCreateConversation, closeMobileSidebar])
 
+  // ◇ New direct chat — instant-create (same pattern as New Chat): persist a
+  // kind='direct' conversation and push its canonical URL immediately.
+  const handleCreateDirectChat = useCallback(() => {
+    const conv = createNewConversation('New direct chat', { kind: 'direct' })
+    onSelectWorkspace?.(conv.id)
+    closeMobileSidebar()
+  }, [createNewConversation, onSelectWorkspace, closeMobileSidebar])
+
   // Stable callback for editing title change
   const handleEditingTitleChange = useCallback((title: string) => setEditingTitle(title), [])
 
@@ -1236,6 +1310,75 @@ export const Sidebar = memo(function Sidebar({
       toast.error(t('sidebar.deleteWorkspaceFailed'))
     }
   }, [deleteConversation, t, onSelectWorkspace, activeProjectId, router])
+
+  // One-way direct → project upgrade: run the folder authorization flow
+  // (addRoot opens the directory picker). Only a successful grant flips the
+  // kind — a cancelled picker leaves the conversation direct and untouched.
+  const handleItemConvertToProject = useCallback(async (id: string) => {
+    try {
+      const granted = await addRoot()
+      if (!granted) return
+      setConversationKind(id, 'project')
+      toast.success(t('sidebar.directChat.convertSuccess'))
+    } catch (error) {
+      console.error('[Sidebar] Failed to convert direct chat to project:', error)
+      toast.error(t('sidebar.directChat.convertFailed'))
+    }
+  }, [addRoot, setConversationKind, t])
+
+  // Shared row renderer for both sidebar groups (direct / project) — one body
+  // so the two lists can never drift in props or behavior.
+  const renderConversationItem = useCallback((conv: { id: string; title: string; kind?: 'project' | 'direct' }) => {
+    const isRunning = runningSet.has(conv.id)
+    const isActive = conv.id === activeWorkspaceId
+    const pendingReviewCount = pendingCountByConversationId.get(conv.id) || 0
+    const isEditing = editingId === conv.id
+    const isArchived = workspaceStatusMap.get(conv.id) === 'archived'
+    const isPinned = pinnedIds.includes(conv.id)
+
+    return (
+      <motion.div
+        key={conv.id}
+        layout={reduceMotion ? false : 'position'}
+        transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 35, mass: 0.8 }}
+        className="mb-0.5"
+      >
+        <ConversationItem
+          id={conv.id}
+          title={conv.title}
+          isRunning={isRunning}
+          isActive={isActive}
+          pendingReviewCount={pendingReviewCount}
+          isEditing={isEditing}
+          isArchived={isArchived}
+          isPinned={isPinned}
+          hasSchedule={(workspaceScheduleCount.get(conv.id) ?? 0) > 0}
+          kind={conv.kind}
+          href={projectWorkspacePath(activeProjectId, conv.id)}
+          onSelect={handleItemSelect}
+          onStartRename={startRename}
+          onDeleteClick={handleItemDeleteClick}
+          onTogglePin={handleItemTogglePin}
+          onExport={handleItemExport}
+          onArchive={handleItemArchive}
+          onDelete={handleItemDelete}
+          onGenerateTitle={handleItemGenerateTitle}
+          onConvertToProject={handleItemConvertToProject}
+          editingTitle={editingTitle}
+          onEditingTitleChange={handleEditingTitleChange}
+          onConfirmRename={confirmRename}
+          onCancelRename={cancelRename}
+          onRenameBlur={handleRenameBlur}
+          composing={composing}
+          onComposingChange={setComposing}
+          renameInputRef={renameInputRef}
+          workspaceLabel={t('sidebar.workspaceLabel', { name: conv.title })}
+          t={t}
+        />
+      </motion.div>
+    )
+  }, [runningSet, activeWorkspaceId, pendingCountByConversationId, editingId, workspaceStatusMap, pinnedIds, workspaceScheduleCount, activeProjectId, reduceMotion, handleItemSelect, startRename, handleItemDeleteClick, handleItemTogglePin, handleItemExport, handleItemArchive, handleItemDelete, handleItemGenerateTitle, handleItemConvertToProject, editingTitle, handleEditingTitleChange, confirmRename, cancelRename, handleRenameBlur, composing, setComposing, renameInputRef, t])
+
 
   // collapsed sidebar view — single container with animated width
   return (
@@ -1348,55 +1491,31 @@ export const Sidebar = memo(function Sidebar({
               label={t('sidebar.newWorkspace')}
             />
           )}
+          {workspaceTab === 'active' && (
+            <NewDirectChatButton
+              onClick={handleCreateDirectChat}
+              label={t('sidebar.directChat.newDirectChat')}
+            />
+          )}
 
           <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-2">
-            {displayedConversations.map((conv) => {
-              const isRunning = runningSet.has(conv.id)
-              const isActive = conv.id === activeWorkspaceId
-              const pendingReviewCount = pendingCountByConversationId.get(conv.id) || 0
-              const isEditing = editingId === conv.id
-              const isArchived = workspaceStatusMap.get(conv.id) === 'archived'
-              const isPinned = pinnedIds.includes(conv.id)
-
-              return (
-                <motion.div
-                  key={conv.id}
-                  layout={reduceMotion ? false : 'position'}
-                  transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 35, mass: 0.8 }}
-                  className="mb-0.5"
-                >
-                <ConversationItem
-                  id={conv.id}
-                  title={conv.title}
-                  isRunning={isRunning}
-                  isActive={isActive}
-                  pendingReviewCount={pendingReviewCount}
-                  isEditing={isEditing}
-                  isArchived={isArchived}
-                  isPinned={isPinned}
-                  hasSchedule={(workspaceScheduleCount.get(conv.id) ?? 0) > 0}
-                  href={projectWorkspacePath(activeProjectId, conv.id)}
-                  onSelect={handleItemSelect}
-                  onStartRename={startRename}
-                  onDeleteClick={handleItemDeleteClick}
-                  onTogglePin={handleItemTogglePin}
-                  onExport={handleItemExport}
-                  onArchive={handleItemArchive}
-                  onDelete={handleItemDelete}
-                  onGenerateTitle={handleItemGenerateTitle}
-                  editingTitle={editingTitle}
-                  onEditingTitleChange={handleEditingTitleChange}
-                  onConfirmRename={confirmRename}
-                  onCancelRename={cancelRename}
-                  onRenameBlur={handleRenameBlur}
-                  composing={composing}
-                  onComposingChange={setComposing}
-                  renameInputRef={renameInputRef}
-                  workspaceLabel={t('sidebar.workspaceLabel', { name: conv.title })}
-                  t={t}
-                />
-                </motion.div>
-              )
+            {displayedDirectConversations.length > 0 && (
+              <ConversationGroupLabel
+                label={t('sidebar.directChat.groupLabel')}
+                count={displayedDirectConversations.length}
+              />
+            )}
+            {displayedDirectConversations.map((conv) => {
+              return renderConversationItem(conv)
+            })}
+            {displayedProjectConversations.length > 0 && (
+              <ConversationGroupLabel
+                label={t('sidebar.directChat.projectGroupLabel')}
+                count={displayedProjectConversations.length}
+              />
+            )}
+            {displayedProjectConversations.map((conv) => {
+              return renderConversationItem(conv)
             })}
           </div>
           </div>
