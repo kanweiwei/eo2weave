@@ -261,6 +261,7 @@ function isTokenInvalidError(e: unknown): boolean {
 }
 
 function clearStoredTokens(): void {
+  sessionGeneration++
   localStorage.removeItem(TOKEN_STORAGE_KEY)
   // Also purge both SQLite-side credentials with a SINGLE dynamic import.
   // Fire-and-forget — localStorage is the primary sync store; SQLite is the
@@ -546,6 +547,10 @@ export async function performDeviceCodeFlow(
     try {
       const tokens = await pollDeviceToken(baseURL, session.device_code, session.user_code)
       if (tokens) {
+        // A new login replaces the previous session. Invalidate any refresh
+        // started for that session before publishing the new token pair.
+        sessionGeneration++
+
         // Success! Save tokens
         const now = Date.now()
         saveStoredTokens({
@@ -607,25 +612,46 @@ export function refreshAccessTokenWithStatus(
   baseURL: string,
   clientId: string
 ): Promise<RefreshResult> {
-  if (refreshInFlight) return refreshInFlight
-  const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
-  refreshInFlight = request.finally(() => {
-    if (refreshInFlight === trackedRefresh) refreshInFlight = null
-  })
-  const trackedRefresh = refreshInFlight
-  return refreshInFlight
+  if (refreshInFlight && refreshInFlight.generation === sessionGeneration) {
+    return refreshInFlight.promise
+  }
+
+  const generation = sessionGeneration
+  const request = refreshAccessTokenWithStatusImpl(baseURL, clientId, generation)
+  const trackedRefresh: RefreshInFlight = {
+    generation,
+    promise: request.finally(() => {
+      if (refreshInFlight === trackedRefresh) refreshInFlight = null
+    }),
+  }
+  refreshInFlight = trackedRefresh
+  return trackedRefresh.promise
 }
 
-let refreshInFlight: Promise<RefreshResult> | null = null
+type RefreshInFlight = {
+  generation: number
+  promise: Promise<RefreshResult>
+}
+
+let refreshInFlight: RefreshInFlight | null = null
+let sessionGeneration = 0
 
 async function refreshAccessTokenWithStatusImpl(
   baseURL: string,
-  clientId: string
+  clientId: string,
+  generation: number
 ): Promise<RefreshResult> {
+  const superseded = (): RefreshResult => ({
+    status: 'temporary_error',
+    error: new Error('Token refresh superseded by a newer login or logout'),
+  })
+
+  const isCurrentSession = (): boolean => generation === sessionGeneration
   // Use the async fallback loader — recovers refresh_token from SQLite
   // when localStorage has been cleared (browser eviction, user clear, etc.)
   const stored = await loadStoredTokensWithFallback()
   if (!stored) {
+    if (!isCurrentSession()) return superseded()
     console.warn('[llm-gateway] forceRefresh: no stored tokens (localStorage + SQLite both empty)')
     // The token pair is gone, but the api-key-store may still hold the
     // access_token shadow of an earlier session. That means the session DIED
@@ -638,6 +664,7 @@ async function refreshAccessTokenWithStatusImpl(
   }
 
   // Refresh token must still be alive
+  if (!isCurrentSession()) return superseded()
   const now = Date.now()
   if (stored.refresh_expires_at <= now) {
     console.warn('[llm-gateway] forceRefresh: refresh_token expired', {
@@ -653,6 +680,7 @@ async function refreshAccessTokenWithStatusImpl(
 
   try {
     const tokens = await refreshAccessToken(baseURL, stored.refresh_token)
+    if (!isCurrentSession()) return superseded()
     const completedAt = Date.now()
     saveStoredTokens({
       access_token: tokens.access_token,
@@ -671,6 +699,8 @@ async function refreshAccessTokenWithStatusImpl(
     setCredentialStatus('valid')
     return { status: 'success', accessToken: tokens.access_token }
   } catch (e) {
+    if (!isCurrentSession()) return superseded()
+
     // Only clear tokens if the refresh_token is definitively invalid.
     // Network errors (TypeError), 5xx, etc. should NOT wipe tokens —
     // they are transient and the user shouldn't have to re-login.

@@ -141,6 +141,35 @@ describe('llm-gateway-auth dead-session cleanup', () => {
       vi.unstubAllGlobals()
     })
 
+    it('does not let a refresh from a replaced session overwrite the new session', async () => {
+      seedStoredTokens()
+      let resolveRefresh!: (response: Response) => void
+      const refreshResponse = new Promise<Response>((resolve) => { resolveRefresh = resolve })
+      const fetchMock = vi.fn(() => refreshResponse)
+      vi.stubGlobal('fetch', fetchMock)
+
+      const staleRefresh = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      logoutGateway()
+      localStorage.setItem('llm-gateway-tokens', JSON.stringify({
+        access_token: 'login-access-token',
+        refresh_token: 'login-refresh-token',
+        access_expires_at: Date.now() + 60_000,
+        refresh_expires_at: Date.now() + 3600_000,
+        client_id: CLIENT_ID,
+        base_url: BASE_URL,
+      }))
+
+      resolveRefresh(new Response(JSON.stringify({
+        access_token: 'stale-refreshed-token', token_type: 'Bearer', expires_in: 3600,
+        refresh_token: 'stale-new-refresh', refresh_expires_in: 3600,
+      }), { status: 200 }))
+
+      expect(await staleRefresh).toMatchObject({ status: 'temporary_error' })
+      expect(JSON.parse(localStorage.getItem('llm-gateway-tokens')!).access_token)
+        .toBe('login-access-token')
+      vi.unstubAllGlobals()
+    })
+
     it('uses the refresh completion time when calculating token expiry', async () => {
       seedStoredTokens()
       const start = Date.now()
