@@ -28,14 +28,23 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
   const router = useRouter()
   const initialized = useProjectStore((s) => s.initialized)
   const projectLoading = useProjectStore((s) => s.isLoading)
+  // Re-run when the conversation store finishes loading: a cold link to
+  // /chats/:id can land before loadFromDB resolves, and without this
+  // dependency the sync never retries (leaving the chat inactive).
+  const conversationsLoaded = useConversationStore((s) => s.loaded)
 
   useEffect(() => {
     if (!chatId) return
     if (!initialized || projectLoading) return
 
-    let cancelled = false
+    // Generation token: only the newest sync run may touch the stores. A
+    // slow switch to chat A must never land after a newer switch to chat B.
+    let generation = 0
 
     const syncFromRoute = async () => {
+      const myGeneration = ++generation
+      const cancelled = () => myGeneration !== generation
+
       // Step 0: ensure a project host exists. Landing on /chats directly
       // skips the /projects route sync, so activeProjectId may still be ''.
       const projectState = useProjectStore.getState()
@@ -46,15 +55,15 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           // Degenerate state (every project deleted): the chats home still
           // renders, but an individual chat has no workspace host.
           console.warn('[chatsSync] no project available as workspace host, redirecting to /chats')
-          if (!cancelled) router.replace('/chats')
+          if (!cancelled()) router.replace('/chats')
           return
         }
         const switched = await projectState.setActiveProject(fallback.id)
         if (!switched) {
-          if (!cancelled) router.replace('/chats')
+          if (!cancelled()) router.replace('/chats')
           return
         }
-        if (cancelled) return
+        if (cancelled()) return
       }
 
       // Step 1: the conversation must exist and be standalone (kind='direct').
@@ -66,24 +75,35 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           chatId,
           found: !!conversation,
         })
-        if (!cancelled) router.replace('/chats')
+        if (!cancelled()) router.replace('/chats')
         return
       }
 
-      if (cancelled) return
+      if (cancelled()) return
 
       // Step 2: switch workspace (OPFS/SQLite state). switchWorkspace
       // lazy-creates the workspace record on first visit, same as the
-      // /projects route.
+      // /projects route. The workspace store serializes concurrent switches
+      // internally; the generation check after the await drops stale
+      // completions so a slow switch to chat A never lands after the user
+      // has already moved on to chat B.
       const ctxState = useConversationContextStore.getState()
       const activeWorkspaceId = ctxState.activeWorkspaceId
       if (activeWorkspaceId !== chatId) {
-        await ctxState.switchWorkspace(chatId)
+        try {
+          await ctxState.switchWorkspace(chatId)
+        } catch (error) {
+          if (!cancelled()) {
+            console.warn('[chatsSync] switchWorkspace failed, redirecting to /chats', { chatId, error })
+            router.replace('/chats')
+          }
+          return
+        }
+        if (cancelled()) return
       } else {
         await ctxState.refreshPendingChanges(true)
+        if (cancelled()) return
       }
-
-      if (cancelled) return
 
       // Step 3: activate the conversation (loads messages).
       const activeConversationId = useConversationStore.getState().activeConversationId
@@ -95,9 +115,9 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
     void syncFromRoute()
 
     return () => {
-      cancelled = true
+      generation++
     }
-  }, [chatId, router, initialized, projectLoading])
+  }, [chatId, router, initialized, projectLoading, conversationsLoaded])
 }
 
 /**
