@@ -89,8 +89,14 @@ export class WorkspaceRepository {
    */
   async findWorkspacesByProject(projectId: string): Promise<Workspace[]> {
     const db = getSQLiteDB()
+    // Standalone chats keep a hidden host workspace row (NOT NULL project_id
+    // schema), but they are not project conversations — project-scoped
+    // listings must not include them.
     const rows = await db.queryAll<WorkspaceRow>(
-      'SELECT * FROM workspaces WHERE project_id = ? ORDER BY last_accessed_at DESC',
+      `SELECT w.* FROM workspaces w
+       LEFT JOIN conversations c ON c.id = w.id
+       WHERE w.project_id = ? AND c.kind IS NOT 'direct'
+       ORDER BY w.last_accessed_at DESC`,
       [projectId]
     )
     return rows.map((row) => this.rowToWorkspace(row))
