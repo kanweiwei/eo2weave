@@ -40,10 +40,11 @@ vi.mock('@/store/settings.store', () => ({
 
 import {
   forceRefreshAccessToken,
+  refreshAccessTokenWithStatus,
   getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
-} from '../llm-gateway-auth'
+} from '@/agent/providers/llm-gateway-auth'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
@@ -114,6 +115,101 @@ describe('llm-gateway-auth dead-session cleanup', () => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
       })
       expect(localStorage.getItem('llm-gateway-tokens')).toBeNull()
+    })
+
+    it('reuses one refresh request for concurrent callers', async () => {
+      seedStoredTokens()
+      let resolveRefresh!: (response: Response) => void
+      const refreshResponse = new Promise<Response>((resolve) => { resolveRefresh = resolve })
+      const fetchMock = vi.fn(() => refreshResponse)
+      vi.stubGlobal('fetch', fetchMock)
+
+      const first = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      const second = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(first).toBe(second)
+      resolveRefresh(new Response(JSON.stringify({
+        access_token: 'new-token', token_type: 'Bearer', expires_in: 60,
+        refresh_token: 'new-refresh', refresh_expires_in: 3600,
+      }), { status: 200 }))
+
+      const results = await Promise.all([first, second])
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(results).toEqual([
+        { status: 'success', accessToken: 'new-token' },
+        { status: 'success', accessToken: 'new-token' },
+      ])
+      vi.unstubAllGlobals()
+    })
+
+    it('uses the refresh completion time when calculating token expiry', async () => {
+      seedStoredTokens()
+      const start = Date.now()
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return new Response(JSON.stringify({
+          access_token: 'new-token', token_type: 'Bearer', expires_in: 60,
+          refresh_token: 'new-refresh', refresh_expires_in: 3600,
+        }), { status: 200 })
+      }))
+
+      const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(result.status).toBe('success')
+      const completedAt = Date.now()
+      const stored = JSON.parse(localStorage.getItem('llm-gateway-tokens')!)
+      // Expiry must be calculated from refresh COMPLETION time, not request
+      // start — assert against both bounds so a start-based calculation
+      // (which would lose the ~20ms delay) fails.
+      expect(stored.access_expires_at).toBeGreaterThanOrEqual(start + 60_000 + 15)
+      expect(stored.access_expires_at).toBeLessThanOrEqual(completedAt + 60_000)
+      vi.unstubAllGlobals()
+    })
+
+    it('discards a refresh that completes after logout (stale session)', async () => {
+      seedStoredTokens()
+      let resolveRefresh!: (response: Response) => void
+      const refreshResponse = new Promise<Response>((resolve) => { resolveRefresh = resolve })
+      vi.stubGlobal('fetch', vi.fn(() => refreshResponse))
+
+      const pending = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      logoutGateway() // session ends while the refresh is in flight
+      resolveRefresh(new Response(JSON.stringify({
+        access_token: 'late-token', token_type: 'Bearer', expires_in: 60,
+        refresh_token: 'late-refresh', refresh_expires_in: 3600,
+      }), { status: 200 }))
+
+      const result = await pending
+      expect(result.status).toBe('temporary_error')
+      // Nothing from the dead session may be written
+      expect(localStorage.getItem('llm-gateway-tokens')).toBeNull()
+      vi.unstubAllGlobals()
+    })
+
+    it('does not reuse an in-flight refresh across a session change', async () => {
+      seedStoredTokens()
+      let resolveRefresh!: (response: Response) => void
+      const refreshResponse = new Promise<Response>((resolve) => { resolveRefresh = resolve })
+      const fetchMock = vi.fn(() => refreshResponse)
+      vi.stubGlobal('fetch', fetchMock)
+
+      const first = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      logoutGateway()
+      // Same tick as before: the wrapper must NOT hand back the dead-session
+      // promise — and the new call must not resolve with the stale token.
+      const second = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(second).not.toBe(first)
+      resolveRefresh(new Response(JSON.stringify({
+        access_token: 'stale', token_type: 'Bearer', expires_in: 60,
+        refresh_token: 'stale-refresh', refresh_expires_in: 3600,
+      }), { status: 200 }))
+      await first.catch(() => {})
+      // Post-logout callers must observe a logged-out result, not the dead
+      // session's access token.
+      const secondResult = await second
+      expect(secondResult.status).not.toBe('success')
+      if (secondResult.status === 'success') {
+        expect(secondResult.accessToken).not.toBe('stale')
+      }
+      vi.unstubAllGlobals()
     })
 
     it('keeps tokens (and the shadow key) on transient network errors', async () => {

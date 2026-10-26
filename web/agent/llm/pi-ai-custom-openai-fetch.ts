@@ -157,24 +157,25 @@ function streamCwOpenAIChatCompletions(
       ) {
         console.warn('[llm-gateway] 401 received, attempting force-refresh')
         try {
-          const { forceRefreshAccessToken } =
+          const { refreshAccessTokenWithStatus } =
             await import('@/agent/providers/llm-gateway-auth')
           const { getLLMGatewayBaseURL, getLLMGatewayClientId } =
             await import('@/agent/providers/llm-gateway-provider')
-          const newToken = await forceRefreshAccessToken(
+          const refreshResult = await refreshAccessTokenWithStatus(
             getLLMGatewayBaseURL(),
             getLLMGatewayClientId()
           )
-          if (newToken) {
+          if (refreshResult.status === 'success') {
             console.info('[llm-gateway] force-refresh succeeded, retrying request')
-            response = await doFetch(newToken)
-          } else {
+            response = await doFetch(refreshResult.accessToken)
+          } else if (refreshResult.status === 'expired' || refreshResult.status === 'missing') {
             gatewayRefreshFailed = true
-            console.warn('[llm-gateway] force-refresh returned null (no stored tokens or refresh expired)')
+            console.warn('[llm-gateway] refresh reported invalid or missing credentials')
+          } else {
+            console.warn('[llm-gateway] refresh failed temporarily; preserving original gateway error')
           }
         } catch (e) {
-          gatewayRefreshFailed = true
-          console.warn('[llm-gateway] force-refresh threw:', e)
+          console.warn('[llm-gateway] force-refresh threw temporarily:', e)
           // Refresh failed — fall through to the normal error path below
         }
       }
