@@ -1,11 +1,7 @@
 // Sidebar component
 export const sidebar = {
     directChat: {
-        newDirectChat: "New direct chat",
-        groupLabel: "Direct chats",
-        projectGroupLabel: "Project conversations",
-        convertToProject: "Convert to project conversation",
-        convertSuccess: "Converted to project conversation — you can now mount a folder",
+        convertSuccess: "Converted to a project conversation — you can now mount a folder",
         convertFailed: "Conversion failed, please retry",
     },
     expandSidebar: "Expand Sidebar",

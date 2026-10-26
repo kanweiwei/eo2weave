@@ -1,5 +1,9 @@
 // 顶部导航
 export const topbar = {
+    standaloneChats: {
+        spaceName: "独立对话",
+        tooltip: "独立对话",
+    },
     productName: "怡氧知知",
     openFolder: "打开文件夹",
     switchFolder: "切换项目文件夹",

@@ -1,7 +1,7 @@
 // チャット
 export const conversation = {
     directChat: {
-        badge: "ダイレクト",
+        badge: "スタンドアロン",
         inputPlaceholder: "気軽に雑談したり、何でも質問してください…",
     },
     thinking: "思考：オフ",

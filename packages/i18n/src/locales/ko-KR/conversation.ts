@@ -1,7 +1,7 @@
 // 채팅
 export const conversation = {
     directChat: {
-        badge: "다이렉트",
+        badge: "독립 대화",
         inputPlaceholder: "편하게 대화하거나 무엇이든 물어보세요…",
     },
     thinking: "생각：끔",

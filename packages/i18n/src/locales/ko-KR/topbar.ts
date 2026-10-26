@@ -1,5 +1,9 @@
 // 상단 바
 export const topbar = {
+    standaloneChats: {
+        spaceName: "독립 대화",
+        tooltip: "독립 대화",
+    },
     productName: "EO2Weave",
     openFolder: "폴더 열기",
     switchFolder: "프로젝트 폴더 전환",

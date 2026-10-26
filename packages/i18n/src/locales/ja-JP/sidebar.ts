@@ -1,10 +1,6 @@
 // サイドバーコンポーネント
 export const sidebar = {
     directChat: {
-        newDirectChat: "新規ダイレクトチャット",
-        groupLabel: "ダイレクトチャット",
-        projectGroupLabel: "プロジェクト会話",
-        convertToProject: "プロジェクト会話に変換",
         convertSuccess: "プロジェクト会話に変換しました。フォルダをマウントできます",
         convertFailed: "変換に失敗しました。再試行してください",
     },

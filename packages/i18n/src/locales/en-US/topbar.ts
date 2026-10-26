@@ -1,4 +1,8 @@
 export const topbar = {
+    standaloneChats: {
+        spaceName: "Standalone chats",
+        tooltip: "Standalone chats",
+    },
     productName: "EO2Weave",
     openFolder: "Open Folder",
     switchFolder: "Switch Project Folder",

@@ -36,6 +36,7 @@ import { sidePanelRecipe } from './sidePanelRecipe'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { chats } from './chats'
 import { extension } from './extension'
 
 export const koKR = {
@@ -97,4 +98,5 @@ export const koKR = {
   extension,
   tools,
   schedule,
+  chats,
 } as const

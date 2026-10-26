@@ -1,7 +1,7 @@
 // 对话相关
 export const conversation = {
     directChat: {
-        badge: "私聊",
+        badge: "独立对话",
         inputPlaceholder: "随便聊聊，或问我任何问题…",
     },
     thinking: "思考：关",
