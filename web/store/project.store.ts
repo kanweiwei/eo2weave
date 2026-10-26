@@ -513,6 +513,23 @@ export const useProjectStore = create<ProjectState>()(
             await useAgentStore.getState().setActiveProject('')
           }
 
+          // Standalone chats keep a hidden host workspace row pointing at the
+          // deleted project. Rebind those rows to the next remaining project so
+          // the workspace records stay consistent (the chats space never shows
+          // project semantics, so the host choice is invisible either way).
+          try {
+            const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+            const workspaceRepo = getWorkspaceRepository()
+            const orphaned = await workspaceRepo.findWorkspacesByProject(projectId)
+            if (nextProjectId) {
+              for (const ws of orphaned) {
+                await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
+              }
+            }
+          } catch (rebindError) {
+            console.warn('[ProjectStore] Failed to rebind standalone chat hosts:', rebindError)
+          }
+
           await useConversationContextStore.getState().refreshWorkspaces()
         }
 
