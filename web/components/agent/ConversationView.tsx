@@ -47,6 +47,7 @@ import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { VisionCapabilityIndicator } from './VisionCapabilityIndicator'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { useAssetStore } from '@/store/asset.store'
+import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { PageScreenshotCropDialog } from './PageScreenshotCropDialog'
 import { FlowCanvasPanel } from './FlowCanvasPanel'
 
@@ -620,11 +621,54 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
 
   const store = useExtensionStore.getState()
 
-  // Only match Codex patterns when the active provider is codex-oauth
-  const errorCode = isCodex ? parseErrorCode(error) : null
-  const pattern = errorCode
+  // Only match Codex patterns when the active provider is codex-oauth.
+  // GATEWAY_CREDENTIALS_EXPIRED is parsed for every provider — the prefix can
+  // only be stamped by the llm-gateway fetch path, and the providerType at
+  // render time may already have been switched.
+  const errorCode = parseErrorCode(error)
+  const pattern = errorCode && isCodex
     ? CODEX_ERROR_PATTERNS.find((p) => p.codes.includes(errorCode))
     : null
+
+  // Gateway credential fully dead (401 + refresh ended 'expired'): the only
+  // correct recovery is re-running the Device Code Flow, so offer the
+  // Re-login entry instead of the generic "继续" retry (issue #75). The
+  // fetch layer only stamps this prefix on llm-gateway 401s where the
+  // automatic refresh definitively expired — transient refresh failures
+  // keep the generic presentation below.
+  const isGatewayCredentialsExpired = errorCode === 'GATEWAY_CREDENTIALS_EXPIRED'
+  if (isGatewayCredentialsExpired) {
+    return (
+      <div className="border-t border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-start gap-2.5">
+            <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">
+                {t('conversation.error.gatewayReloginTitle')}
+              </p>
+              <p className="mt-0.5 text-red-600 dark:text-red-400">
+                {error.replace(/^\[GATEWAY_CREDENTIALS_EXPIRED\]\s*/, '')}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  // Login success only restores the credential — the failed
+                  // turn is NOT auto-replayed (it may already have run tool
+                  // actions with side effects); the user re-sends manually.
+                  void useGatewayReloginStore.getState().start()
+                }}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700"
+              >
+                <KeyRound className="h-3 w-3" />
+                {t('conversation.error.gatewayRelogin')} →
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Fallback: friendly classified error banner for non-codex providers
   if (!pattern) {

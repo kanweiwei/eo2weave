@@ -140,17 +140,19 @@ function streamCwOpenAIChatCompletions(
 
       let response = await doFetch(apiKey)
 
-      // Set only when a 401 triggered a force-refresh attempt that failed to
-      // produce a new token — i.e. the gateway session is unrecoverable and
-      // the user must re-login (drives the actionable error message below).
-      let gatewayRefreshFailed = false
+      // Set only when a 401 triggered a force-refresh attempt that ended in
+      // status === 'expired' — i.e. the gateway session is unrecoverable and
+      // the user must re-login (drives the GATEWAY_CREDENTIALS_EXPIRED error
+      // card below). A transient refresh failure (network / 5xx) keeps the
+      // original gateway error and the generic retry UI.
+      let gatewayCredentialsExpired = false
 
       // 401 + LLM Gateway provider → force-refresh token then retry once.
       // Gateway access tokens are short-lived; this transparently refreshes
       // on-demand so the user never sees a hard "token expired" failure.
-      // We use forceRefreshAccessToken (not getValidAccessToken) because the
-      // server has already rejected the token — we must NOT trust the local
-      // expiry timestamp and must unconditionally hit /v1/auth/refresh.
+      // We use refreshAccessTokenWithStatus (not getValidAccessToken) because
+      // the server has already rejected the token — we must NOT trust the
+      // local expiry timestamp and must unconditionally hit /v1/auth/refresh.
       if (
         response.status === 401 &&
         String(model.provider) === 'llm-gateway'
@@ -168,11 +170,14 @@ function streamCwOpenAIChatCompletions(
           if (refreshResult.status === 'success') {
             console.info('[llm-gateway] force-refresh succeeded, retrying request')
             response = await doFetch(refreshResult.accessToken)
-          } else if (refreshResult.status === 'expired' || refreshResult.status === 'missing') {
-            gatewayRefreshFailed = true
-            console.warn('[llm-gateway] refresh reported invalid or missing credentials')
+          } else if (refreshResult.status === 'expired') {
+            gatewayCredentialsExpired = true
+            console.warn('[llm-gateway] refresh reported dead credentials')
           } else {
-            console.warn('[llm-gateway] refresh failed temporarily; preserving original gateway error')
+            // 'missing' (never logged in) and 'temporary_error' (network/5xx)
+            // keep the original gateway error — only a definitively expired
+            // credential gets the re-login card.
+            console.warn('[llm-gateway] refresh failed temporarily or missing; preserving original gateway error')
           }
         } catch (e) {
           console.warn('[llm-gateway] force-refresh threw temporarily:', e)
@@ -182,24 +187,26 @@ function streamCwOpenAIChatCompletions(
 
       if (!response.ok) {
         const errorBody = await safeReadText(response)
-        // LLM Gateway with an unrecoverable dead token (force-refresh failed:
-        // no stored tokens or refresh_token expired/revoked) → surface an
-        // actionable, localized message instead of the raw HTTP 401 body.
-        // Users otherwise see "HTTP 401 gateway token expired" with no idea
-        // what to do next.
+        // LLM Gateway with an unrecoverable dead credential (401 + refresh
+        // ended in 'expired') → throw with a structured [CODE] prefix so the
+        // error card can offer a "Re-login" action instead of a generic
+        // retry (mirrors the codex bridge's parseErrorCode pattern). The
+        // localized message stays as the payload.
         if (
           response.status === 401 &&
           String(model.provider) === 'llm-gateway' &&
-          gatewayRefreshFailed
+          gatewayCredentialsExpired
         ) {
           const { t: translateStatic } = await import('@creatorweave/i18n')
           const { useI18nStore } = await import('@/i18n/store')
           const locale = useI18nStore.getState().locale
           const msg = translateStatic(locale, 'settings.gateway.tokenInvalidLoginExpired')
           throw new Error(
-            msg !== 'settings.gateway.tokenInvalidLoginExpired'
-              ? msg
-              : 'Nutstore AI login has expired. Please log in again.'
+            `[GATEWAY_CREDENTIALS_EXPIRED] ${
+              msg !== 'settings.gateway.tokenInvalidLoginExpired'
+                ? msg
+                : 'Nutstore AI login has expired. Please log in again.'
+            }`
           )
         }
         throw new Error(`HTTP ${response.status}: ${errorBody}`)

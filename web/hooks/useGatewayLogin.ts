@@ -4,6 +4,11 @@
  * Extracted from ProviderManager.tsx so that WelcomeScreen and other entry
  * points can trigger login without navigating to Settings.
  *
+ * The save/model/credential sequence lives in the shared non-hook body
+ * (`applyGatewayLoginTokens` in @/lib/gateway-login) so this hook and the
+ * gateway-relogin store (credential-expired error card) stay behaviorally
+ * identical.
+ *
  * On success:
  * - Persists access_token to api-key-store
  * - Updates settings.hasApiKey → UI reacts (input enables, etc.)
@@ -16,15 +21,13 @@ import {
   type AuthState,
 } from '@/agent/providers/llm-gateway-auth'
 import {
+  applyGatewayLoginTokens,
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
-  getLLMGatewayApiKeyProviderKey,
-  updateGatewayModels,
-  isLLMGatewayConfigured,
-  LLM_GATEWAY_PROVIDER_TYPE,
-} from '@/agent/providers/llm-gateway-provider'
+} from '@/lib/gateway-login'
 import { useSettingsStore } from '@/store/settings.store'
 import { useT } from '@/i18n'
+import { isLLMGatewayConfigured } from '@/agent/providers/llm-gateway-provider'
 
 export interface UseGatewayLoginResult {
   /** Current auth flow state — null when idle */
@@ -72,45 +75,7 @@ export function useGatewayLogin(): UseGatewayLoginResult {
       })
       console.log('[useGatewayLogin] got tokens, saving...')
 
-      // Save access_token as the "API key" for this provider
-      const keyId = getLLMGatewayApiKeyProviderKey()
-      const { saveApiKey } = await import('@/security/api-key-store')
-      await saveApiKey(keyId, tokens.access_token)
-      useSettingsStore.getState().invalidateApiKeyCache(keyId)
-      console.log('[useGatewayLogin] token saved, fetching models...')
-
-      // Fetch and register model list FIRST (need models before we can select one)
-      const models = await updateGatewayModels(tokens.access_token)
-      console.log('[useGatewayLogin] models fetched:', models.length)
-
-      // Keep provider/model selection atomic. The shared reconciliation action
-      // also preserves an existing gateway model when the catalog changes.
-      const settings = useSettingsStore.getState()
-      settings.switchProviderAndModel(
-        LLM_GATEWAY_PROVIDER_TYPE,
-        models[0]?.id ?? settings.modelName,
-      )
-
-      // Seed the curated default pin (deepseek-v4.1-flash) for first-time
-      // gateway users — same first-save seeding as ProviderManager, so the
-      // top-bar switcher works without manual pinning. Intersection with the
-      // live catalog skips an out-of-curation default.
-      if ((useSettingsStore.getState().pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
-        const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-        const defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
-        if (defaults.length > 0) {
-          useSettingsStore.getState().setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-          useSettingsStore.getState().markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-        }
-      }
-
-      // Sync global credential state so UI reacts immediately (must come AFTER
-      // provider/model set). Expiry is kept separate from model availability.
-      useSettingsStore.getState().setHasApiKey(true)
-      useSettingsStore.getState().setModelCredentialStatus('valid')
-
-      // Trigger UI refresh so provider dropdowns etc. update
-      useSettingsStore.getState().triggerProviderRefresh()
+      await applyGatewayLoginTokens(tokens.access_token)
       console.log('[useGatewayLogin] login complete, returning true')
 
       if (mountedRef.current) {

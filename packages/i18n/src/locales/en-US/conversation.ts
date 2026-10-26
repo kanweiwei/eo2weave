@@ -149,6 +149,13 @@ export const conversation = {
     },
     // Error
     error: {
+      gatewayReloginTitle: "Nutstore AI login expired",
+      gatewayRelogin: "Log in to Nutstore AI",
+      gatewayReloginSuccess: "Logged in — please re-send your message",
+      gatewayClientIdMissing: "Nutstore AI client ID is not configured — cannot log in",
+      gatewayLoginFailed: "Nutstore AI login failed",
+      gatewayTokenSetMalformed: "Nutstore AI login returned an incomplete credential set — please retry",
+      gatewayDeviceFlowTimeout: "Nutstore AI authorization session expired — please start again",
       requestFailed: "Request failed:",
       retry: "Retry",
       failed: "The model request failed. Please try again later.",

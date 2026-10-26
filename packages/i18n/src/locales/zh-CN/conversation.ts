@@ -153,6 +153,13 @@ export const conversation = {
     },
     // 错误
     error: {
+      gatewayReloginTitle: "坚果云 AI 登录已过期",
+      gatewayRelogin: "重新登录坚果云 AI",
+      gatewayReloginSuccess: "登录成功，请重新发送你的消息",
+      gatewayClientIdMissing: "坚果云 AI Client ID 未配置，无法登录",
+      gatewayLoginFailed: "坚果云 AI 登录失败",
+      gatewayTokenSetMalformed: "坚果云 AI 登录返回的凭证不完整，请重试",
+      gatewayDeviceFlowTimeout: "坚果云 AI 授权会话已超时，请重新发起登录",
       requestFailed: "请求失败：",
       retry: "继续",
       failed: "模型请求失败，请稍后重试",
