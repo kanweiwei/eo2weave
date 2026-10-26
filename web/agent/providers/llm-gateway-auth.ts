@@ -577,7 +577,11 @@ export async function performDeviceCodeFlow(
           !tokens.access_token ||
           !tokens.refresh_token ||
           typeof refreshExpiresIn !== 'number' ||
-          refreshExpiresIn <= 0
+          !Number.isFinite(refreshExpiresIn) ||
+          refreshExpiresIn <= 0 ||
+          typeof tokens.expires_in !== 'number' ||
+          !Number.isFinite(tokens.expires_in) ||
+          tokens.expires_in <= 0
         ) {
           const err = new Error('Device auth returned an incomplete token set') as Error & {
             code: string

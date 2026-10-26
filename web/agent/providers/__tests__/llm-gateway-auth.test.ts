@@ -114,7 +114,11 @@ describe('llm-gateway-auth token refresh hardening', () => {
       const stored = JSON.parse(localStorage.getItem(TOKENS_KEY)!)
       // Access token comes from the response…
       expect(stored.access_token).toBe('new-access')
-      expect(stored.access_expires_at).toBeGreaterThan(Date.now())
+      // Expiry must be completion time + the response's 120s TTL — assert a
+      // narrow band so a start-time-based or truncated calculation fails.
+      const afterRefresh = Date.now()
+      expect(stored.access_expires_at).toBeGreaterThanOrEqual(afterRefresh + 119_000)
+      expect(stored.access_expires_at).toBeLessThanOrEqual(afterRefresh + 121_000)
       // …but the 7-day refresh token survives untouched.
       expect(stored.refresh_token).toBe(seeded.refresh_token)
       expect(stored.refresh_expires_at).toBe(seeded.refresh_expires_at)
