@@ -199,6 +199,11 @@ export const FOLDER_DEPENDENT_TOOLS: ReadonlySet<string> = new Set([
   'snapshot_show',
   'snapshot_restore',
   'sync-to-opfs',
+  // VFS-backed image tools: their executors resolve readable paths against
+  // the host project's mounted roots, so a direct-mode agent could read
+  // host-project images through them.
+  'read_image',
+  'ocr',
 ])
 
 /**
