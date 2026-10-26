@@ -57,16 +57,21 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
       return scalar(t(useI18nStore.getState().locale, 'agent.directChat.systemBoundary'))
     } },
     { id: 'agents', collect: async () => {
+      // Direct chats are project-independent: the hidden host binding must not
+      // surface project agents (or any project-bound context) to the model.
+      if (input().toolContext.directMode) return {}
       const project = await getProject(input().toolContext.projectId)
       if (!project) return {}
       const agents = await project.agentManager.listAgents()
       return Object.fromEntries(agents.map(agent => [agent.id, `${agent.name}; delegate_to target_agent_id: ${agent.id}`]))
     } },
     { id: 'agent-persona', collect: async () => {
+      if (input().toolContext.directMode) return {}
       const resolved = await resolveAgent(input().toolContext)
       return resolved ? scalar(resolved.agent ? buildAgentPrompt(resolved.agent, { includeTodayLog: false }) : null) : {}
     } },
     { id: 'today-log', collect: async () => {
+      if (input().toolContext.directMode) return {}
       const resolved = await resolveAgent(input().toolContext)
       return resolved ? scalar(resolved.agent ? await resolved.project.agentManager.readTodayLog(resolved.agent.id) : null) : {}
     } },
@@ -91,12 +96,14 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
         ])) : {} },
     { id: 'conversation', collect: () => {
       const { toolContext } = input()
-      return toolContext.workspaceId ? {
+      if (!toolContext.workspaceId) return {}
+      // Direct chats never expose the hidden host project id.
+      return {
         conversationId: toolContext.workspaceId,
-        ...(toolContext.projectId ? { projectId: toolContext.projectId } : {}),
+        ...(toolContext.projectId && !toolContext.directMode ? { projectId: toolContext.projectId } : {}),
         instance: typeof window !== 'undefined' ? window.location.origin : '',
         guidance: 'Use these ids with self-control tools. When multiple instances expose a tool, ONLY call the variant whose source host matches this instance.',
-      } : {}
+      }
     } },
     { id: 'date', collect: () => {
       const now = new Date()
