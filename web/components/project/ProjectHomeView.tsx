@@ -11,7 +11,7 @@ import { useConversationStore } from '@/store/conversation.store'
 import { clearSQLiteAndProjectsDirectory, RESET_REQUIRES_TAB_CLOSURE } from '@/storage'
 import type { Project } from '@/sqlite/repositories/project.repository'
 import { ProjectHome } from '@/components/project/ProjectHome'
-import { projectWorkspacePath, projectsPath, docsPath } from '@/lib/route-paths'
+import { projectWorkspacePath, projectsPath, chatsPath, docsPath } from '@/lib/route-paths'
 
 /**
  * ProjectHomeView — store-connected ProjectHome for the /projects route.
@@ -35,6 +35,13 @@ export default function ProjectHomeView() {
   const renameProject = useProjectStore((s) => s.renameProject)
   const setProjectArchived = useProjectStore((s) => s.setProjectArchived)
   const deleteProject = useProjectStore((s) => s.deleteProject)
+
+  // Standalone chats preview (kind='direct') — the hero card + header button.
+  const standaloneChats = useConversationStore((s) =>
+    s.conversations
+      .filter((c) => c.kind === 'direct')
+      .map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
+  )
 
   const [isClearingLocalData, setIsClearingLocalData] = useState(false)
 
@@ -194,6 +201,8 @@ export default function ProjectHomeView() {
       onExportProjectUsage={handleExportProjectUsage}
       onClearLocalData={handleClearLocalData}
       onOpenDocs={() => router.push(docsPath(docsLanguage))}
+      onOpenStandaloneChats={() => router.push(chatsPath())}
+      standaloneChats={standaloneChats}
       isClearingLocalData={isClearingLocalData}
     />
   )

@@ -62,6 +62,7 @@ import { MCPSettingsDialog } from '@/components/mcp'
 import { SettingsDialog, type SettingsTab } from '@/components/settings/SettingsDialog'
 import { ScheduleDrawer } from '@/components/schedule/ScheduleDrawer'
 import { useLocale, useT } from '@/i18n'
+import { chatsPath } from '@/lib/route-paths'
 import { WebContainerPanel } from '@/components/webcontainer/WebContainerPanel'
 import { useWebContainerStore } from '@/store/webcontainer.store'
 import { getWorkspaceManager } from '@/opfs'
@@ -88,6 +89,12 @@ interface WorkspaceLayoutProps {
    * draft → conversation transition doesn't add a history entry.
    */
   onDraftConversationCreated?: (workspaceId: string) => void
+  /**
+   * Route owner when the layout is hosted OUTSIDE /projects (standalone chats
+   * route). When set, TopBar's global standalone-chats entry replaces the
+   * project switcher space and project-management callbacks are not rendered.
+   */
+  routeSpace?: 'projects' | 'chats'
 }
 
 export function WorkspaceLayout({
@@ -100,6 +107,7 @@ export function WorkspaceLayout({
   onManageProjects,
   onSelectWorkspace,
   onDraftConversationCreated,
+  routeSpace = 'projects',
 }: WorkspaceLayoutProps) {
   const waitForWorkspaceReady = useCallback(async (workspaceId: string, timeoutMs = 30000) => {
     const manager = await getWorkspaceManager()
@@ -857,6 +865,13 @@ export function WorkspaceLayout({
         onProjectSwitcherOpenChange={setProjectSwitcherOpen}
         onScheduleDrawerOpen={() => setScheduleDrawerOpen(true)}
         onWorkflowOpen={() => useFlowStore.getState().setPanelOpen(true)}
+        onOpenStandaloneChats={() => {
+          // Static import — WorkspaceLayout sits outside the Router context,
+          // so navigation goes through the anchor-style assign (full App
+          // Router navigation for internal paths is provided by <a> fallback).
+          if (typeof window !== 'undefined') window.location.assign(chatsPath())
+        }}
+        routeSpace={routeSpace}
         onNewConversation={() => {
           const newConv = createNew('New conversation')
           onSelectWorkspace?.(newConv.id)
