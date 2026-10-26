@@ -122,10 +122,10 @@ export class ConversationRepository {
       return rows.map((row) => this.flowInstanceRowToMeta(row))
     }
     if (hasFlowInstance && hasCompression) {
-      const rows = await db.queryAll<FlowInstanceBaseMetaColumns>(
-        `${FLOW_INSTANCE_BASE_SELECT} ${orderBy}`
+      const rows = await db.queryAll<FlowInstanceMetaColumns>(
+        `${FLOW_INSTANCE_SELECT} ${orderBy}`
       )
-      return rows.map((row) => this.flowInstanceBaseRowToMeta(row))
+      return rows.map((row) => this.flowInstanceRowToMeta(row))
     }
     if (hasFlowInstance) {
       // Pre-compression DB that already has the flow column: base select plus
@@ -359,6 +359,24 @@ export class ConversationRepository {
           meta.title,
           meta.titleMode || 'manual',
           toJSON(meta.contextUsage || null),
+          meta.createdAt,
+          meta.updatedAt,
+        ]
+      )
+    } else {
+      // Pre-compression schema (migration v8 not applied): persist the base
+      // columns so titles (and other metadata) are not silently dropped.
+      await db.execute(
+        `INSERT INTO conversations (id, title, title_mode, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           title_mode = excluded.title_mode,
+           updated_at = excluded.updated_at`,
+        [
+          meta.id,
+          meta.title,
+          meta.titleMode || 'manual',
           meta.createdAt,
           meta.updatedAt,
         ]
