@@ -44,7 +44,7 @@ import {
   getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
-} from '../llm-gateway-auth'
+} from '@/agent/providers/llm-gateway-auth'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
