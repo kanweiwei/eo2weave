@@ -121,6 +121,9 @@ export const conversation = {
     },
     // 오류
     error: {
+      gatewayReloginTitle: "Nutstore AI 로그인이 만료되었습니다",
+      gatewayRelogin: "Nutstore AI 다시 로그인",
+      gatewayReloginSuccess: "로그인 성공 — 요청을 다시 보내는 중…",
       requestFailed: "요청 실패:",
       retry: "재시도",
       failed: "모델 요청이 실패했습니다. 잠시 후 다시 시도해 주세요.",

@@ -19,6 +19,8 @@ import { ExtensionInstallGuide } from '@/components/extension'
 // Unified authorization modal (PR-1) — replaces both PageWriteAuthModal and
 // ExecAuthModal. They now forward into the shared tool-auth.store queue.
 import { ToolAuthModal } from '@/components/agent/ToolAuthModal'
+import { DeviceCodeFlowDialog } from '@/components/agent/DeviceCodeFlowDialog'
+import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { ServiceWorkerBridge } from '@/components/ServiceWorkerBridge'
 import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
 
@@ -592,11 +594,35 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         onOpenChange={(open) => { if (!open) extensionCloseGuide() }}
       />
       <ToolAuthModal />
+      {/* Gateway re-login dialog (issue #75) — driven by the relogin store so
+          the credential-expired error card can open it from anywhere (chat
+          view, side panel) without prop threading. Mounted at this stable root
+          because the error banner is a memoized presentation component. */}
+      <GatewayReloginDialogMount />
       {/* PWA install offer — after storage init so it never competes with the
           loading/error gates; dismissal state is owned by pwa/install-prompt. */}
       <PwaInstallCard />
       <Toaster position="bottom-right" />
     </>
+  )
+}
+
+/**
+ * Store-driven DeviceCodeFlowDialog for the gateway re-login flow. The open
+ * state covers 'running' (requesting/waiting/polling) and 'error'; 'success'
+ * closes immediately — the regenerate fires from the store's success callback.
+ */
+function GatewayReloginDialogMount() {
+  const phase = useGatewayReloginStore((s) => s.phase)
+  const authState = useGatewayReloginStore((s) => s.authState)
+  const reset = useGatewayReloginStore((s) => s.reset)
+
+  return (
+    <DeviceCodeFlowDialog
+      open={phase === 'running' || phase === 'error'}
+      authState={authState}
+      onClose={reset}
+    />
   )
 }
 

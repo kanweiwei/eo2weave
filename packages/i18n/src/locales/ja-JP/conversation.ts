@@ -121,6 +121,9 @@ export const conversation = {
     },
     // エラー
     error: {
+      gatewayReloginTitle: "Nutstore AI のログインが期限切れです",
+      gatewayRelogin: "Nutstore AI に再ログイン",
+      gatewayReloginSuccess: "ログイン成功 — リクエストを再送信中…",
       requestFailed: "リクエスト失敗：",
       retry: "再試行",
       failed: "モデルリクエストが失敗しました。しばらくしてからもう一度お試しください。",

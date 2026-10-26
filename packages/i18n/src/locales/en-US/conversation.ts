@@ -149,6 +149,9 @@ export const conversation = {
     },
     // Error
     error: {
+      gatewayReloginTitle: "Nutstore AI login expired",
+      gatewayRelogin: "Log in to Nutstore AI",
+      gatewayReloginSuccess: "Logged in — retrying your request…",
       requestFailed: "Request failed:",
       retry: "Retry",
       failed: "The model request failed. Please try again later.",
