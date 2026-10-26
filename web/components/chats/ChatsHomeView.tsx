@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useConversationStore } from '@/store/conversation.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
+import { useT } from '@/i18n'
 import { ChatsHome, type StandaloneChatListItem } from './ChatsHome'
 
 /**
@@ -23,11 +24,15 @@ export default function ChatsHomeView() {
   const loadFromDB = useConversationStore((s) => s.loadFromDB)
   const loadError = useConversationStore((s) => s.loadError)
   const createNew = useConversationStore((s) => s.createNew)
+  const t = useT()
   const conversations = useConversationStore((s) =>
     s.conversations.map((c): StandaloneChatListItem => ({
       id: c.id,
       title: c.title,
       updatedAt: c.updatedAt,
+      // kind must ride along: the filter below drops everything otherwise
+      // (every row would be kind=undefined ≡ not 'direct' → empty list).
+      kind: c.kind,
       messageCount: c.messagesLoaded ? c.messages.length : null,
       lastActivityAt:
         c.messagesLoaded && c.messages.length > 0
@@ -56,9 +61,9 @@ export default function ChatsHomeView() {
   )
 
   const handleCreateChat = useCallback(() => {
-    const conv = createNew('New chat', { kind: 'direct' })
+    const conv = createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
     router.push(`/chats/${conv.id}`)
-  }, [createNew, router])
+  }, [createNew, router, t])
 
   return (
     <ChatsHome

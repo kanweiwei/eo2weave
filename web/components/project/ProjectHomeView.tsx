@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
@@ -42,6 +42,16 @@ export default function ProjectHomeView() {
       .filter((c) => c.kind === 'direct')
       .map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
   )
+
+  // Cold visit to /projects (fresh tab): the global conversation store has not
+  // loaded yet, so the recent-chat preview would render empty. Trigger the
+  // load on mount — same gate + inflight guard as the other routes use.
+  const conversationsLoaded = useConversationStore((s) => s.loaded)
+  const loadFromDB = useConversationStore((s) => s.loadFromDB)
+  const loadError = useConversationStore((s) => s.loadError)
+  useEffect(() => {
+    if (!conversationsLoaded && projectLoading === false) loadFromDB()
+  }, [conversationsLoaded, loadError, loadFromDB, projectLoading])
 
   const [isClearingLocalData, setIsClearingLocalData] = useState(false)
 

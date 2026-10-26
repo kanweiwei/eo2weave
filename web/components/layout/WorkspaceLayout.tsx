@@ -300,10 +300,16 @@ export function WorkspaceLayout({
   // New Chat entries (sidebar button): create the conversation immediately
   // (persisted right away by createNew) and let the route owner navigate to
   // its canonical URL. No draft state involved.
+  // In the chats route space a "new chat" must be a standalone (kind='direct')
+  // conversation — creating a default project conversation there would leave
+  // an orphan project chat and bounce off the /chats/:id route sync.
   const handleCreateConversation = useCallback(() => {
-    const conv = createNew('New conversation')
+    const conv =
+      routeSpace === 'chats'
+        ? createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
+        : createNew('New conversation')
     onSelectWorkspace?.(conv.id)
-  }, [createNew, onSelectWorkspace])
+  }, [createNew, onSelectWorkspace, routeSpace, t])
 
   // Skills management handlers
   const handleSkillsManagerOpen = useCallback(() => {
@@ -404,8 +410,12 @@ export function WorkspaceLayout({
     // Conversations
     onNewConversation: () => {
       // Immediate creation: the conversation row is persisted right away and
-      // the URL moves to its canonical /workspaces/:id page (no draft state).
-      const newConv = createNew('New conversation')
+      // the URL moves to its canonical page (no draft state). Space semantics
+      // match the sidebar/TopBar New chat (see handleCreateConversation).
+      const newConv =
+        routeSpace === 'chats'
+          ? createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
+          : createNew('New conversation')
       onSelectWorkspace?.(newConv.id)
     },
     onContinueLast: () => {
@@ -873,7 +883,13 @@ export function WorkspaceLayout({
         }}
         routeSpace={routeSpace}
         onNewConversation={() => {
-          const newConv = createNew('New conversation')
+          // Same space semantics as the sidebar's New chat (see
+          // handleCreateConversation): chats space creates a standalone chat,
+          // projects space a project conversation.
+          const newConv =
+            routeSpace === 'chats'
+              ? createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
+              : createNew('New conversation')
           onSelectWorkspace?.(newConv.id)
         }}
       />

@@ -765,7 +765,7 @@ export const Sidebar = memo(function Sidebar({
   // useShallow ensures stable references when the extracted values haven't changed.
   const conversationListItems = useConversationStore(
     useShallow((s) =>
-      s.conversations.map((c) => ({ id: c.id, title: c.title }))
+      s.conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind }))
     )
   )
   const deleteConversation = useConversationStore((s) => s.deleteConversation)
@@ -821,9 +821,13 @@ export const Sidebar = memo(function Sidebar({
   const workspaceIds = workspaceStats.map((w) => w.id)
   const currentPendingCount = useConversationContextStore((state) => state.currentPendingCount)
   const scopedWorkspaceIdSet = useMemo(() => new Set(workspaceIds), [workspaceIds])
+  // The shared sidebar always renders PROJECT conversation rows (its links
+  // are projectWorkspacePath-based). Standalone (kind='direct') chats live in
+  // the /chats space and are rejected by that route sync, so they never
+  // appear here regardless of which workspace hosts them.
   const scopedConversations = useMemo(
     () => conversationListItems.filter(
-      (conv) => scopedWorkspaceIdSet.has(conv.id) || conv.id === activeWorkspaceId
+      (conv) => conv.kind !== 'direct' && (scopedWorkspaceIdSet.has(conv.id) || conv.id === activeWorkspaceId)
     ),
     [conversationListItems, scopedWorkspaceIdSet, activeWorkspaceId]
   )
@@ -1244,7 +1248,7 @@ export const Sidebar = memo(function Sidebar({
 
   // Row renderer — extracted from the previously-duplicated inline map so the
   // sidebar list body stays a single source of truth.
-  const renderConversationItem = useCallback((conv: { id: string; title: string }) => {
+  const renderConversationItem = useCallback((conv: { id: string; title: string; kind?: 'project' | 'direct' }) => {
     const isRunning = runningSet.has(conv.id)
     const isActive = conv.id === activeWorkspaceId
     const pendingReviewCount = pendingCountByConversationId.get(conv.id) || 0
