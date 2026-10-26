@@ -621,9 +621,16 @@ export function refreshAccessTokenWithStatus(
   const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
   const tracked: InFlightRefresh = Object.assign(request, { generation })
   refreshInFlight = tracked
-  void request.finally(() => {
-    if (refreshInFlight === tracked) refreshInFlight = null
-  })
+  // Clear on settle via then(onFulfilled, onRejected): unlike finally(), this
+  // observes the rejection so no floating rejected promise is left unhandled.
+  void request.then(
+    () => {
+      if (refreshInFlight === tracked) refreshInFlight = null
+    },
+    () => {
+      if (refreshInFlight === tracked) refreshInFlight = null
+    },
+  )
   return tracked
 }
 

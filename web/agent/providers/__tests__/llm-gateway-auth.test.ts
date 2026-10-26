@@ -193,7 +193,8 @@ describe('llm-gateway-auth dead-session cleanup', () => {
 
       const first = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
       logoutGateway()
-      // Same tick as before: the wrapper must NOT hand back the dead-session promise
+      // Same tick as before: the wrapper must NOT hand back the dead-session
+      // promise — and the new call must not resolve with the stale token.
       const second = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
       expect(second).not.toBe(first)
       resolveRefresh(new Response(JSON.stringify({
@@ -201,6 +202,13 @@ describe('llm-gateway-auth dead-session cleanup', () => {
         refresh_token: 'stale-refresh', refresh_expires_in: 3600,
       }), { status: 200 }))
       await first.catch(() => {})
+      // Post-logout callers must observe a logged-out result, not the dead
+      // session's access token.
+      const secondResult = await second
+      expect(secondResult.status).not.toBe('success')
+      if (secondResult.status === 'success') {
+        expect(secondResult.accessToken).not.toBe('stale')
+      }
       vi.unstubAllGlobals()
     })
 
