@@ -7,6 +7,9 @@
  * @see https://gitea.jianguoyun.net.cn/huangqingming/llm_gateway_service
  */
 
+import { t as translate } from '@creatorweave/i18n'
+import { useI18nStore } from '@/i18n/store'
+
 // ── Types ──
 
 export interface GatewayEndpoints {
@@ -583,7 +586,9 @@ export async function performDeviceCodeFlow(
           !Number.isFinite(tokens.expires_in) ||
           tokens.expires_in <= 0
         ) {
-          const err = new Error('Device auth returned an incomplete token set') as Error & {
+          const err = new Error(
+            translate(useI18nStore.getState().locale, 'conversation.error.gatewayTokenSetMalformed')
+          ) as Error & {
             code: string
             retriable: boolean
           }
@@ -632,7 +637,9 @@ export async function performDeviceCodeFlow(
   // stored gateway credentials are invalid (the user may simply have been
   // slow entering the code), so it must not share the 'expired_token' code
   // the gateway uses for revoked/invalid credentials.
-  const err = new Error('Device authorization session expired') as Error & { code: string }
+  const err = new Error(
+    translate(useI18nStore.getState().locale, 'conversation.error.gatewayDeviceFlowTimeout')
+  ) as Error & { code: string }
   err.code = 'device_flow_timeout'
   emit({ status: 'error', error: err.message })
   throw err

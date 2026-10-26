@@ -26,6 +26,13 @@ import {
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
 } from '@/lib/gateway-login'
+import { t as translateStatic } from '@creatorweave/i18n'
+import { useI18nStore } from '@/i18n/store'
+
+/** Translate a conversation.error key using the current locale. */
+function tr(key: string): string {
+  return translateStatic(useI18nStore.getState().locale, key)
+}
 
 export type GatewayReloginPhase = 'idle' | 'running' | 'success' | 'error'
 
@@ -65,8 +72,8 @@ export const useGatewayReloginStore = create<GatewayReloginState>()((set) => ({
       running = false
       set({
         phase: 'error',
-        authState: { status: 'error', error: 'LLM Gateway client id is not configured' },
-        error: 'LLM Gateway client id is not configured',
+        authState: { status: 'error', error: tr('conversation.error.gatewayClientIdMissing') },
+        error: tr('conversation.error.gatewayClientIdMissing'),
       })
       return false
     }
@@ -91,7 +98,7 @@ export const useGatewayReloginStore = create<GatewayReloginState>()((set) => ({
       return true
     } catch (e) {
       console.error('[gateway-relogin] FAILED:', e)
-      const message = (e as Error).message || 'Nutstore AI login failed'
+      const message = (e as Error).message || tr('conversation.error.gatewayLoginFailed')
       const errorCode = (e as Error & { code?: string }).code
       // Only gateway-issued terminal codes prove stored credentials are bad
       // (same distinction useGatewayLogin makes).
