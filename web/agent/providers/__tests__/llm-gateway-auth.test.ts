@@ -40,6 +40,7 @@ vi.mock('@/store/settings.store', () => ({
 
 import {
   forceRefreshAccessToken,
+  refreshAccessTokenWithStatus,
   getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
@@ -114,6 +115,48 @@ describe('llm-gateway-auth dead-session cleanup', () => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
       })
       expect(localStorage.getItem('llm-gateway-tokens')).toBeNull()
+    })
+
+    it('reuses one refresh request for concurrent callers', async () => {
+      seedStoredTokens()
+      let resolveRefresh!: (response: Response) => void
+      const refreshResponse = new Promise<Response>((resolve) => { resolveRefresh = resolve })
+      const fetchMock = vi.fn(() => refreshResponse)
+      vi.stubGlobal('fetch', fetchMock)
+
+      const first = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      const second = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(first).toBe(second)
+      resolveRefresh(new Response(JSON.stringify({
+        access_token: 'new-token', token_type: 'Bearer', expires_in: 60,
+        refresh_token: 'new-refresh', refresh_expires_in: 3600,
+      }), { status: 200 }))
+
+      const results = await Promise.all([first, second])
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(results).toEqual([
+        { status: 'success', accessToken: 'new-token' },
+        { status: 'success', accessToken: 'new-token' },
+      ])
+      vi.unstubAllGlobals()
+    })
+
+    it('uses the refresh completion time when calculating token expiry', async () => {
+      seedStoredTokens()
+      const start = Date.now()
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return new Response(JSON.stringify({
+          access_token: 'new-token', token_type: 'Bearer', expires_in: 60,
+          refresh_token: 'new-refresh', refresh_expires_in: 3600,
+        }), { status: 200 })
+      }))
+
+      const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(result.status).toBe('success')
+      const stored = JSON.parse(localStorage.getItem('llm-gateway-tokens')!)
+      expect(stored.access_expires_at).toBeGreaterThanOrEqual(start + 60_000)
+      vi.unstubAllGlobals()
     })
 
     it('keeps tokens (and the shadow key) on transient network errors', async () => {

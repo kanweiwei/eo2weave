@@ -120,7 +120,11 @@ export function useGatewayLogin(): UseGatewayLoginResult {
       return true
     } catch (e) {
       console.error('[useGatewayLogin] FAILED:', e)
-      useSettingsStore.getState().setModelCredentialStatus('expired')
+      const errorCode = (e as Error & { code?: string }).code
+      const credentialInvalid = errorCode === 'invalid_grant' || errorCode === 'expired_token'
+      if (credentialInvalid) {
+        useSettingsStore.getState().setModelCredentialStatus('expired')
+      }
       if (mountedRef.current) {
         setAuthState({
           status: 'error',
