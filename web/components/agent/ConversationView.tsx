@@ -82,6 +82,8 @@ export function ConversationView({
   const providerType = useSettingsStore((s) => s.providerType)
 
   const logic = useConversationLogic()
+  // Staged attachments make an otherwise-empty input sendable (plan A)
+  const pendingAssetCount = useAssetStore((s) => s.pendingAssets.length)
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,
@@ -439,7 +441,10 @@ export function ConversationView({
                 onSlashCommand={logic.handleSlashCommand}
                 sendState={{
                   isProcessing,
-                  isSendDisabled: (!hasInput && !suggestedFollowUp) || !hasApiKey || disabled,
+                  // Plan A: staged attachments alone are a sendable payload
+                  // (non-vision models fall back to OCR), so empty text must
+                  // not disable the send button.
+                  isSendDisabled: (!hasInput && !suggestedFollowUp && pendingAssetCount === 0) || !hasApiKey || disabled,
                   onSend: handleSendAndFocus,
                   onCancel: handleCancel,
                   sendTitle: t('conversation.buttons.send'),

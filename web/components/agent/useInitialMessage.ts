@@ -35,7 +35,9 @@ export function useInitialMessage({
       handled.current = false
     }
 
-    if (!initialMessage || !convId || isRunning) return
+    // null/undefined = nothing pending; '' is a VALID pending message
+    // (attachment-only send, plan A — assets resolve in sendMessage).
+    if (initialMessage == null || !convId || isRunning) return
     if (handled.current) return
 
     // StrictMode guard: check if message already appended to conversation

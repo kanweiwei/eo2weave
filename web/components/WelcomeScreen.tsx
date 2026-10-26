@@ -147,6 +147,8 @@ function SetupGuideLink() {
 
 export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeScreenProps) {
   const [inputValue, setInputValue] = useState('')
+  // Reactive count so the send button enables as soon as a file is staged
+  const pendingAssetCount = useAssetStore((s) => s.pendingAssets.length)
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null)
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false)
   const hasApiKey = useSettingsStore((s) => s.hasApiKey)
@@ -344,7 +346,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
   const handleSubmit = useCallback(() => {
     const text = inputValue.trim()
-    if (!text) return
+    // Attachment-only send (plan A): staged assets flow through the global
+    // pendingAssets store into the new conversation's first sendMessage.
+    const hasStagedAssets = pendingAssetCount > 0
+    if (!text && !hasStagedAssets) return
     // The persistent input also renders on setup steps, but those have no
     // working model yet — sending would start a conversation that fails on
     // every turn. Point the user at the setup card instead; the draft store
@@ -359,7 +364,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     // Sent — the draft is consumed. Clear it so it won't be re-injected
     // if the input remounts later in this session.
     useInputDraftStore.getState().clearDraft(draftKey)
-  }, [inputValue, onStartConversation, draftKey, step, t, onOpenSettings])
+  }, [inputValue, pendingAssetCount, onStartConversation, draftKey, step, t, onOpenSettings])
 
   // Pull the persisted draft into the editor on remount. initialText is
   // only consumed when the editor is EMPTY (AgentRichInput's draft effect),
@@ -784,7 +789,8 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 onSubmit={handleSubmit}
                 sendState={{
                   isProcessing: false,
-                  isSendDisabled: !inputValue.trim(),
+                  // Staged attachments alone are a sendable payload (plan A)
+                  isSendDisabled: !inputValue.trim() && pendingAssetCount === 0,
                   onSend: handleSubmit,
                   onCancel: () => {},
                   sendTitle: t('welcome.send'),
