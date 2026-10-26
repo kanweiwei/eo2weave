@@ -16,9 +16,11 @@ import { chatPath } from '@/lib/route-paths'
  * not-found fallback is the chats home, not /projects).
  *
  * Deviations from the project version:
- * - No project switch step: the active project stays whatever it was; the
- *   standalone chat's workspace record keeps its own project_id (workspace
- *   rows are NOT NULL project_id) while the conversation itself is kind='direct'.
+ * - Project context is ensured, not switched: workspace rows are NOT NULL
+ *   project_id, so when the user lands directly on /chats (activeProjectId
+ *   still empty — it is URL-driven), the first available project is bound
+ *   silently as the workspace host. This never surfaces in the UI — the
+ *   chats space shows no project semantics.
  * - A chatId that resolves to a non-direct conversation redirects to /chats
  *   (standalone chats never surface project conversations).
  */
@@ -34,6 +36,27 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
     let cancelled = false
 
     const syncFromRoute = async () => {
+      // Step 0: ensure a project host exists. Landing on /chats directly
+      // skips the /projects route sync, so activeProjectId may still be ''.
+      const projectState = useProjectStore.getState()
+      if (!projectState.activeProjectId) {
+        const fallback =
+          projectState.projects.find((p) => p.status !== 'archived') ?? projectState.projects[0]
+        if (!fallback) {
+          // Degenerate state (every project deleted): the chats home still
+          // renders, but an individual chat has no workspace host.
+          console.warn('[chatsSync] no project available as workspace host, redirecting to /chats')
+          if (!cancelled) router.replace('/chats')
+          return
+        }
+        const switched = await projectState.setActiveProject(fallback.id)
+        if (!switched) {
+          if (!cancelled) router.replace('/chats')
+          return
+        }
+        if (cancelled) return
+      }
+
       // Step 1: the conversation must exist and be standalone (kind='direct').
       const convState = useConversationStore.getState()
       if (!convState.loaded) return
