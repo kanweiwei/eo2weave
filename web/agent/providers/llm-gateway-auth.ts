@@ -29,9 +29,15 @@ export interface TokenResponse {
   token_type: 'Bearer'
   /** Access token TTL in seconds */
   expires_in: number
-  refresh_token: string
-  /** Refresh token TTL in seconds */
-  refresh_expires_in: number
+  /**
+   * Refresh token. The device-code login ALWAYS issues one, but
+   * `/v1/auth/refresh` does NOT return it (confirmed by the backend:
+   * the refresh token is issued once, lives 7 days, never rotates) —
+   * so both fields are optional and only trusted when actually present.
+   */
+  refresh_token?: string
+  /** Refresh token TTL in seconds — absent on /v1/auth/refresh responses. */
+  refresh_expires_in?: number
 }
 
 export interface GatewayError {
@@ -194,6 +200,21 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
     if (!raw) return null
     const recovered = JSON.parse(raw) as Partial<StoredTokens>
     if (!recovered.refresh_token || !recovered.refresh_expires_at) return null
+    // Freshness check: SQLite is written fire-and-forget AFTER localStorage,
+    // so a failed/gapped write can leave a PREVIOUS generation behind
+    // (e.g. an already-rotated-out or already-expired refresh token).
+    // Restoring a dead token would guarantee invalid_grant on the next
+    // refresh — refuse instead and let the caller report the expired state.
+    if (
+      typeof recovered.refresh_expires_at !== 'number' ||
+      !Number.isFinite(recovered.refresh_expires_at) ||
+      recovered.refresh_expires_at <= Date.now()
+    ) {
+      console.warn(
+        '[llm-gateway] SQLite fallback: stored refresh token is expired or malformed — not restoring'
+      )
+      return null
+    }
     // Reconstruct — access_token may be stale but that's fine, the caller
     // (forceRefresh) will use refresh_token to get a fresh access_token anyway.
     const restored: StoredTokens = {
@@ -548,13 +569,30 @@ export async function performDeviceCodeFlow(
     try {
       const tokens = await pollDeviceToken(baseURL, session.device_code, session.user_code)
       if (tokens) {
-        // Success! Save tokens
+        // Success! Save tokens. The device-code login ALWAYS issues the
+        // refresh token (unlike /v1/auth/refresh) — but guard anyway so a
+        // malformed response can't write NaN/undefined into storage.
+        const refreshExpiresIn = tokens.refresh_expires_in
+        if (
+          !tokens.access_token ||
+          !tokens.refresh_token ||
+          typeof refreshExpiresIn !== 'number' ||
+          refreshExpiresIn <= 0
+        ) {
+          const err = new Error('Device auth returned an incomplete token set') as Error & {
+            code: string
+            retriable: boolean
+          }
+          err.code = 'network_error'
+          err.retriable = false
+          throw err
+        }
         const now = Date.now()
         saveStoredTokens({
           access_token: tokens.access_token,
           refresh_token: tokens.refresh_token,
           access_expires_at: now + tokens.expires_in * 1000,
-          refresh_expires_at: now + tokens.refresh_expires_in * 1000,
+          refresh_expires_at: now + refreshExpiresIn * 1000,
           client_id: clientId,
           base_url: baseURL,
         })
@@ -676,6 +714,10 @@ async function refreshAccessTokenWithStatusImpl(
     return hadSession ? { status: 'expired' } : { status: 'missing' }
   }
 
+  // Remember which refresh token this request used: ownership of the stored
+  // credential is checked before any clear below.
+  const requestRefreshToken = stored.refresh_token
+
   // Refresh token must still be alive
   const now = Date.now()
   if (stored.refresh_expires_at <= now) {
@@ -692,6 +734,26 @@ async function refreshAccessTokenWithStatusImpl(
 
   try {
     const tokens = await refreshAccessToken(baseURL, stored.refresh_token)
+
+    // Schema validation (defensive — the backend contract says the refresh
+    // endpoint returns only access_token/expires_in/token_type, but a broken
+    // gateway could omit the access token or send a zero/negative TTL).
+    // Persisting such a response would corrupt the stored pair, so treat it
+    // as a transient gateway problem instead.
+    const expiresIn = tokens.expires_in
+    if (
+      !tokens.access_token ||
+      typeof expiresIn !== 'number' ||
+      !Number.isFinite(expiresIn) ||
+      expiresIn <= 0
+    ) {
+      console.warn('[llm-gateway] forceRefresh: malformed refresh response — treating as temporary error', {
+        hasAccessToken: !!tokens.access_token,
+        expires_in: expiresIn,
+      })
+      return { status: 'temporary_error', error: new Error('malformed refresh response') }
+    }
+
     // The session changed while the refresh request was in flight (logout or
     // new login) — the response belongs to a dead session. Discard it without
     // touching storage: writing it would clobber the newer credential set.
@@ -700,11 +762,28 @@ async function refreshAccessTokenWithStatusImpl(
       return { status: 'temporary_error', error: new Error('session changed during refresh') }
     }
     const completedAt = Date.now()
+    // /v1/auth/refresh does NOT return a refresh_token (confirmed by backend:
+    // the refresh token is issued once at device-code login, lives 7 days,
+    // never rotates). Preserve the stored refresh_token / refresh_expires_at —
+    // the 7-day clock keeps ticking from LOGIN, not from this refresh. Honor
+    // a refresh_token in the response only if the backend ever starts
+    // rotating (defensive forward-compatibility).
+    const responseRefreshToken = typeof tokens.refresh_token === 'string' && tokens.refresh_token
+      ? tokens.refresh_token
+      : null
+    const responseRefreshExpiresIn =
+      typeof tokens.refresh_expires_in === 'number' &&
+      Number.isFinite(tokens.refresh_expires_in) &&
+      tokens.refresh_expires_in > 0
+        ? tokens.refresh_expires_in
+        : null
     saveStoredTokens({
       access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      access_expires_at: completedAt + tokens.expires_in * 1000,
-      refresh_expires_at: completedAt + tokens.refresh_expires_in * 1000,
+      refresh_token: responseRefreshToken ?? stored.refresh_token,
+      access_expires_at: completedAt + expiresIn * 1000,
+      refresh_expires_at: responseRefreshExpiresIn !== null
+        ? completedAt + responseRefreshExpiresIn * 1000
+        : stored.refresh_expires_at,
       client_id: clientId,
       base_url: baseURL,
     })
@@ -736,6 +815,22 @@ async function refreshAccessTokenWithStatusImpl(
     // Network errors (TypeError), 5xx, etc. should NOT wipe tokens —
     // they are transient and the user shouldn't have to re-login.
     if (isTokenInvalidError(e)) {
+      // Ownership check: another context (a second tab, another device's
+      // logout, a concurrent new login) may have already replaced or cleared
+      // the stored refresh token while our request was in flight. Only the
+      // owner of the CURRENT stored value may wipe the shared stores —
+      // otherwise we would erase a credential that no longer belongs to the
+      // failed request. A non-owner drops just the local in-memory session
+      // state; the shared stores keep the newer credential.
+      const current = loadStoredTokens()
+      if (current && current.refresh_token !== requestRefreshToken) {
+        console.warn(
+          '[llm-gateway] forceRefresh: stored refresh token changed during refresh; clearing local session state only'
+        )
+        bumpAuthSessionGeneration()
+        setCredentialStatus('expired')
+        return { status: 'expired', error: e }
+      }
       console.warn('[llm-gateway] forceRefresh: token invalid, clearing stored tokens', e)
       // The refresh_token is dead, so the login is unrecoverable.
       // clearStoredTokens() also purges the api-key-store access_token
@@ -790,11 +885,13 @@ export async function getValidAccessToken(
     return stored.access_token
   }
 
-  // Try to refresh
-  if (stored.refresh_expires_at > now + 60_000) {
+  // Try to refresh. Same 60s buffer as the refresh-token liveness check below
+  // (and the force path's unconditional refresh): a marginally-alive refresh
+  // token must still be ATTEMPTED — the gateway, not the local clock, is the
+  // authority on whether the credential is usable.
+  if (stored.refresh_expires_at > now) {
     const result = await refreshAccessTokenWithStatus(baseURL, clientId)
     if (result.status === 'success') return result.accessToken
-    if (result.status === 'expired') return null
     return null
   }
 
