@@ -166,11 +166,11 @@ export const MessageBubble = memo(function MessageBubble({
               cancelLabel={t('common.cancel')}
               submitLabel={t('conversation.buttons.send')}
             />
-          ) : (
+          ) : (message.content ?? '').trim() !== '' ? (
             <div className="w-fit max-w-full rounded-lg bg-primary-600 px-4 py-2 text-base text-white">
               <div className="whitespace-pre-wrap break-words overflow-x-auto">{message.content}</div>
             </div>
-          )}
+          ) : null}
 
           {/* Agent-read image handoff — uses user role for API compatibility but
               remains visibly distinct from a human-authored upload. */}

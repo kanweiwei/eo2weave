@@ -18,6 +18,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useConversationStore } from '@/store/conversation.store'
+import { useAssetStore } from '@/store/asset.store'
 import { useFlowStore } from '@/store/flow.store'
 import { useAgentStore } from '@/store/agent.store'
 import { useProjectStore } from '@/store/project.store'
@@ -232,7 +233,10 @@ export function WorkspaceLayout({
 
   const handleStartConversation = useCallback(
     (text: string) => {
-      const conv = createNew(text.slice(0, 30))
+      // Attachment-only welcome send: title from the first staged file
+      const titleSource =
+        text.trim() || useAssetStore.getState().pendingAssets[0]?.name || 'New conversation'
+      const conv = createNew(titleSource.slice(0, 30))
 
       // Carry WelcomeScreen's pre-conversation toolbar picks over to the new
       // conversation. setAgentMode / setAutoApplyOnRunComplete only update

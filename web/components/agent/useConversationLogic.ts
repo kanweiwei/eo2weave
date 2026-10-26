@@ -316,7 +316,12 @@ export function useConversationLogic() {
         onInputRejected?: (text: string) => void
       }
     ) => {
-      if (!text.trim()) return
+      // Attachment-only send (plan A): empty text is valid when staged
+      // assets exist — they are written to OPFS and resolved below.
+      const hasStagedAssets =
+        (options?.assets && options.assets.length > 0) ||
+        useAssetStore.getState().pendingAssets.length > 0
+      if (!text.trim() && !hasStagedAssets) return
 
       // Read latest from store to avoid stale closures
       const {
@@ -363,7 +368,13 @@ export function useConversationLogic() {
       let targetConvId = convIdRef.current
       const { createNew, setActive, updateMessages, runAgent } = useConversationStore.getState()
       if (!targetConvId) {
-        const conv = createNew(text.slice(0, 30))
+        // Attachment-only first message: fall back to a filename-based title
+        const titleSource =
+          text.trim() ||
+          options?.assets?.[0]?.name ||
+          useAssetStore.getState().pendingAssets[0]?.name ||
+          ''
+        const conv = createNew(titleSource.slice(0, 30))
         targetConvId = conv.id
         setActive(targetConvId)
       }
@@ -583,12 +594,16 @@ export function useConversationLogic() {
       }
     }
 
+    // Attachment-only send (plan A): empty text is valid when assets are
+    // staged — sendMessage resolves them from the pendingAssets store.
+    const hasStagedAssets = useAssetStore.getState().pendingAssets.length > 0
     const textToSend = inputTrimmed
       ? inputRef.current
       : currentConvId
         ? getSuggestedFollowUp(currentConvId)
         : ''
-    if (textToSend) {
+    const isAttachmentOnly = !inputTrimmed && hasStagedAssets
+    if (textToSend || isAttachmentOnly) {
       // ── Optimistic input clear ──
       // Clear the input BEFORE the async sendMessage pipeline runs. sendMessage
       // awaits page-context capture / asset writes / OCR before it reaches its

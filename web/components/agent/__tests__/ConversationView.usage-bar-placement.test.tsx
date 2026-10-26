@@ -153,8 +153,8 @@ vi.mock('@/store/agents.store', () => ({
 }))
 
 vi.mock('@/store/asset.store', () => ({
-  useAssetStore: (selector?: (state: Record<string, never>) => unknown) =>
-    selector ? selector({}) : {},
+  useAssetStore: (selector?: (state: { pendingAssets: unknown[] }) => unknown) =>
+    selector ? selector({ pendingAssets: [] }) : { pendingAssets: [] },
 }))
 
 vi.mock('@/i18n', () => ({

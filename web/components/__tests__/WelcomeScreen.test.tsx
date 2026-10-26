@@ -167,9 +167,12 @@ vi.mock('@/agent/tools/page-action-bridge', () => ({
   isPageActionAvailable: () => pageActionAvailable.value,
 }))
 
-vi.mock('@/store/asset.store', () => ({
-  useAssetStore: { getState: () => ({ addFiles: addFilesMock }) },
-}))
+vi.mock('@/store/asset.store', () => {
+  const useAssetStore = (selector?: (s: { pendingAssets: unknown[] }) => unknown) =>
+    selector ? selector({ pendingAssets: [] }) : { pendingAssets: [] }
+  useAssetStore.getState = () => ({ addFiles: addFilesMock, pendingAssets: [] })
+  return { useAssetStore }
+})
 
 vi.mock('@/i18n', () => ({
   useT: () => (key: string) => ({
