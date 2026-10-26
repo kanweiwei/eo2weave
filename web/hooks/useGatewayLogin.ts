@@ -121,6 +121,9 @@ export function useGatewayLogin(): UseGatewayLoginResult {
     } catch (e) {
       console.error('[useGatewayLogin] FAILED:', e)
       const errorCode = (e as Error & { code?: string }).code
+      // Only gateway-issued terminal codes prove stored credentials are bad.
+      // Local device-flow failures now use their own code (device_flow_timeout)
+      // and never reach this branch as 'expired_token'.
       const credentialInvalid = errorCode === 'invalid_grant' || errorCode === 'expired_token'
       if (credentialInvalid) {
         useSettingsStore.getState().setModelCredentialStatus('expired')

@@ -219,6 +219,7 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
 }
 
 function saveStoredTokens(tokens: StoredTokens): void {
+  bumpAuthSessionGeneration()
   localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens))
   // Also persist refresh_token to SQLite for durability across localStorage clears.
   // Fire-and-forget — localStorage is the primary sync store; SQLite is the backup.
@@ -261,6 +262,7 @@ function isTokenInvalidError(e: unknown): boolean {
 }
 
 function clearStoredTokens(): void {
+  bumpAuthSessionGeneration()
   localStorage.removeItem(TOKEN_STORAGE_KEY)
   // Also purge both SQLite-side credentials with a SINGLE dynamic import.
   // Fire-and-forget — localStorage is the primary sync store; SQLite is the
@@ -584,9 +586,12 @@ export async function performDeviceCodeFlow(
     }
   }
 
-  // Expired
+  // Expired — the LOCAL polling session timed out. This is NOT evidence that
+  // stored gateway credentials are invalid (the user may simply have been
+  // slow entering the code), so it must not share the 'expired_token' code
+  // the gateway uses for revoked/invalid credentials.
   const err = new Error('Device authorization session expired') as Error & { code: string }
-  err.code = 'expired_token'
+  err.code = 'device_flow_timeout'
   emit({ status: 'error', error: err.message })
   throw err
 }
@@ -607,21 +612,48 @@ export function refreshAccessTokenWithStatus(
   baseURL: string,
   clientId: string
 ): Promise<RefreshResult> {
-  if (refreshInFlight) return refreshInFlight
+  const generation = authSessionGeneration
+  // Reuse the in-flight refresh only within the same credential session — a
+  // logout or new login invalidates the result the promise will resolve with.
+  if (refreshInFlight && generation === (refreshInFlight as InFlightRefresh).generation) {
+    return refreshInFlight
+  }
   const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
-  refreshInFlight = request.finally(() => {
-    if (refreshInFlight === trackedRefresh) refreshInFlight = null
+  const tracked: InFlightRefresh = Object.assign(request, { generation })
+  refreshInFlight = tracked
+  void request.finally(() => {
+    if (refreshInFlight === tracked) refreshInFlight = null
   })
-  const trackedRefresh = refreshInFlight
-  return refreshInFlight
+  return tracked
+}
+
+interface InFlightRefresh extends Promise<RefreshResult> {
+  generation: number
 }
 
 let refreshInFlight: Promise<RefreshResult> | null = null
+
+/**
+ * Session generation — bumped on every credential-set change (new login via
+ * saveStoredTokens, logout/clear via clearStoredTokens). Async work started
+ * under one generation must not write under a newer one: a late shadow save
+ * after logout would resurrect cleared credentials, and an in-flight refresh
+ * for a replaced session must not overwrite the new token pair.
+ */
+let authSessionGeneration = 0
+
+/** Invalidate async work belonging to the previous credential set. */
+function bumpAuthSessionGeneration(): void {
+  authSessionGeneration++
+}
 
 async function refreshAccessTokenWithStatusImpl(
   baseURL: string,
   clientId: string
 ): Promise<RefreshResult> {
+  // Snapshot BEFORE the first await — logout/login during the refresh window
+  // is detected by comparing against this value after each await boundary.
+  const generation = authSessionGeneration
   // Use the async fallback loader — recovers refresh_token from SQLite
   // when localStorage has been cleared (browser eviction, user clear, etc.)
   const stored = await loadStoredTokensWithFallback()
@@ -653,6 +685,13 @@ async function refreshAccessTokenWithStatusImpl(
 
   try {
     const tokens = await refreshAccessToken(baseURL, stored.refresh_token)
+    // The session changed while the refresh request was in flight (logout or
+    // new login) — the response belongs to a dead session. Discard it without
+    // touching storage: writing it would clobber the newer credential set.
+    if (authSessionGeneration !== generation) {
+      console.warn('[llm-gateway] refresh completed after session change; discarding result')
+      return { status: 'temporary_error', error: new Error('session changed during refresh') }
+    }
     const completedAt = Date.now()
     saveStoredTokens({
       access_token: tokens.access_token,
@@ -664,10 +703,25 @@ async function refreshAccessTokenWithStatusImpl(
     })
     // The local token cache is sufficient for the current request. Persist the
     // API-key shadow best-effort so a transient SQLite failure cannot turn a
-    // successful gateway refresh into a false expiry/error state.
-    void persistAccessTokenToKeyStore(tokens.access_token).catch((error) => {
-      console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
-    })
+    // successful gateway refresh into a false expiry/error state. The save
+    // re-checks the generation: a logout that lands mid-save must not have the
+    // shadow resurrected by this late write.
+    const savedGeneration = authSessionGeneration
+    void persistAccessTokenToKeyStore(tokens.access_token)
+      .catch((error) => {
+        console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
+      })
+      .then(() => {
+        if (authSessionGeneration !== savedGeneration) {
+          // Session ended after this save started — remove what we just wrote.
+          void (async () => {
+            try {
+              const { deleteApiKey } = await import('@/security/api-key-store')
+              await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
+            } catch { /* best-effort cleanup */ }
+          })()
+        }
+      })
     setCredentialStatus('valid')
     return { status: 'success', accessToken: tokens.access_token }
   } catch (e) {
