@@ -503,7 +503,7 @@ const nativeHostTreeExecutor = new NativeHostExecutor()
  * ResourceTabPanel — isolated from conversation state to avoid re-rendering
  * during agent streaming. Only re-renders when its own props change.
  */
-const ResourceTabPanel = memo(function ResourceTabPanel({
+export const ResourceTabPanel = memo(function ResourceTabPanel({
   resourceTab,
   onTabChange,
   roots,
@@ -534,6 +534,17 @@ const ResourceTabPanel = memo(function ResourceTabPanel({
 }) {
   // Root collapse state for multi-root file tree
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set())
+
+  // OPFS-only draft content: when no folder is mounted, files written by the
+  // LLM land in the virtual __opfs__ root. The empty state must only show
+  // while that root is actually empty — otherwise generated files become
+  // invisible (regression from #46's unconditional empty-state branch).
+  const opfsPendingChanges = useOPFSStore((s) => s.pendingChanges)
+  const opfsCachedCount = useOPFSStore((s) => s.cachedPaths.length)
+  // The tree only renders pending creates/modifies + cached paths — pure
+  // deletion records produce no nodes, so they must not count as content.
+  const opfsDisplayableCount =
+    opfsPendingChanges.filter((c) => c.type !== 'delete').length + opfsCachedCount
 
   const handleToggleCollapse = useCallback((rootName: string) => {
     setCollapsedRoots((prev) => {
@@ -615,7 +626,7 @@ const ResourceTabPanel = memo(function ResourceTabPanel({
       {/* Tab content */}
       <div className="flex-1 overflow-hidden" data-tour="file-tree">
         {resourceTab === 'files' && (
-          roots.length === 1 && roots[0]?.id === '__opfs__' ? (
+          roots.length === 1 && roots[0]?.id === '__opfs__' && opfsDisplayableCount === 0 ? (
             <div className="flex h-full items-center justify-center p-6">
               <div className="max-w-sm text-sm leading-7 text-muted-foreground">
                 <h3 className="mb-4 text-center text-base font-semibold leading-6 text-secondary dark:text-secondary-foreground">
