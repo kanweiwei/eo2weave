@@ -155,7 +155,7 @@ export const conversation = {
     error: {
       gatewayReloginTitle: "坚果云 AI 登录已过期",
       gatewayRelogin: "重新登录坚果云 AI",
-      gatewayReloginSuccess: "登录成功，正在重新发送请求…",
+      gatewayReloginSuccess: "登录成功，请重新发送你的消息",
       gatewayClientIdMissing: "坚果云 AI Client ID 未配置，无法登录",
       gatewayLoginFailed: "坚果云 AI 登录失败",
       gatewayTokenSetMalformed: "坚果云 AI 登录返回的凭证不完整，请重试",

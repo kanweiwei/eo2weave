@@ -248,32 +248,24 @@ describe('ConversationErrorBanner GATEWAY_CREDENTIALS_EXPIRED', () => {
     expect(screen.queryByRole('button', { name: /conversation\.error\.retry/ })).not.toBeInTheDocument()
   })
 
-  it('starts the relogin flow when the button is clicked', () => {
+  it('starts the relogin flow when the button is clicked (no auto-replay callback)', () => {
     render(<ConversationView />)
 
     fireEvent.click(screen.getByRole('button', { name: /conversation\.error\.gatewayRelogin/ }))
     expect(startReloginMock).toHaveBeenCalledTimes(1)
-    expect(startReloginMock).toHaveBeenCalledWith(expect.any(Function))
+    // The failed turn is NOT auto-replayed (it may already have executed
+    // side-effecting tools); the user re-sends manually after login.
+    expect(startReloginMock).toHaveBeenCalledWith()
   })
 
-  it('regenerates the failed turn via the success callback (last user message)', async () => {
-    render(<ConversationView />)
-
-    fireEvent.click(screen.getByRole('button', { name: /conversation\.error\.gatewayRelogin/ }))
-    const onSuccess = startReloginMock.mock.calls[0][0] as () => void
-    onSuccess()
-
-    expect(conversationState.regenerateUserMessage).toHaveBeenCalledWith('conv-1', 'user-failed-1')
-  })
-
-  it('does not regenerate when there is no user message in the conversation', () => {
-    conversationState.conversations[0].messages = []
+  it('never regenerates the failed turn after a successful login', async () => {
     runtimeEntry.error = '[GATEWAY_CREDENTIALS_EXPIRED] Nutstore AI login has expired.'
+    conversationState.conversations[0].messages = [
+      { id: 'user-failed-1', role: 'user', content: 'hello', timestamp: 1, type: 'message' },
+    ]
 
     render(<ConversationView />)
     fireEvent.click(screen.getByRole('button', { name: /conversation\.error\.gatewayRelogin/ }))
-    const onSuccess = startReloginMock.mock.calls[0][0] as () => void
-    onSuccess()
 
     expect(conversationState.regenerateUserMessage).not.toHaveBeenCalled()
   })

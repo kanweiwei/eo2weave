@@ -151,7 +151,7 @@ export const conversation = {
     error: {
       gatewayReloginTitle: "Nutstore AI login expired",
       gatewayRelogin: "Log in to Nutstore AI",
-      gatewayReloginSuccess: "Logged in — retrying your request…",
+      gatewayReloginSuccess: "Logged in — please re-send your message",
       gatewayClientIdMissing: "Nutstore AI client ID is not configured — cannot log in",
       gatewayLoginFailed: "Nutstore AI login failed",
       gatewayTokenSetMalformed: "Nutstore AI login returned an incomplete credential set — please retry",

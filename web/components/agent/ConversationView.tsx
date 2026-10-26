@@ -48,31 +48,8 @@ import { VisionCapabilityIndicator } from './VisionCapabilityIndicator'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { useAssetStore } from '@/store/asset.store'
 import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
-import { useConversationStore } from '@/store/conversation.store'
-import { isConversationUserMessage } from '@/agent/message-types'
 import { PageScreenshotCropDialog } from './PageScreenshotCropDialog'
 import { FlowCanvasPanel } from './FlowCanvasPanel'
-
-/**
- * Post-login action for the gateway re-login flow (issue #75): regenerate the
- * failed turn by re-running the conversation's LAST user message — the same
- * mechanism handleRegenerate uses, invoked directly on the store so the
- * memoized banner carries no component dependencies.
- */
-function startGatewayReloginRegenerate(): void {
-  try {
-    const store = useConversationStore.getState()
-    const convId = store.activeConversationId
-    if (!convId) return
-    const conv = store.conversations.find((c) => c.id === convId)
-    if (!conv) return
-    const lastUserMessage = [...conv.messages].reverse().find((m) => isConversationUserMessage(m))
-    if (!lastUserMessage) return
-    store.regenerateUserMessage(convId, lastUserMessage.id)
-  } catch (e) {
-    console.error('[gateway-relogin] regenerate after re-login failed:', e)
-  }
-}
 
 /**
  * Memoized usage bar — the outer flex column re-renders while its scroll
@@ -676,9 +653,10 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
               <button
                 type="button"
                 onClick={() => {
-                  void useGatewayReloginStore.getState().start(() => {
-                    startGatewayReloginRegenerate()
-                  })
+                  // Login success only restores the credential — the failed
+                  // turn is NOT auto-replayed (it may already have run tool
+                  // actions with side effects); the user re-sends manually.
+                  void useGatewayReloginStore.getState().start()
                 }}
                 className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700"
               >
