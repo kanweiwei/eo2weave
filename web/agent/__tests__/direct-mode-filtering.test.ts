@@ -17,17 +17,24 @@ import {
 import { getToolRegistry } from '../tool-registry'
 
 describe('directMode tool filtering', () => {
+  // Independent of FOLDER_DEPENDENT_TOOLS: if the set ever drops one of these
+  // names, the checks below fail LOUDLY instead of silently passing because
+  // they iterate the very set under test.
+  const REQUIRED_FOLDER_DEPENDENT_TOOLS = [
+    'read', 'write', 'edit', 'delete', 'ls', 'search',
+    'snapshot_status', 'snapshot_diff', 'snapshot_log', 'snapshot_show',
+    'snapshot_restore', 'sync-to-opfs',
+    'read_image', 'ocr',
+  ] as const
+
   it('FOLDER_DEPENDENT_TOOLS covers exactly the task-mandated tool set', () => {
-    for (const name of [
-      'read', 'write', 'edit', 'delete', 'ls', 'search',
-      'snapshot_status', 'snapshot_restore', 'sync-to-opfs',
-    ]) {
+    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
       expect(FOLDER_DEPENDENT_TOOLS.has(name), name).toBe(true)
     }
   })
 
   it('isToolAllowedInDirectMode rejects folder tools and keeps everything else', () => {
-    for (const name of FOLDER_DEPENDENT_TOOLS) {
+    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
       expect(isToolAllowedInDirectMode(name), name).toBe(false)
     }
     // Retained capabilities (design decision): page_*, run_python, skills,
@@ -60,6 +67,11 @@ describe('directMode tool filtering', () => {
       expect(projectNames, `project must register ${name}`).toContain(name)
       expect(directNames, `direct must NOT register ${name}`).not.toContain(name)
     }
+    // Independent enumeration again: a tool dropped from the set must still
+    // fail here if the registry (not the set) regressed.
+    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
+      expect(directNames, `direct must NOT register ${name}`).not.toContain(name)
+    }
     // Retained capabilities survive in direct mode. (web_search/web_fetch are
     // web-bridge tools registered only when the Browser Extension is detected —
     // absent from this bare registry, so not asserted here.)
@@ -76,6 +88,9 @@ describe('directMode tool filtering', () => {
     for (const name of FOLDER_DEPENDENT_TOOLS) {
       expect(directPlanNames).not.toContain(name)
     }
+    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
+      expect(directPlanNames, `direct plan must NOT register ${name}`).not.toContain(name)
+    }
     // read-type non-folder tools stay visible in direct plan mode
     expect(directPlanNames).toContain('run_python')
   })
@@ -84,6 +99,9 @@ describe('directMode tool filtering', () => {
     const registry = getToolRegistry()
     const names = registry.getToolDefinitionsForMode('act').map((d) => d.function.name)
     for (const name of FOLDER_DEPENDENT_TOOLS) {
+      expect(names, `default must register ${name}`).toContain(name)
+    }
+    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
       expect(names, `default must register ${name}`).toContain(name)
     }
   })

@@ -58,18 +58,21 @@ vi.mock('../settings.store', () => {
   }
 })
 
+const conversationRepoMock = {
+  findAll: vi.fn(() => Promise.resolve([])),
+  findAllMeta: vi.fn(() => Promise.resolve([])),
+  save: vi.fn(() => Promise.resolve()),
+  saveMeta: conversationRepoSaveMetaMock,
+  touch: vi.fn(() => Promise.resolve()),
+  delete: conversationRepoDeleteMock,
+}
+
 vi.mock('@/sqlite', () => ({
   initSQLiteDB: vi.fn(() => Promise.resolve()),
   getApiKeyRepository: vi.fn(() => ({
     load: vi.fn(() => Promise.resolve('test-key')),
   })),
-  getConversationRepository: vi.fn(() => ({
-    findAll: vi.fn(() => Promise.resolve([])),
-    save: vi.fn(() => Promise.resolve()),
-    saveMeta: conversationRepoSaveMetaMock,
-    touch: vi.fn(() => Promise.resolve()),
-    delete: conversationRepoDeleteMock,
-  })),
+  getConversationRepository: vi.fn(() => conversationRepoMock),
   getMessageRepository: vi.fn(() => ({
     findByConversation: vi.fn(() => Promise.resolve([])),
     insert: messageRepoInsertMock,
@@ -216,6 +219,10 @@ describe('conversation.store.sqlite tool-call routing', () => {
     messageRepoInsertMock.mockResolvedValue(undefined)
     messageRepoReplaceAllMock.mockReset()
     messageRepoReplaceAllMock.mockResolvedValue(undefined)
+    conversationRepoMock.findAll.mockReset()
+    conversationRepoMock.findAll.mockResolvedValue([])
+    conversationRepoMock.findAllMeta.mockReset()
+    conversationRepoMock.findAllMeta.mockResolvedValue([])
     clearAgentLoops()
     clearStreamingQueues()
     useConversationRuntimeStore.setState({ runtimes: new Map() })
@@ -1160,11 +1167,15 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const direct = store.createNew('direct-roundtrip', { kind: 'direct' })
       const project = store.createNew('project-roundtrip')
 
-      // Reload from the mocked repo: findAll returns the stored metadata.
+      // Reload from the mocked repo: findAllMeta returns the stored metadata.
       const { getConversationRepository } = await import('@/sqlite')
       const repo = getConversationRepository() as any
       const savedMetas = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0])
-      repo.findAll.mockResolvedValueOnce(savedMetas)
+      repo.findAllMeta.mockResolvedValueOnce(savedMetas)
+
+      // beforeEach seeds loaded:true; reset it so loadFromDB actually runs its
+      // load path instead of being skipped (that skip is what this test guards).
+      useConversationStore.setState({ loaded: false, activeConversationId: null } as any)
 
       await useConversationStore.getState().loadFromDB()
 
