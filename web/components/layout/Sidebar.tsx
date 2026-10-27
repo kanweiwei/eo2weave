@@ -22,7 +22,7 @@ import { useRouter } from 'next/navigation'
 import { projectWorkspacePath } from '@/lib/route-paths'
 import { createPortal } from 'react-dom'
 import { BrushCleaningIcon } from '@/components/icons/BrushCleaningIcon'
-import { Plus, Trash2, PanelLeftClose, PanelLeft, FolderTree, Clock, History, Pencil, Archive, ArchiveRestore, Download, Pin, PinOff, ChevronRight, ChevronDown, Sparkles, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, PanelLeftClose, PanelLeft, FolderTree, Clock, History, Pencil, Archive, ArchiveRestore, Download, Pin, PinOff, ChevronRight, ChevronDown, FolderOpen, Loader2, Sparkles, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BrandButton,
@@ -50,6 +50,7 @@ import { useWorkspaceStore } from '@/store/workspace.store'
 import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
+import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { FileTreePanel } from '@/components/file-viewer/FileTreePanel'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
 import { SnapshotList } from '@/components/sync/SnapshotList'
@@ -546,6 +547,25 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   const opfsDisplayableCount =
     opfsPendingChanges.filter((c) => c.type !== 'delete').length + opfsCachedCount
 
+  // "Choose local folder" empty-state button (#82): mirrors FolderSelector's
+  // addFolder picker path (browser directory picker; side-panel users are
+  // excluded via canPickDirectory because in-panel showDirectoryPicker is
+  // unreliable and the topbar hands off to /folder-pick there instead).
+  const canPickDirectory = getRuntimeCapability().canPickDirectory
+  const addRoot = useFolderAccessStore((s) => s.addRoot)
+  const [isAddingFolder, setIsAddingFolder] = useState(false)
+  const handleChooseLocalFolder = useCallback(async () => {
+    if (!canPickDirectory || isAddingFolder) return
+    setIsAddingFolder(true)
+    try {
+      await addRoot()
+    } catch (error) {
+      console.error('[Sidebar] Failed to open folder:', error)
+    } finally {
+      setIsAddingFolder(false)
+    }
+  }, [addRoot, canPickDirectory, isAddingFolder])
+
   const handleToggleCollapse = useCallback((rootName: string) => {
     setCollapsedRoots((prev) => {
       const next = new Set(prev)
@@ -636,6 +656,25 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
                   <li>{t('sidebar.localFilesEmpty.authorizedHint')}</li>
                   <li>{t('sidebar.localFilesEmpty.unlinkedHint')}</li>
                 </ul>
+                {/* Real mount entry (#82): same directory picker as the topbar
+                    FolderSelector's addFolder. Hidden when the runtime has no
+                    directory picker (side-panel handoff/mobile) — the text
+                    hints above stay as the guidance there. */}
+                {canPickDirectory && (
+                  <div className="mt-5 flex justify-center">
+                    <BrandButton
+                      variant="outline"
+                      className="h-9 gap-2 px-4 text-sm"
+                      onClick={() => void handleChooseLocalFolder()}
+                      disabled={isAddingFolder}
+                    >
+                      {isAddingFolder
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <FolderOpen className="h-4 w-4" />}
+                      {t('projectRoots.chooseLocalFolder')}
+                    </BrandButton>
+                  </div>
+                )}
               </div>
             </div>
           ) : (
