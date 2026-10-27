@@ -111,4 +111,28 @@ describe('directMode tool filtering', () => {
     expect(getToolCategory('write')).toBe('write')
     expect(getToolCategory('sync-to-opfs')).toBe('read')
   })
+
+  it('execute() rejects folder tools when context.directMode is set (bypass-the-definitions guard)', async () => {
+    const registry = getToolRegistry()
+    const context = {
+      directoryHandle: null,
+      directMode: true,
+    } as Parameters<typeof registry.execute>[2]
+
+    for (const name of FOLDER_DEPENDENT_TOOLS) {
+      const raw = await registry.execute(name, {}, context)
+      const parsed = JSON.parse(raw) as { error?: string }
+      expect(parsed.error, name).toBeTruthy()
+      expect(raw).not.toContain('Unknown tool')
+    }
+
+    // Non-folder tools keep executing normally in direct mode.
+    const raw = await registry.execute('web_search', { query: 'x' }, context)
+    expect(JSON.parse(raw) as { error?: string }).not.toHaveProperty('error', expect.stringContaining('standalone chat'))
+
+    // Omitting directMode preserves full project behavior (zero drift).
+    const projectContext = { directoryHandle: null } as unknown as Parameters<typeof registry.execute>[2]
+    const projectRaw = await registry.execute('ls', {}, projectContext)
+    expect(JSON.parse(projectRaw) as { error?: string }).not.toHaveProperty('error', expect.stringContaining('standalone chat'))
+  })
 })

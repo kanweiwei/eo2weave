@@ -428,6 +428,18 @@ export class ToolRegistry {
       return JSON.stringify({ error: `Unknown tool: ${rawName}` })
     }
 
+    // Direct-mode authorization is enforced HERE, not only in the
+    // definition filter: callers that bypass `getToolDefinitionsForMode`
+    // (the visual-flow engine calls `registry.execute` directly) must not
+    // be able to run folder-dependent tools against a folder-less
+    // conversation's workspace. The definition-level filter alone leaves
+    // exactly this hole.
+    if (context.directMode === true && !isToolAllowedInDirectMode(name)) {
+      return JSON.stringify({
+        error: `Tool "${rawName}" is not available in a standalone chat (no folder authorized).`,
+      })
+    }
+
     try {
       // run_code may have side effects; never auto-retry the whole program.
       if (name === RUN_CODE_TOOL) return await entry.executor(args, context)
