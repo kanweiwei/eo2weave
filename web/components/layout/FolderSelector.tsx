@@ -10,7 +10,6 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { toast } from 'sonner'
 import {
   FolderOpen,
   Plus,
@@ -24,9 +23,9 @@ import {
 } from 'lucide-react'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
-import { bindRuntimeDirectoryHandle } from '@/native-fs'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useT } from '@/i18n'
+import { restoreRootPermission } from '@/lib/folder-permission'
 import {
   Popover,
   PopoverContent,
@@ -146,37 +145,18 @@ export function FolderSelector() {
 
   const handleRestorePermission = useCallback(
     async (root: RootInfo) => {
-      if (!activeProjectId || !root.persistedHandle) return
-      if (isSidePanel) {
-        // Re-grant in a top-level page; cross-origin panels cannot prompt.
-        const url = new URL(window.location.href)
-        url.hash = ''
-        url.search = `?projectId=${encodeURIComponent(activeProjectId)}`
-        url.pathname = '/folder-pick'
-        window.open(url.toString(), '_blank', 'noopener')
-        return
-      }
-      try {
-        const permission = await root.persistedHandle.requestPermission({ mode: 'readwrite' })
-        if (permission === 'granted') {
-          bindRuntimeDirectoryHandle(activeProjectId, root.name, root.persistedHandle)
-          await loadRoots()
-
-          // Sync to agent.store
-          const { useAgentStore } = await import('@/store/agent.store')
-          useAgentStore.setState({
-            directoryHandle: root.persistedHandle,
-            directoryName: root.name,
-          })
-
-          toast.success(t('projectRoots.permissionRestored'))
-        } else {
-          toast.error(t('projectRoots.permissionDenied'))
-        }
-      } catch (error) {
-        console.error('[FolderSelector] Failed to restore permission:', error)
-        toast.error(t('projectRoots.permissionFailed'))
-      }
+      if (!activeProjectId) return
+      await restoreRootPermission({
+        projectId: activeProjectId,
+        root,
+        sidePanel: isSidePanel,
+        strings: {
+          restored: t('projectRoots.permissionRestored'),
+          denied: t('projectRoots.permissionDenied'),
+          failed: t('projectRoots.permissionFailed'),
+        },
+        loadRoots,
+      })
     },
     [activeProjectId, isSidePanel, loadRoots, t]
   )
