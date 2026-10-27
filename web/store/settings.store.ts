@@ -55,12 +55,6 @@ function localizedProviderDisplayName(providerType: string, fallback: string): s
 // This is a soft cache that can be invalidated
 const apiKeyCache = new Map<string, boolean>()
 const apiKeyCachePromise: Map<string, Promise<boolean>> = new Map()
-// Monotonic epoch for in-flight key checks (#84 review round 2): a check
-// that started for provider A can resolve after the user switched to
-// provider B and B's check already ran — writing A's result would gate B's
-// composer on A's key. Each check claims an epoch; only the LATEST one may
-// write `hasApiKey` back to the store.
-let apiKeyCheckEpoch = 0
 
 /** API mode for custom providers: chat completions vs OpenAI responses API */
 export type CustomApiMode = 'chat-completions' | 'responses'
@@ -659,11 +653,14 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       checkHasApiKey: async (options?: { flush?: boolean }) => {
-        // Claim the epoch BEFORE any await: a later check always wins the
-        // write-back, and any earlier in-flight check becomes a no-op for
-        // the shared state (its own promise result is still returned to its
-        // caller). Same stale-result pattern as conversation-runtime runEpoch.
-        const epoch = ++apiKeyCheckEpoch
+        // No epoch guard here anymore. The old up-front `++apiKeyCheckEpoch`
+        // let a deduplicated same-provider caller (one that reused the
+        // in-flight promise cache) bump the epoch, stale-out the in-flight
+        // lookup's write guard, and leave `hasApiKey` unwritten after the
+        // promise resolved (#84 review round 3). Every lookup now writes
+        // its result unconditionally; a mid-flight provider switch stays
+        // correct because the switch path re-runs checkHasApiKey() and its
+        // fresh write lands after the stale one.
         const state = get()
         const effective = state.getEffectiveProviderConfig()
         if (!effective) {
@@ -706,8 +703,14 @@ export const useSettingsStore = create<SettingsState>()(
         // Return cached value if available and not stale.
         // `hasApiKeyLoaded` was set during the initial population that
         // filled the cache, so we don't need to set it again here.
+        // STILL sync the reactive state (#84 review round 3): the module-level
+        // cache outlives store resets (tests, hot reloads), so a cache-hit
+        // caller that skipped the write would leave `hasApiKey` false while
+        // lookups answer true — onboarding and sends read the stale state.
         if (apiKeyCache.has(providerKey)) {
-          return apiKeyCache.get(providerKey)!
+          const cached = apiKeyCache.get(providerKey)!
+          set({ hasApiKey: cached, hasApiKeyLoaded: true })
+          return cached
         }
 
         // Use promise cache to avoid concurrent queries
@@ -724,26 +727,18 @@ export const useSettingsStore = create<SettingsState>()(
 
             // Update the reactive state. Mark loaded in the same set() so
             // subscribers see a consistent (hasApiKey, hasApiKeyLoaded) pair.
-            // Epoch guard (#84 review round 2): skip the write if a newer
-            // check started while this import/load was in flight — otherwise
-            // the OLD provider's answer would overwrite the new one.
-            if (epoch === apiKeyCheckEpoch) {
-              set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
-            } else {
-              set({ hasApiKeyLoaded: true })
-            }
+            // Written UNCONDITIONALLY (#84 review round 3): see the note at
+            // the top of checkHasApiKey for why the old epoch guard here
+            // dropped deduplicated lookups' write.
+            set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
 
             return hasKey
           } catch (error) {
             console.error('[SettingsStore] Failed to check API key:', error)
             // Even on error, mark as loaded — otherwise the UI would stay
-            // in the "loading" state forever. Epoch guard: a stale failed
-            // check must not clobber the newer provider's result either.
-            if (epoch === apiKeyCheckEpoch) {
-              set({ hasApiKey: false, hasApiKeyLoaded: true })
-            } else {
-              set({ hasApiKeyLoaded: true })
-            }
+            // in the "loading" state forever. Unconditional write, same
+            // rationale as the success path above (#84 review round 3).
+            set({ hasApiKey: false, hasApiKeyLoaded: true })
 
             // Schedule a delayed retry — the SQLite worker init race
             // (OPFS lock release, cold-start handshake) often self-resolves

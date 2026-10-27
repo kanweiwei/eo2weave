@@ -238,13 +238,21 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // `hasApiKeyLoaded`), so the hydration flash guard is already satisfied
   // by the render gate here.
   const hasUsableModel = !!providerType && !!modelName
-  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired'
+  // The expired-credential grace only applies when a REAL selection exists
+  // to preserve (#84 review round 3): providerType AND modelName must both
+  // be present. With one of them empty there is nothing to keep — treating
+  // the selection as usable would let `providerStep` report `ready` and
+  // enable the composer, and `handleSubmit` would start a conversation with
+  // no model instead of blocking the send.
+  const hasExpiredCredential = modelCredentialStatus === 'expired'
+  const hasSelectableModel = hasUsableModel || (hasExpiredCredential && !!providerType && !!modelName)
 
   const readiness: ProviderReadiness = {
     hasApiKey,
-    // An expired gateway credential preserves the model selection; it should
-    // not send the user back through model selection.
-    hasUsableModel: hasUsableModel || modelCredentialStatus === 'expired',
+    // An expired gateway credential preserves an EXISTING model selection;
+    // it should not send the user back through model selection. Same
+    // both-fields-present guard as `hasSelectableModel` above.
+    hasUsableModel: hasUsableModel || (hasExpiredCredential && !!providerType && !!modelName),
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>

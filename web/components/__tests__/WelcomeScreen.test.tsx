@@ -581,7 +581,8 @@ describe('WelcomeScreen', () => {
   it('keeps expired-credential selection editable but sends disabled (per #82 design)', () => {
     const onStart = vi.fn()
     const onOpenSettings = vi.fn()
-    // Expired gateway credential: selection preserved and the input stays
+    // Expired gateway credential WITH a real selection (provider + model
+    // both present): the selection is preserved and the input stays
     // editable (the user may want to copy the error), but sending is
     // disabled — recovery goes through the re-login card, not a retry.
     settingsState.hasApiKey = false
@@ -600,6 +601,32 @@ describe('WelcomeScreen', () => {
     expect(onStart).not.toHaveBeenCalled()
     // Draft is preserved — nothing the user typed is lost.
     expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+  })
+
+  it('does NOT treat an expired credential as a selection when provider/model are empty', () => {
+    // Regression for the Sourcery round-3 finding: the expired-credential
+    // grace must only apply when BOTH providerType and modelName exist.
+    // With no selection at all there is nothing to preserve — the composer
+    // must stay disabled and the user must land on the select-model card,
+    // not on ready where handleSubmit would start a model-less conversation.
+    const onStart = vi.fn()
+    settingsState.hasApiKey = false
+    settingsState.modelCredentialStatus = 'expired'
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={vi.fn()} />)
+
+    // The select-model setup card is showing (NOT ready): 'Skip for now'
+    // is the setup card's escape hatch.
+    expect(screen.getByRole('button', { name: 'Skip for now' })).toBeInTheDocument()
+    // The composer is disabled — no selection means nothing to type into.
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(screen.getByTestId('agent-rich-input')).toHaveAttribute('data-typing-accepted', 'false')
+    expect(inputDraftState.drafts.get('proj-1')?.text).toBeUndefined()
+    // And the send path cannot start a conversation either.
+    const send = screen.getByTestId('mock-send')
+    fireEvent.click(send)
+    expect(onStart).not.toHaveBeenCalled()
   })
 
   it('allows send on the ready step (regression guard for the setup-step gate)', () => {
