@@ -4,16 +4,19 @@ import { runWebMCPPageProbe } from '../../../browser-extension/entrypoints/webmc
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('WebMCP v6 invocation boundary', () => {
+describe('WebMCP invocation boundary', () => {
   const tool = { name: 'example', description: 'Example', inputSchema: { type: 'object' } }
 
-  function installContext(executeTool: ReturnType<typeof vi.fn>, native = false) {
+  type ContextKind = 'v6-polyfill' | 'native' | 'v4-polyfill'
+
+  function installContext(executeTool: ReturnType<typeof vi.fn>, kind: ContextKind = 'v6-polyfill') {
     // Map is a real native constructor; its instances model the native API brand.
     // A JavaScript constructor models the v6 polyfill, even with a bound method.
-    const ModelContext = native ? Map : class ModelContext {}
+    const ModelContext = kind === 'native' ? Map : class ModelContext {}
     vi.stubGlobal('ModelContext', ModelContext)
     const modelContext = Object.assign(new ModelContext(), {
       getTools: vi.fn().mockResolvedValue([tool]), executeTool,
+      ...(kind === 'v4-polyfill' ? { __isWebMCPPolyfill: true } : {}),
     })
     vi.stubGlobal('document', {
       modelContext,
@@ -21,17 +24,22 @@ describe('WebMCP v6 invocation boundary', () => {
   }
 
   it.each([
-    { native: false, args: {} },
-    { native: false, args: { query: 'test' } },
-    { native: true, args: {} },
-    { native: true, args: { query: 'test' } },
-  ])('uses the correct input boundary once: %j', async ({ native, args }) => {
+    { kind: 'v6-polyfill', args: {} },
+    { kind: 'v6-polyfill', args: { query: 'test' } },
+    { kind: 'native', args: {} },
+    { kind: 'native', args: { query: 'test' } },
+    { kind: 'v4-polyfill', args: {} },
+    { kind: 'v4-polyfill', args: { query: 'test' } },
+  ])('uses the correct input boundary once: %j', async ({ kind, args }) => {
+    const usesSerializedInput = kind === 'v4-polyfill'
     const executeTool = vi.fn().mockImplementation(async (_tool, input) => {
-      if (native && typeof input !== 'string') throw new Error('Failed to parse input arguments')
-      if (!native && typeof input !== 'object') throw new Error('Expected v6 input object')
-      return { received: native ? JSON.parse(input) : input }
+      if (usesSerializedInput && typeof input !== 'string') throw new Error('Failed to parse input arguments')
+      if (!usesSerializedInput && (typeof input !== 'object' || input === null)) {
+        throw new Error('Expected input object')
+      }
+      return { received: usesSerializedInput ? JSON.parse(input) : input }
     })
-    installContext(executeTool, native)
+    installContext(executeTool, kind as ContextKind)
 
     await expect(resolveAgentApi()!.executeToolByName('example', args)).resolves.toEqual({ received: args })
     expect(await runWebMCPPageProbe({ type: 'invoke', toolName: 'example', args })).toMatchObject({
@@ -40,7 +48,7 @@ describe('WebMCP v6 invocation boundary', () => {
     expect(executeTool).toHaveBeenCalledTimes(2)
     for (const call of executeTool.mock.calls) {
       expect(call[0]).toBe(tool)
-      expect(call[1]).toEqual(native ? JSON.stringify(args) : args)
+      expect(call[1]).toEqual(usesSerializedInput ? JSON.stringify(args) : args)
     }
   })
 
