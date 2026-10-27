@@ -241,8 +241,13 @@ vi.mock('../agent/AgentRichInput', async () => {
         onDraftRestored?.()
       }
     }, [initialText, consumedText, onDraftRestored])
+    const [typingAccepted, setTypingAccepted] = useState<boolean | null>(null)
     return (
-      <div data-testid="agent-rich-input" aria-disabled={disabled || undefined}>
+      <div
+        data-testid="agent-rich-input"
+        aria-disabled={disabled || undefined}
+        data-typing-accepted={typingAccepted == null ? undefined : String(typingAccepted)}
+      >
         {consumedText ? <div data-testid="draft-restored">{consumedText}</div> : null}
         {placeholder != null && (
           <div data-testid="mock-placeholder">{placeholder}</div>
@@ -250,7 +255,19 @@ vi.mock('../agent/AgentRichInput', async () => {
         <button
           type="button"
           data-testid="mock-input-type"
-          onClick={() => onChange?.({ text: 'typed text', mentionedAgentIds: [] })}
+          data-typing-accepted={typingAccepted ? 'true' : 'false'}
+          onClick={() => {
+            // Respect the real editor's `disabled` contract (#84 review
+            // round 2): a disabled editor must not accept typing, so
+            // onChange never fires and the attempt is recorded so tests
+            // can assert the keystroke was actually swallowed.
+            if (disabled) {
+              setTypingAccepted(false)
+              return
+            }
+            setTypingAccepted(true)
+            onChange?.({ text: 'typed text', mentionedAgentIds: [] })
+          }}
         >
           type
         </button>
@@ -544,18 +561,21 @@ describe('WelcomeScreen', () => {
   // longer the first line of defense — the disabled button is. The gate
   // itself stays as a backstop for steps where the input is still editable
   // (expired credential keeps the selection), verified in the test below.
-  it('disables send entirely when no API key is configured', () => {
+  it('keeps the editor editable but blocks sending when no API key is configured', () => {
     const onStart = vi.fn()
     const onOpenSettings = vi.fn()
     settingsState.hasApiKey = false
     render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={onOpenSettings} />)
 
     expect(screen.getByRole('button', { name: 'Skip for now' })).toBeInTheDocument()
+    // A missing key is a CREDENTIAL state, not an editor-lock (#84 review
+    // round 2): typing is accepted so the user can compose/copy, but the
+    // send path stays blocked (setup card, not a dead input).
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(screen.getByTestId('agent-rich-input')).toHaveAttribute('data-typing-accepted', 'true')
     const send = screen.getByTestId('mock-send')
-    expect(send).toBeDisabled()
     fireEvent.click(send)
     expect(onStart).not.toHaveBeenCalled()
-    expect(toastWarningMock).not.toHaveBeenCalled()
   })
 
   it('keeps expired-credential selection editable but sends disabled (per #82 design)', () => {
@@ -570,9 +590,11 @@ describe('WelcomeScreen', () => {
 
     expect(screen.getByRole('button', { name: 'Skip for now' })).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('mock-input-type'))
+    // The mock now ENFORCES `disabled` (#84 review round 2): the keystroke
+    // landing in the draft proves the editor truly accepted typing.
+    expect(screen.getByTestId('agent-rich-input')).toHaveAttribute('data-typing-accepted', 'true')
     expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
     const send = screen.getByTestId('mock-send')
-    expect(send).toBeDisabled()
     fireEvent.click(send)
 
     expect(onStart).not.toHaveBeenCalled()
@@ -676,11 +698,15 @@ describe('WelcomeScreen', () => {
     const input = screen.getByTestId('agent-rich-input')
     expect(input).toBeInTheDocument()
     // Forward through the mock (#84 review): the disabled wiring and the
-    // placeholder hint must both actually reach the editor.
+    // placeholder hint must both actually reach the editor — and the mock
+    // now ENFORCES disabled (#84 review round 2): typing is swallowed.
     expect(input).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByTestId('mock-placeholder')).toHaveTextContent(
       'Pick a usable model in the model selector below first'
     )
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(input).toHaveAttribute('data-typing-accepted', 'false')
+    expect(inputDraftState.drafts.has('proj-1')).toBe(false)
     const send = screen.getByTestId('mock-send')
     expect(send).toBeDisabled()
   })

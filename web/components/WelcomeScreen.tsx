@@ -231,11 +231,14 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // user may want to copy the error message / re-login), so it still counts
   // as usable here — the send path shows the re-auth toast, not a dead
   // input. Same rule useConversationLogic applies at send time.
-  // No API key at all disables the composer too. The input only renders
-  // after `isLoading` (which includes `hasApiKeyLoaded`), so the hydration
-  // flash guard is already satisfied by the render gate here.
+  // No API key at all: the composer stays EDITABLE when a model is selected
+  // or the credential is expired (#84 review round 2) — the user may need
+  // to type/copy while recovering credentials; the send path still blocks
+  // (toast). The input only renders after `isLoading` (which includes
+  // `hasApiKeyLoaded`), so the hydration flash guard is already satisfied
+  // by the render gate here.
   const hasUsableModel = !!providerType && !!modelName
-  const hasSelectableModel = (hasUsableModel || modelCredentialStatus === 'expired') && hasApiKey
+  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired'
 
   const readiness: ProviderReadiness = {
     hasApiKey,

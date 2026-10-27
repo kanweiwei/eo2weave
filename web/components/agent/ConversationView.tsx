@@ -88,16 +88,14 @@ export function ConversationView({
   const pendingAssetCount = useAssetStore((s) => s.pendingAssets.length)
   // Usable model (#82): provider + model selected. An expired gateway
   // credential KEEPS the input editable — the user may need to copy the
-  // error message or re-login — only the send path blocks (toast). The
-  // ModelQuickSwitch chip shows the amber warning state for both cases.
-  // No API key at all disables the composer too — but only after
-  // `checkHasApiKey()` has run once: `hasApiKey` defaults to false before
-  // hydration, so gating on it alone would flash the input disabled on
-  // every load (see settings.store.hasApiKeyLoaded).
+  // error message or re-login — only the send path blocks (toast).
+  // A missing API key keeps the composer editable too (#84 review round 2):
+  // the user may need to type/copy while recovering credentials, and the
+  // send path still blocks. Only a missing provider/model disables the
+  // editor. No hydration guard needed any more: `hasSelectableModel` no
+  // longer reads `hasApiKey`, whose pre-hydration default caused the flash.
   const hasUsableModel = !!providerType && !!modelName
-  const hasSelectableModel =
-    (hasUsableModel || modelCredentialStatus === 'expired') &&
-    (logic.hasApiKey || !logic.hasApiKeyLoaded)
+  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired'
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,

@@ -41,7 +41,6 @@ export function ModelQuickSwitch({
   const t = useT()
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
-  const hasApiKey = useSettingsStore((s) => s.hasApiKey)
   const modelCredentialStatus = useSettingsStore((s) => s.modelCredentialStatus)
   const getAvailableProviders = useSettingsStore((s) => s.getAvailableProviders)
   const switchProviderAndModel = useSettingsStore((s) => s.switchProviderAndModel)
@@ -196,13 +195,16 @@ export function ModelQuickSwitch({
     if (modelCredentialStatus === 'expired' && modelName) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
     }
-    if (!hasApiKey || !providerType || !modelName) {
+    if (!providerType || !modelName) {
       return t('topbar.modelSwitcher.noModels')
     }
+    // A selected model with an unresolved/missing key check is a CREDENTIAL
+    // state, not "no models" (#84 review round 2) — keep showing the model
+    // name so the chip's amber warning reads as re-credentials, not re-pick.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
     return model?.name || modelName
-  }, [hasApiKey, loading, modelCredentialStatus, providerType, providers, modelName, t])
+  }, [loading, modelCredentialStatus, providerType, providers, modelName, t])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
@@ -211,7 +213,12 @@ export function ModelQuickSwitch({
   // accessible label must NOT claim "no model selected" in that state
   // (#84 review): it would misdirect screen-reader users away from the
   // visible re-login action.
-  const noModelSelected = !loading && (!hasApiKey || !providerType || !modelName)
+  // "No model" means NO provider/model SELECTED (#84 review round 2) — a
+  // missing key is a credential problem, not a selection problem, and an
+  // unresolved key check must not count as a confirmed missing key. The
+  // credential branch below wins whenever a provider+model are chosen, so
+  // the label points at recovering credentials, not re-picking a model.
+  const noModelSelected = !loading && (!providerType || !modelName)
   const credentialExpired = !loading && modelCredentialStatus === 'expired'
   const noUsableModel = noModelSelected || credentialExpired
 
