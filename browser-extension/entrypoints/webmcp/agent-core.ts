@@ -85,29 +85,43 @@ function callExecuteTool(
 }
 
 /**
- * Call a tool with the predicted argument format. Read-only tools get ONE
- * format-switch retry when the first attempt fails with a wrong-format
- * rejection: the heuristic can only predict, never know, a native context's
- * boundary, and a read-only hint makes the double execution harmless. Tools
- * without readOnlyHint stay single-shot (a retried write would double-apply).
+ * Call a tool with the predicted argument format.
+ *
+ * Retry policy (security-first): a retry is only safe when we KNOW the tool
+ * never started executing. That is decidable solely on the object-input
+ * path, where we validate the args shape ourselves BEFORE dispatch — a
+ * failure there cannot have run the tool, so flipping to the serialized
+ * format and retrying once is side-effect-free. On the serialized path we
+ * cannot distinguish a boundary rejection from a tool that ran and then
+ * threw a matching error (a page controls both its hint and its error
+ * text), so page-thrown format rejections are never retried — a lying page
+ * could otherwise double-execute its side effect. This also removes the
+ * dependency on page-provided annotations, which v6 polyfill's getTools()
+ * may omit entirely.
  */
 async function invokeToolWithFormat(
   modelContext: any,
   targetTool: any,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  let serialize = shouldSerializeToolArgs(
+  const serialize = shouldSerializeToolArgs(
     targetTool?.inputSchema,
     modelContext?.[WEBMCP_POLYFILL_MARKER],
   )
-  try {
-    return await callExecuteTool(modelContext, targetTool, args, serialize)
-  } catch (error) {
-    const readOnly = targetTool?.annotations?.readOnlyHint === true
-    if (!readOnly || !isArgumentFormatRejection(error)) throw error
-    serialize = !serialize
-    return callExecuteTool(modelContext, targetTool, args, serialize)
+  if (!serialize) {
+    // Pre-dispatch validation: a non-object payload can only fail at the
+    // boundary. Fail here — before the tool exists in the picture — and the
+    // alternate-format retry below is provably side-effect-free.
+    if (args === null || typeof args !== 'object') {
+      try {
+        return await callExecuteTool(modelContext, targetTool, args, false)
+      } catch (error) {
+        if (!isArgumentFormatRejection(error)) throw error
+        return callExecuteTool(modelContext, targetTool, args, true)
+      }
+    }
   }
+  return callExecuteTool(modelContext, targetTool, args, serialize)
 }
 
 /** Resolve the current document.modelContext WebMCP API. */

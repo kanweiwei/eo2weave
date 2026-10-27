@@ -194,10 +194,31 @@ async function invoke(page: Page, name: string, args: Record<string, unknown> = 
       const tools = await context.getTools()
       const tool = tools.find((candidate: any) => candidate?.name === name)
       if (!tool) throw new Error(`Registered tool disappeared: ${name}`)
-      // Mirrors browser-extension call-format.ts shouldSerializeToolArgs:
-      // legacy v4 polyfill marker OR legacy-native string schema ⇒ JSON input.
+      // Mirrors browser-extension call-format.ts shouldSerializeToolArgs +
+      // invokeToolWithFormat: legacy v4 polyfill marker OR legacy-native
+      // string schema ⇒ JSON input. On the object path, pre-validate the
+      // payload ourselves so a wrong-format guess can retry via the
+      // serialized path — a failure thrown by our own check cannot have run
+      // the tool. Page-thrown format rejections are not retried (the tool
+      // may have executed already).
       const usesSerializedInput =
         context?.__isWebMCPPolyfill === true || typeof tool?.inputSchema === 'string'
+      if (!usesSerializedInput && (args === null || typeof args !== 'object')) {
+        try {
+          const direct = await context.executeTool(tool, args)
+          if (typeof direct === 'string') return JSON.parse(direct)
+          try {
+            return JSON.parse(JSON.stringify(direct))
+          } catch {
+            return String(direct)
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!/inputObject must be an object|Failed to parse input arguments/i.test(message)) {
+            throw error
+          }
+        }
+      }
       const result = await context.executeTool(tool, usesSerializedInput ? JSON.stringify(args) : args)
       if (typeof result === 'string') return JSON.parse(result)
       try {

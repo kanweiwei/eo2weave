@@ -96,18 +96,24 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
       targetTool: any,
       args: Record<string, unknown>,
     ): Promise<unknown> => {
-      let serialize =
+      const serialize =
         modelContext?.__isWebMCPPolyfill === true || typeof targetTool?.inputSchema === 'string'
-      try {
-        return await callExecuteTool(modelContext, targetTool, args, serialize)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        const formatRejection =
-          /inputObject must be an object|Failed to parse input arguments/i.test(message)
-        if (targetTool?.annotations?.readOnlyHint !== true || !formatRejection) throw error
-        serialize = !serialize
-        return callExecuteTool(modelContext, targetTool, args, serialize)
+      // Security-first retry policy (mirrors agent-core.ts): retry only when
+      // we KNOW the tool never started — i.e. our own pre-dispatch object
+      // check failed on the object path. Page-thrown format rejections on the
+      // serialized path are never retried (the tool may have run already).
+      if (!serialize && (args === null || typeof args !== 'object')) {
+        try {
+          return await callExecuteTool(modelContext, targetTool, args, false)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!/inputObject must be an object|Failed to parse input arguments/i.test(message)) {
+            throw error
+          }
+          return callExecuteTool(modelContext, targetTool, args, true)
+        }
       }
+      return callExecuteTool(modelContext, targetTool, args, serialize)
     }
 
     const createImperativeApi = (

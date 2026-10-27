@@ -101,47 +101,36 @@ describe('WebMCP invocation boundary', () => {
     }
   })
 
-  it('retries a read-only tool once with the opposite format after a wrong-format rejection', async () => {
-    const readOnlyStringSchemaTool = {
+  it('retries via the serialized format when our own pre-dispatch check fails the object path', async () => {
+    // Object path + non-object args: our pre-check fails before dispatch, so
+    // the tool provably never ran and the flip is side-effect-free.
+    const stringSchemaNativeTool = {
       name: 'example', description: 'Example',
       inputSchema: { type: 'object' },
-      annotations: { readOnlyHint: true },
     }
     const executeTool = vi
       .fn()
       .mockRejectedValueOnce(new TypeError('inputObject must be an object'))
       .mockResolvedValue({ ok: true })
-    installContext(executeTool, 'v6-polyfill', readOnlyStringSchemaTool)
+    installContext(executeTool, 'native', stringSchemaNativeTool)
 
-    await expect(resolveAgentApi()!.executeToolByName('example', { query: 'q' })).resolves.toEqual({ ok: true })
+    await expect(
+      resolveAgentApi()!.executeToolByName('example', 'raw-string' as unknown as Record<string, unknown>)
+    ).resolves.toEqual({ ok: true })
     expect(executeTool).toHaveBeenCalledTimes(2)
-    expect(executeTool).toHaveBeenNthCalledWith(1, readOnlyStringSchemaTool, { query: 'q' })
-    expect(executeTool).toHaveBeenNthCalledWith(2, readOnlyStringSchemaTool, JSON.stringify({ query: 'q' }))
+    expect(executeTool).toHaveBeenNthCalledWith(1, stringSchemaNativeTool, 'raw-string')
+    expect(executeTool).toHaveBeenNthCalledWith(2, stringSchemaNativeTool, JSON.stringify('raw-string'))
   })
 
-  it('retries only once and propagates a second failure for read-only tools', async () => {
-    const readOnlyTool = {
+  it('never retries a page-thrown format rejection on the serialized path (tool may have run)', async () => {
+    // A page controls both its hint and its error text: even a "read-only"
+    // hint cannot prove the tool did not execute before throwing.
+    const tool = {
       name: 'example', description: 'Example',
-      inputSchema: { type: 'object' },
       annotations: { readOnlyHint: true },
     }
     const executeTool = vi.fn().mockRejectedValue(new TypeError('inputObject must be an object'))
-    installContext(executeTool, 'v6-polyfill', readOnlyTool)
-
-    await expect(resolveAgentApi()!.executeToolByName('example', {})).rejects.toThrow(
-      'inputObject must be an object'
-    )
-    expect(executeTool).toHaveBeenCalledTimes(2)
-  })
-
-  it('never retries a side-effecting tool after a wrong-format rejection', async () => {
-    const writeTool = {
-      name: 'example', description: 'Example',
-      inputSchema: { type: 'object' },
-      annotations: { readOnlyHint: false },
-    }
-    const executeTool = vi.fn().mockRejectedValue(new TypeError('inputObject must be an object'))
-    installContext(executeTool, 'v6-polyfill', writeTool)
+    installContext(executeTool, 'v4-polyfill', tool)
 
     await expect(resolveAgentApi()!.executeToolByName('example', {})).rejects.toThrow(
       'inputObject must be an object'
@@ -149,16 +138,25 @@ describe('WebMCP invocation boundary', () => {
     expect(executeTool).toHaveBeenCalledTimes(1)
   })
 
-  it('does not retry read-only tools on unrelated failures', async () => {
-    const readOnlyTool = {
-      name: 'example', description: 'Example',
-      inputSchema: { type: 'object' },
-      annotations: { readOnlyHint: true },
-    }
-    const executeTool = vi.fn().mockRejectedValue(new Error('Tool internal failure'))
-    installContext(executeTool, 'v6-polyfill', readOnlyTool)
+  it('does not retry on the object path when args are already a valid object', async () => {
+    const tool = { name: 'example', description: 'Example' }
+    const executeTool = vi.fn().mockRejectedValue(new TypeError('inputObject must be an object'))
+    installContext(executeTool, 'native', tool)
 
-    await expect(resolveAgentApi()!.executeToolByName('example', {})).rejects.toThrow('Tool internal failure')
+    await expect(resolveAgentApi()!.executeToolByName('example', { query: 'q' })).rejects.toThrow(
+      'inputObject must be an object'
+    )
+    expect(executeTool).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry tools on unrelated failures', async () => {
+    const tool = { name: 'example', description: 'Example' }
+    const executeTool = vi.fn().mockRejectedValue(new Error('Tool internal failure'))
+    installContext(executeTool, 'native', tool)
+
+    await expect(resolveAgentApi()!.executeToolByName('example', { query: 'q' })).rejects.toThrow(
+      'Tool internal failure'
+    )
     expect(executeTool).toHaveBeenCalledTimes(1)
   })
 
