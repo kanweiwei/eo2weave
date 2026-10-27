@@ -181,14 +181,10 @@ vi.mock('@/i18n', () => ({
     'agent.vision.unsupported': 'Vision unavailable',
     'agent.vision.screenshotUnavailable': 'Screenshot unavailable',
     'agent.pageScreenshot.captureFailed': 'Could not capture screenshot',
-    'onboarding.steps.files.title': 'Let AI read your files',
     'welcome.setupLocalFirstHint': 'Your data stays in this browser.',
-    'welcome.mountFolderButton': 'Choose a folder',
-    'welcome.mountFolderDesc': 'Choose a folder and AI can read and edit its files.',
     'welcome.skipButton': 'Skip for now',
-    'welcome.mountFolderBack': 'Back',
-    'folderSelector.localConnection': 'Connect locally',
-    'folderSelector.localConnectionDescription': 'Connect a folder through the local connection.',
+    'welcome.placeholder': 'Type a message to start...',
+    'conversation.input.placeholderNoModel': 'Pick a usable model in the model selector below first',
   })[key] ?? key,
 }))
 
@@ -349,41 +345,29 @@ describe('WelcomeScreen', () => {
     agentsState.deleteAgent.mockClear()
   })
 
-  // hasApiKey=true + roots=[] (store mocks) + welcome-seen → mount-folder
-  // step; skipping it lands on ready where the rich input renders.
+  // Baseline readiness (key + provider/model configured) + welcome-seen →
+  // ready directly (#82: mount-folder left the machine — no skip needed).
   function advanceToReady() {
-    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }))
+    // no-op: the baseline state already renders the ready step
   }
 
-  it('explains why selecting a folder grants AI file access', () => {
+  // #82: the mount-folder step left the state machine. With the model
+  // configured, the screen lands on ready directly — no skip detour — and
+  // folder mounting lives in the topbar FolderSelector / sidebar button.
+  it('lands on ready directly when the model is configured, with no folder step', () => {
     render(<WelcomeScreen onStartConversation={vi.fn()} />)
 
-    expect(screen.getByRole('button', { name: 'Choose a folder' })).toBeInTheDocument()
-    expect(screen.getByText('Choose a folder and AI can read and edit its files.')).toBeInTheDocument()
-  })
-
-  it('places the folder action before the privacy note', () => {
-    render(<WelcomeScreen onStartConversation={vi.fn()} />)
-
-    const folderAction = screen.getByRole('button', { name: 'Choose a folder' })
-    const privacyNote = screen.getByText('Your data stays in this browser.')
-
-    expect(folderAction.compareDocumentPosition(privacyNote) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
-
-  it('persists the skip and does not show the mount-folder step again in a new conversation', () => {
-    render(<WelcomeScreen onStartConversation={vi.fn()} />)
-
-    // First conversation: user skips the folder-mount step.
-    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }))
-    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
-
-    // Remount = switching to a new conversation: the mount-folder step
-    // must stay gone even though no folder was ever mounted.
-    cleanup()
-    render(<WelcomeScreen onStartConversation={vi.fn()} />)
     expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Choose a folder' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Choose a folder and AI can read and edit its files.')).not.toBeInTheDocument()
+  })
+
+  it('still lands on ready when no folder is mounted and the skip flag was never set', () => {
+    localStorage.removeItem('creatorweave:onboarding:folder-mount-skipped')
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Skip for now' })).not.toBeInTheDocument()
   })
 
   it('captures a screenshot and stages it for the first conversation message', async () => {
@@ -410,41 +394,17 @@ describe('WelcomeScreen', () => {
     expect(screen.queryByRole('button', { name: 'Screenshot unavailable' })).not.toBeInTheDocument()
   })
 
-  it('offers a local connection when the native-host bridge is available', async () => {
-    localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
-    ;(window as unknown as { __agentWeb: { nativeHostCall: () => Promise<unknown> } }).__agentWeb = {
-      nativeHostCall: async () => ({ ok: true }),
-    }
-
-    render(<WelcomeScreen onStartConversation={vi.fn()} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Connect locally' }))
-    await waitFor(() => expect(addNativeHostRootMock).toHaveBeenCalledTimes(1))
-  })
-
-  // Regression for the cold-start flash where users who already had a folder
-  // mounted briefly saw the "select a folder" step on entry. We now wait
-  // for `rootsHydrated` before rendering any step.
-  it('does not flash the mount-folder step while roots are still hydrating', () => {
+  // Regression for the cold-start flash: we still wait for `rootsHydrated`
+  // before rendering any step (the loading gate itself is orthogonal to the
+  // removed mount-folder card — the sidebar tree reads the same store).
+  it('does not render any step while roots are still hydrating', () => {
     folderAccessState.rootsHydrated = false
     folderAccessState.roots = []
 
     render(<WelcomeScreen onStartConversation={vi.fn()} />)
 
-    // While hydration is in flight we render a loading placeholder, NOT the
-    // mount-folder step — the user might already have a folder mounted
-    // (just not yet read from IndexedDB/SQLite).
-    expect(screen.queryByRole('button', { name: 'Choose a folder' })).not.toBeInTheDocument()
     expect(screen.getByRole('status')).toBeInTheDocument()
-  })
-
-  it('renders the mount-folder step once hydration completes and no roots exist', () => {
-    folderAccessState.rootsHydrated = true
-    folderAccessState.roots = []
-
-    render(<WelcomeScreen onStartConversation={vi.fn()} />)
-
-    expect(screen.getByRole('button', { name: 'Choose a folder' })).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-rich-input')).not.toBeInTheDocument()
   })
 
   // ── Draft persistence & persistent-input regressions ──
@@ -466,7 +426,7 @@ describe('WelcomeScreen', () => {
     const first = render(<WelcomeScreen onStartConversation={vi.fn()} />)
     expect(screen.getByText('welcome.apiKeyLabel')).toBeInTheDocument()
 
-    // Skip → flag written + card dismissed (folder roots empty → mount-folder)
+    // Skip → flag written + card dismissed (mount-folder is gone, #82 → ready)
     fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }))
     expect(localStorage.getItem('creatorweave:onboarding:ai-setup-skipped')).toBe('true')
     expect(screen.queryByText('welcome.apiKeyLabel')).not.toBeInTheDocument()
@@ -670,5 +630,37 @@ describe('WelcomeScreen', () => {
     expect(screen.getByTestId('toolbar-agent-mode')).toBeInTheDocument()
     expect(screen.getByTestId('toolbar-run-end-policy')).toBeInTheDocument()
     expect(screen.getByTestId('inline-thinking-controls')).toBeInTheDocument()
+  })
+
+  // ── #82: no usable model → input disabled, placeholder points at the chip ──
+  it('disables the input and points at the model chip when no model is selected', () => {
+    // Key configured but no provider/model chosen (skip flag set → ready step)
+    localStorage.setItem('creatorweave:onboarding:ai-setup-skipped', 'true')
+    settingsState.hasApiKey = true
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+
+    expect(screen.queryByText('welcome.apiKeyLabel')).not.toBeInTheDocument()
+    const input = screen.getByTestId('agent-rich-input')
+    expect(input).toBeInTheDocument()
+    // The mock input renders the send button; disabled input is asserted via
+    // the placeholder shown by the parent (prop plumbed through the mock).
+    const send = screen.getByTestId('mock-send')
+    expect(send).toBeDisabled()
+  })
+
+  it('blocks sending when the model becomes unconfigured mid-session', () => {
+    const onStart = vi.fn()
+    const { rerender } = render(<WelcomeScreen onStartConversation={onStart} />)
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    rerender(<WelcomeScreen onStartConversation={onStart} />)
+
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    fireEvent.click(screen.getByTestId('mock-send'))
+    expect(onStart).not.toHaveBeenCalled()
   })
 })
