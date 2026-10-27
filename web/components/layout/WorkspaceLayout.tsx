@@ -56,6 +56,7 @@ import { ExportPanel, useExport } from '@/components/export'
 import { initializeTheme, useThemeStore } from '@/store/theme.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionBanner, ExtensionOutdatedBanner } from '@/components/extension'
+import { FolderPermissionBanner } from '@/components/layout/FolderPermissionBanner'
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { MCPSettingsDialog } from '@/components/mcp'
 import { SettingsDialog, type SettingsTab } from '@/components/settings/SettingsDialog'
@@ -864,6 +865,11 @@ export function WorkspaceLayout({
 
       {/* Extension outdated banner — shown when installed version is behind latest */}
       <ExtensionOutdatedBanner />
+
+      {/* Folder re-authorization banner — a browser-picker root's permission
+          can lapse across browser restarts; surface it with a one-click
+          restore instead of leaving only an amber dropdown row (issue #83). */}
+      <FolderPermissionBanner />
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         {/* Mobile sidebar overlay */}
