@@ -81,10 +81,21 @@ export function ConversationView({
   const richInputRef = useRef<AgentRichInputHandle>(null)
   const modelName = useSettingsStore((s) => s.modelName)
   const providerType = useSettingsStore((s) => s.providerType)
+  const modelCredentialStatus = useSettingsStore((s) => s.modelCredentialStatus)
 
   const logic = useConversationLogic()
   // Staged attachments make an otherwise-empty input sendable (plan A)
   const pendingAssetCount = useAssetStore((s) => s.pendingAssets.length)
+  // Usable model (#82): provider + model selected. An expired gateway
+  // credential KEEPS the input editable — the user may need to copy the
+  // error message or re-login — only the send path blocks (toast).
+  // A missing API key keeps the composer editable too (#84 review round 2):
+  // the user may need to type/copy while recovering credentials, and the
+  // send path still blocks. Only a missing provider/model disables the
+  // editor. No hydration guard needed any more: `hasSelectableModel` no
+  // longer reads `hasApiKey`, whose pre-hydration default caused the flash.
+  const hasUsableModel = !!providerType && !!modelName
+  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired'
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,
@@ -418,12 +429,14 @@ export function ConversationView({
                   suggestedFollowUp ||
                   (isProcessing
                     ? t('conversation.input.placeholderQueuing')
-                    : hasApiKey
+                    : hasUsableModel
                       ? t('conversation.input.placeholder')
-                      : t('conversation.input.placeholderNoKey'))
+                      : hasApiKey
+                        ? t('conversation.input.placeholderNoModel')
+                        : t('conversation.input.placeholderNoKey'))
                 }
                 ariaLabel={t('conversation.input.ariaLabel')}
-                disabled={!hasApiKey || disabled}
+                disabled={!hasSelectableModel || disabled}
                 resetToken={inputResetToken}
                 initialText={draftTextToRestore ?? undefined}
                 onDraftRestored={onDraftRestored}
@@ -444,8 +457,11 @@ export function ConversationView({
                   isProcessing,
                   // Plan A: staged attachments alone are a sendable payload
                   // (non-vision models fall back to OCR), so empty text must
-                  // not disable the send button.
-                  isSendDisabled: (!hasInput && !suggestedFollowUp && pendingAssetCount === 0) || !hasApiKey || disabled,
+                  // not disable the send button. With no usable model the
+                  // send stays disabled (#82) — the expired-credential case
+                  // keeps the input editable but still blocks sending (the
+                  // send path toasts the re-auth prompt).
+                  isSendDisabled: (!hasInput && !suggestedFollowUp && pendingAssetCount === 0) || !hasUsableModel || disabled,
                   onSend: handleSendAndFocus,
                   onCancel: handleCancel,
                   sendTitle: t('conversation.buttons.send'),

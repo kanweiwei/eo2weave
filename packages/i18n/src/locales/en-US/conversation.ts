@@ -51,6 +51,7 @@ export const conversation = {
     input: {
       placeholder: "Type a message... (Shift+Enter for new line)",
       placeholderNoKey: "Please configure API Key in settings first",
+            placeholderNoModel: "Pick a usable model in the model selector below first",
       placeholderQueuing: "Queue a message... (Shift+Enter for new line)",
       ariaLabel: "Type a message",
       hints: {

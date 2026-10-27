@@ -211,4 +211,45 @@ describe('useSettingsStore', () => {
       expect(useSettingsStore.getState().removePinnedModels(P, ['ghost'])).toEqual([])
     })
   })
+
+  // (#84 review round 2) Restoring a workspace whose override points at a
+  // DIFFERENT provider must clear a lingering expired/unauthorized
+  // credential flag — the restored model hits a different credential, and
+  // keeping the flag would leave a valid selection marked unusable.
+  describe('syncModelForWorkspace credential reset', () => {
+    it('clears an expired flag when the override switches providers', () => {
+      useSettingsStore.setState({
+        providerType: 'openai',
+        modelName: 'gpt-6',
+        modelCredentialStatus: 'expired',
+        modelOverridesByWorkspace: {
+          'ws-1': { providerType: 'glm-coding', modelName: 'glm-4.7-flash' },
+        },
+      })
+
+      useSettingsStore.getState().syncModelForWorkspace('ws-1')
+
+      const s = useSettingsStore.getState()
+      expect(s.providerType).toBe('glm-coding')
+      expect(s.modelName).toBe('glm-4.7-flash')
+      expect(s.modelCredentialStatus).toBe('unknown')
+    })
+
+    it('keeps the expired flag when the override rides the same provider', () => {
+      useSettingsStore.setState({
+        providerType: 'llm-gateway',
+        modelName: 'model-a',
+        modelCredentialStatus: 'expired',
+        modelOverridesByWorkspace: {
+          'ws-1': { providerType: 'llm-gateway', modelName: 'model-b' },
+        },
+      })
+
+      useSettingsStore.getState().syncModelForWorkspace('ws-1')
+
+      const s = useSettingsStore.getState()
+      expect(s.modelName).toBe('model-b')
+      expect(s.modelCredentialStatus).toBe('expired')
+    })
+  })
 })

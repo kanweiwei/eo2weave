@@ -41,7 +41,6 @@ export function ModelQuickSwitch({
   const t = useT()
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
-  const hasApiKey = useSettingsStore((s) => s.hasApiKey)
   const modelCredentialStatus = useSettingsStore((s) => s.modelCredentialStatus)
   const getAvailableProviders = useSettingsStore((s) => s.getAvailableProviders)
   const switchProviderAndModel = useSettingsStore((s) => s.switchProviderAndModel)
@@ -196,13 +195,32 @@ export function ModelQuickSwitch({
     if (modelCredentialStatus === 'expired' && modelName) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
     }
-    if (!hasApiKey || !providerType || !modelName) {
+    if (!providerType || !modelName) {
       return t('topbar.modelSwitcher.noModels')
     }
+    // A selected model with an unresolved/missing key check is a CREDENTIAL
+    // state, not "no models" (#84 review round 2) — keep showing the model
+    // name so the chip's amber warning reads as re-credentials, not re-pick.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
     return model?.name || modelName
-  }, [hasApiKey, loading, modelCredentialStatus, providerType, providers, modelName, t])
+  }, [loading, modelCredentialStatus, providerType, providers, modelName, t])
+
+  // No usable model (#82): nothing selectable — the composer's input is
+  // disabled and this chip carries the amber warning state pointing at
+  // model selection. Expired credentials keep the selection (label above
+  // already appends the re-login hint) and get the warning too — but the
+  // accessible label must NOT claim "no model selected" in that state
+  // (#84 review): it would misdirect screen-reader users away from the
+  // visible re-login action.
+  // "No model" means NO provider/model SELECTED (#84 review round 2) — a
+  // missing key is a credential problem, not a selection problem, and an
+  // unresolved key check must not count as a confirmed missing key. The
+  // credential branch below wins whenever a provider+model are chosen, so
+  // the label points at recovering credentials, not re-picking a model.
+  const noModelSelected = !loading && (!providerType || !modelName)
+  const credentialExpired = !loading && modelCredentialStatus === 'expired'
+  const noUsableModel = noModelSelected || credentialExpired
 
   const thinkingLevels: { value: ExtendedThinkingLevel; label: string }[] = [
     { value: 'minimal', label: t('conversation.thinkingLevels.minimal') },
@@ -277,10 +295,22 @@ export function ModelQuickSwitch({
       <PopoverTrigger asChild>
         <BrandButton
           variant="ghost"
-          className="h-7 w-fit max-w-full min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs"
+          className={`h-7 w-fit max-w-full min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs ${
+            noUsableModel ? 'text-amber-600 dark:text-amber-400' : ''
+          }`}
+          aria-label={
+            noModelSelected
+              ? t('topbar.modelSwitcher.noUsableModelWarning')
+              : credentialExpired
+                ? t('topbar.modelSwitcher.credentialExpiredWarning')
+                : undefined
+          }
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 truncate text-secondary" title={currentModelLabel}>
+            <span
+              className={`min-w-0 truncate ${noUsableModel ? 'text-amber-600 dark:text-amber-400' : 'text-secondary'}`}
+              title={currentModelLabel}
+            >
               {currentModelLabel}
             </span>
             {enableThinking && compact && (
@@ -302,6 +332,12 @@ export function ModelQuickSwitch({
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
               </span>
+            ) : null}
+            {noUsableModel ? (
+              <AlertTriangle
+                className="h-3 w-3 shrink-0 text-amber-500"
+                aria-label={t('topbar.modelSwitcher.noUsableModelWarning')}
+              />
             ) : null}
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-tertiary" />

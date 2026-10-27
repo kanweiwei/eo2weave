@@ -35,12 +35,9 @@ export const welcome = {
     welcomeSubtitle: "로컬 AI 워크스페이스, 파일과 코드는 브라우저 안에",
     continueButton: "계속",
     skipButton: "나중에 하기",
-    mountFolderTitle: "로컬 폴더 마운트",
-    mountFolderDesc: "AI가 파일을 직접 읽고 쓸 수 있습니다. 파일은 브라우저를 벗어나지 않습니다.",
-    mountFolderButton: "폴더 선택",
-    mountFolderBack: "뒤로",
     readyHint: "메시지를 입력하거나 파일을 드롭하세요",
-    sendBlockedNotReady: "먼저 위의 설정을 완료하세요——입력한 내용은 저장되어 있으며, 설정이 끝나면 바로 보낼 수 있습니다.",
+    // Remaining gate only (mount-folder step removed, #82): api-key / select-model
+    sendBlockedNotReady: "먼저 모델 설정을 완료하세요——입력한 내용은 저장되어 있으며, 설정이 끝나면 바로 보낼 수 있습니다.",
     gateway: {
         title: "견과클라우드 AI 로그인",
         close: "닫기",

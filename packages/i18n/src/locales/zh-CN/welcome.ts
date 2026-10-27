@@ -35,12 +35,9 @@ export const welcome = {
     welcomeSubtitle: "本地 AI 创作工坊，文件和代码都在浏览器中",
     continueButton: "继续",
     skipButton: "暂时跳过",
-    mountFolderTitle: "挂载本地文件夹",
-    mountFolderDesc: "AI 可以直接读写你的文件。文件不离开浏览器。",
-    mountFolderButton: "选择文件夹",
-    mountFolderBack: "上一步",
     readyHint: "可以直接对话，或拖入文件让我处理",
-    sendBlockedNotReady: "请先完成上方设置——输入的内容已保存，设置完成后即可发送。",
+    // Remaining gate only (mount-folder step removed, #82): api-key / select-model
+    sendBlockedNotReady: "请先完成模型配置——输入的内容已保存，配置完成后即可发送。",
     gateway: {
         title: "登录坚果云 AI",
         close: "关闭",

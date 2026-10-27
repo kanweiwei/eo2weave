@@ -22,7 +22,7 @@ import { useRouter } from 'next/navigation'
 import { projectWorkspacePath } from '@/lib/route-paths'
 import { createPortal } from 'react-dom'
 import { BrushCleaningIcon } from '@/components/icons/BrushCleaningIcon'
-import { Plus, Trash2, PanelLeftClose, PanelLeft, FolderTree, Clock, History, Pencil, Archive, ArchiveRestore, Download, Pin, PinOff, ChevronRight, ChevronDown, Sparkles, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, PanelLeftClose, PanelLeft, FolderTree, Clock, History, Pencil, Archive, ArchiveRestore, Download, Pin, PinOff, ChevronRight, ChevronDown, FolderOpen, Loader2, Sparkles, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BrandButton,
@@ -50,6 +50,8 @@ import { useWorkspaceStore } from '@/store/workspace.store'
 import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
+import { isSidePanelMode } from '@/agent/workspace-assistant-context'
+import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { FileTreePanel } from '@/components/file-viewer/FileTreePanel'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
 import { SnapshotList } from '@/components/sync/SnapshotList'
@@ -516,6 +518,7 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   onRevealComplete,
   currentPendingCount,
   refreshPending,
+  activeProjectId,
   t,
 }: {
   resourceTab: ResourceTab
@@ -530,6 +533,7 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   onRevealComplete?: (() => void) | undefined
   currentPendingCount: number
   refreshPending: () => Promise<void>
+  activeProjectId: string | null
   t: (key: string, params?: Record<string, string | number>) => string
 }) {
   // Root collapse state for multi-root file tree
@@ -545,6 +549,35 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   // deletion records produce no nodes, so they must not count as content.
   const opfsDisplayableCount =
     opfsPendingChanges.filter((c) => c.type !== 'delete').length + opfsCachedCount
+
+  // "Choose local folder" empty-state button (#82): same entry as the topbar
+  // FolderSelector's addFolder. In a side panel the in-panel
+  // showDirectoryPicker is unreliable (crbug 40240444 family), so this
+  // handler mirrors FolderSelector and hands off to the full-tab
+  // /folder-pick page instead of calling addRoot() directly.
+  const canPickDirectory = getRuntimeCapability().canPickDirectory
+  const isSidePanel = isSidePanelMode()
+  const addRoot = useFolderAccessStore((s) => s.addRoot)
+  const [isAddingFolder, setIsAddingFolder] = useState(false)
+  const handleChooseLocalFolder = useCallback(async () => {
+    if (!canPickDirectory || isAddingFolder) return
+    setIsAddingFolder(true)
+    try {
+      if (isSidePanel) {
+        const url = new URL(window.location.href)
+        url.hash = ''
+        url.search = activeProjectId ? `?projectId=${encodeURIComponent(activeProjectId)}` : ''
+        url.pathname = '/folder-pick'
+        window.open(url.toString(), '_blank', 'noopener')
+        return
+      }
+      await addRoot()
+    } catch (error) {
+      console.error('[Sidebar] Failed to open folder:', error)
+    } finally {
+      setIsAddingFolder(false)
+    }
+  }, [addRoot, canPickDirectory, isAddingFolder, isSidePanel, activeProjectId])
 
   const handleToggleCollapse = useCallback((rootName: string) => {
     setCollapsedRoots((prev) => {
@@ -636,6 +669,25 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
                   <li>{t('sidebar.localFilesEmpty.authorizedHint')}</li>
                   <li>{t('sidebar.localFilesEmpty.unlinkedHint')}</li>
                 </ul>
+                {/* Real mount entry (#82): same directory picker as the topbar
+                    FolderSelector's addFolder. Hidden when the runtime has no
+                    directory picker (side-panel handoff/mobile) — the text
+                    hints above stay as the guidance there. */}
+                {canPickDirectory && (
+                  <div className="mt-5 flex justify-center">
+                    <BrandButton
+                      variant="outline"
+                      className="h-9 gap-2 px-4 text-sm"
+                      onClick={() => void handleChooseLocalFolder()}
+                      disabled={isAddingFolder}
+                    >
+                      {isAddingFolder
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <FolderOpen className="h-4 w-4" />}
+                      {t('projectRoots.chooseLocalFolder')}
+                    </BrandButton>
+                  </div>
+                )}
               </div>
             </div>
           ) : (
@@ -1376,6 +1428,7 @@ export const Sidebar = memo(function Sidebar({
               onRevealComplete={onRevealComplete}
               currentPendingCount={currentPendingCount}
               refreshPending={refreshPending}
+              activeProjectId={activeProjectId}
               t={t}
             />
           </div>

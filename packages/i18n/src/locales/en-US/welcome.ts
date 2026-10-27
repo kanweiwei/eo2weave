@@ -35,12 +35,9 @@ export const welcome = {
     welcomeSubtitle: "Your local AI workspace for files, code, and creation",
     continueButton: "Continue",
     skipButton: "Skip for now",
-    mountFolderTitle: "Mount a local folder",
-    mountFolderDesc: "AI can read and write your files. Files never leave your browser.",
-    mountFolderButton: "Select folder",
-    mountFolderBack: "Back",
     readyHint: "Type a message, or drop in a file and I'll take it from there",
-    sendBlockedNotReady: "Finish the setup above first — your text is saved and ready once you're set up.",
+    // Remaining gate only (mount-folder step removed, #82): api-key / select-model
+    sendBlockedNotReady: "Finish the model setup first — your text is saved and ready once you're set up.",
     gateway: {
         title: "Login to Jianguoyun AI",
         close: "Close",

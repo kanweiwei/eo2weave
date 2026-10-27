@@ -653,6 +653,14 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       checkHasApiKey: async (options?: { flush?: boolean }) => {
+        // No epoch guard here anymore. The old up-front `++apiKeyCheckEpoch`
+        // let a deduplicated same-provider caller (one that reused the
+        // in-flight promise cache) bump the epoch, stale-out the in-flight
+        // lookup's write guard, and leave `hasApiKey` unwritten after the
+        // promise resolved (#84 review round 3). Every lookup now writes
+        // its result unconditionally; a mid-flight provider switch stays
+        // correct because the switch path re-runs checkHasApiKey() and its
+        // fresh write lands after the stale one.
         const state = get()
         const effective = state.getEffectiveProviderConfig()
         if (!effective) {
@@ -695,8 +703,14 @@ export const useSettingsStore = create<SettingsState>()(
         // Return cached value if available and not stale.
         // `hasApiKeyLoaded` was set during the initial population that
         // filled the cache, so we don't need to set it again here.
+        // STILL sync the reactive state (#84 review round 3): the module-level
+        // cache outlives store resets (tests, hot reloads), so a cache-hit
+        // caller that skipped the write would leave `hasApiKey` false while
+        // lookups answer true — onboarding and sends read the stale state.
         if (apiKeyCache.has(providerKey)) {
-          return apiKeyCache.get(providerKey)!
+          const cached = apiKeyCache.get(providerKey)!
+          set({ hasApiKey: cached, hasApiKeyLoaded: true })
+          return cached
         }
 
         // Use promise cache to avoid concurrent queries
@@ -713,13 +727,17 @@ export const useSettingsStore = create<SettingsState>()(
 
             // Update the reactive state. Mark loaded in the same set() so
             // subscribers see a consistent (hasApiKey, hasApiKeyLoaded) pair.
+            // Written UNCONDITIONALLY (#84 review round 3): see the note at
+            // the top of checkHasApiKey for why the old epoch guard here
+            // dropped deduplicated lookups' write.
             set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
 
             return hasKey
           } catch (error) {
             console.error('[SettingsStore] Failed to check API key:', error)
             // Even on error, mark as loaded — otherwise the UI would stay
-            // in the "loading" state forever.
+            // in the "loading" state forever. Unconditional write, same
+            // rationale as the success path above (#84 review round 3).
             set({ hasApiKey: false, hasApiKeyLoaded: true })
 
             // Schedule a delayed retry — the SQLite worker init race
@@ -775,6 +793,20 @@ export const useSettingsStore = create<SettingsState>()(
             providerType: override.providerType,
             modelName: override.modelName,
           }
+          // The expired/unauthorized credential flag describes the PREVIOUS
+          // provider's gateway auth (#84 review): restoring a workspace
+          // pinned to a DIFFERENT provider must clear it, or the restored
+          // (valid) selection stays marked unusable and the switcher keeps
+          // showing a re-login warning. Restoring within the same provider
+          // keeps the flag — that model hits the same credential.
+          const credentialStillApplies = override.providerType === state.providerType
+          if (
+            !credentialStillApplies &&
+            (state.modelCredentialStatus === 'expired' ||
+              state.modelCredentialStatus === 'unauthorized')
+          ) {
+            updates.modelCredentialStatus = 'unknown' as const
+          }
           // If it's a custom provider, also set baseUrl
           if (isCustomProviderType(override.providerType)) {
             const cp = state.customProviders.find((p) => p.id === override.providerType)
@@ -788,9 +820,20 @@ export const useSettingsStore = create<SettingsState>()(
 
       switchProviderAndModel: (newProviderType, newModelName) => {
         const state = get()
+        // The expired-credential flag describes the PREVIOUS provider's
+        // gateway auth (#84 review): switching to a different provider must
+        // clear it, or noUsableModel marks the new valid selection unusable.
+        // Switching WITHIN llm-gateway keeps it — the new model hits the
+        // same expired credential.
+        const credentialStillApplies = newProviderType === state.providerType
         const updates: Partial<SettingsState> = {
           providerType: newProviderType,
           modelName: newModelName,
+          ...(credentialStillApplies ||
+            (state.modelCredentialStatus !== 'expired' &&
+              state.modelCredentialStatus !== 'unauthorized')
+            ? {}
+            : { modelCredentialStatus: 'unknown' as const }),
           lastUsedModelByProvider: {
             ...state.lastUsedModelByProvider,
             [newProviderType]: newModelName,

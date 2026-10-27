@@ -51,6 +51,7 @@ export const conversation = {
     input: {
       placeholder: "输入消息... (Shift+Enter 换行)",
       placeholderNoKey: "请先在设置中配置 API Key",
+            placeholderNoModel: "请先在下方模型选择器中选择可用模型",
       placeholderQueuing: "输入消息排队发送... (Shift+Enter 换行)",
       ariaLabel: "输入消息",
       hints: {

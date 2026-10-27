@@ -1,16 +1,18 @@
 /**
  * WelcomeScreen - setup onboarding with local folder mount
  *
- * State machine: welcome → api-key → select-model → mount-folder → ready
+ * State machine: welcome → api-key → select-model → ready
  * - welcome: shown only to first-time users (no project created + not seen)
- * - api-key: shown when no API key configured
+ * - api-key: *** when no API key configured
  * - select-model: shown when a provider key exists but no default
  *   provider/model is selected yet (onboarding completion requires BOTH)
- * - mount-folder: shown when model ok but no folder mounted
- *   (SKIPPED entirely in side-panel mode — sidebar users almost never
- *    need a mounted local folder; a user who dismissed it via "Skip for
- *    now" also never sees it again — the choice persists in localStorage)
  * - ready: shows the one-line hint above the rich input
+ *
+ * The former mount-folder step was REMOVED from the machine (#82): mounting
+ * a local folder is a recommendation, not a requirement — the topbar
+ * FolderSelector and the sidebar's "Choose local folder" empty-state button
+ * stay as always-available non-blocking entries. Once the model is
+ * configured, sending works immediately.
  *
  * Steps are conditional, so use setup labels instead of a linear step count.
  *
@@ -21,10 +23,12 @@
  * editor on each flip — silently discarding the user's unsent text.
  * Drafts additionally persist per project via useInputDraftStore, so
  * even a full WelcomeScreen remount restores the input.
+ * Without a usable model the input stays visible but DISABLED (placeholder
+ * points at the model chip) — the chip itself is the configuration entry.
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import { FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ArrowRight, Check, Cable, CircleHelp, Puzzle } from 'lucide-react'
+import { Sparkles, KeyRound, ChevronRight, Shield, Loader2, ArrowRight, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
@@ -49,27 +53,15 @@ import { useGatewayLogin, isLLMGatewayConfigured } from '@/hooks/useGatewayLogin
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import { useExtensionStore } from '@/store/extension.store'
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
-import { useNativeHostPing } from '@/hooks/useNativeHostPing'
 import { DeviceCodeFlowDialog } from './agent/DeviceCodeFlowDialog'
 import { PageScreenshotCropDialog } from './agent/PageScreenshotCropDialog'
 import type { SettingsTab } from '@/components/settings/SettingsDialog'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
-import { isSidePanelMode } from '@/agent/workspace-assistant-context'
-import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 import { VisionCapabilityIndicator } from '@/components/agent/VisionCapabilityIndicator'
 
-type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'mount-folder' | 'ready'
-
-// Side-panel (browser sidebar) mode skips the folder-mount step: that
-// workflow is for the full workbench, not the per-tab assistant panel.
-// Browsers without the directory picker (e.g. mobile) skip it too — the
-// step can never succeed there, so showing it would dead-end onboarding.
-function needsFolderMount(folderCount: number): boolean {
-  if (!getRuntimeCapability().canPickDirectory) return false
-  return !isSidePanelMode() && folderCount === 0
-}
+type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'ready'
 
 /** "Connected" for onboarding purposes = provider key saved AND a default
  *  provider/model selected. Keys alone don't make the app usable. */
@@ -86,13 +78,10 @@ function providerStep(readiness: ProviderReadiness): OnboardingStep {
 
 function getInitialStep(
   readiness: ProviderReadiness,
-  folderCount: number,
   hasCreatedProject: boolean
 ): OnboardingStep {
   const welcomeSeen = typeof window !== 'undefined'
     && localStorage.getItem('creatorweave:onboarding:welcome-seen') === 'true'
-  const folderMountSkipped = typeof window !== 'undefined'
-    && localStorage.getItem('creatorweave:onboarding:folder-mount-skipped') === 'true'
   // "Skip for now" on the AI-setup card persists too — otherwise a refresh
   // recomputes the provider gate and nags the skipped user all over again.
   // The flag is cleared once onboarding completes (readiness turns ready).
@@ -102,7 +91,6 @@ function getInitialStep(
   if (!hasCreatedProject && !welcomeSeen) return 'welcome'
   const provider = providerStep(readiness)
   if (provider !== 'ready' && !aiSetupSkipped) return provider
-  if (needsFolderMount(folderCount) && !folderMountSkipped) return 'mount-folder'
   return 'ready'
 }
 
@@ -161,10 +149,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
   const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
   const setThinkingLevel = useSettingsStore((s) => s.setThinkingLevel)
-  const folderRoots = useFolderAccessStore((s) => s.roots)
-  const addRoot = useFolderAccessStore((s) => s.addRoot)
-  const addNativeHostRoot = useFolderAccessStore((s) => s.addNativeHostRoot)
-  const [isAddingNativeHost, setIsAddingNativeHost] = useState(false)
   const t = useT()
 
   // ── Draft persistence (survives input remounts) ──
@@ -190,10 +174,8 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     })
   }, [draftKey])
 
-  // "bridge function exists" — hides the entry when the Rust app is not
-  // installed (click would fail with a raw Chrome "host not found" error).
-  // Re-probes on window focus.
-  const nativeHostAvailable = useNativeHostPing() === 'available'
+  // (The mount-folder card's native-host local-connection button went away
+  // with the step in #82 — the topbar FolderSelector owns that entry now.)
   // International (global) build onboarding: recommend the browser extension
   // (ChatGPT login → GPT models, e.g. GPT-6 Luna) instead of the Nutstore AI
   // gateway, which is CN-only. Clicking the card opens the existing install
@@ -239,27 +221,35 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
   // Track whether folder-access hydration has completed for the current
   // project. Until then we don't know whether `folderRoots` is genuinely
-  // empty (user has no folder mounted) or just hasn't been populated from
-  // disk yet — rendering the mount-folder step in the latter case would
-  // flash a misleading prompt to users who already have a folder mounted.
+  // empty or just hasn't been populated from disk yet — the sidebar tree
+  // and FolderSelector read the same store, so we hold the loading gate
+  // until hydration settles (kept for the ready-hint gate below).
   const rootsHydrated = useFolderAccessStore((s) => s.rootsHydrated)
+
+  // "Usable model" for the input gate (#82): a provider is configured AND a
+  // model selected. No API key at all: the composer stays EDITABLE when a
+  // model is selected (#84 review round 2) — the user may need to type/copy
+  // while recovering credentials; the send path still blocks (toast). The
+  // input only renders after `isLoading` (which includes `hasApiKeyLoaded`),
+  // so the hydration flash guard is already satisfied by the render gate.
+  //
+  // An EXPIRED gateway credential is a send-path concern, not a selection
+  // or editability concern (Sourcery round 4): with a selection present
+  // `hasUsableModel` is already true, so no expired-specific term is needed
+  // here — the composer stays ready/editable and the re-auth toast comes
+  // from sendMessage. (The old `|| (expired && selection)` term was a
+  // definitional no-op: `expired && selection` is a subset of `selection`.)
+  const hasUsableModel = !!providerType && !!modelName
+  const hasSelectableModel = hasUsableModel
 
   const readiness: ProviderReadiness = {
     hasApiKey,
-    // An expired gateway credential preserves the model selection; it should
-    // not send the user back through model selection.
-    hasUsableModel: (!!providerType && !!modelName) || modelCredentialStatus === 'expired',
+    hasUsableModel,
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>
-    getInitialStep(readiness, folderRoots.length, hasCreatedProject)
+    getInitialStep(readiness, hasCreatedProject)
   )
-  // Mirror of the "folder-mount-skipped" localStorage flag, read once per
-  // mount alongside the initial step. WelcomeScreen remounts for each new
-  // conversation, so per-mount is sufficient to honor the skip. Kept in a
-  // setter-pair so skipping this session also skips the rest of the session.
-  const [folderMountSkipped, setFolderMountSkipped] = useState(() => typeof window !== 'undefined'
-    && localStorage.getItem('creatorweave:onboarding:folder-mount-skipped') === 'true')
   // Same pattern for the AI-setup card's "Skip for now": without the mirror,
   // the auto-advance effect below would yank the user from wherever they went
   // straight back to the api-key/select-model card within this session.
@@ -282,23 +272,23 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     useExtensionStore.getState().openInstallGuide()
   }, [])
 
-  // Auto-advance step when API key / model-selection / folder state changes.
+  // Auto-advance step when API key / model-selection state changes.
   // The provider gate is two-fold: no key → api-key step; key saved but no
   // default provider/model chosen → select-model step (guides the user to
   // pick one instead of silently failing every send later). This does NOT
   // auto-select a model — the user stays in control of their default.
   // A persisted AI-setup skip downgrades the provider gate: the user said
-  // "not now", so they land on mount-folder/ready instead of the setup card.
+  // "not now", so they land on ready instead of the setup card (folder
+  // mounting is a recommendation, not a step — #82).
   useEffect(() => {
     if (!hasApiKeyLoaded) return
     setStep((prev) => {
       if (prev === 'welcome') return prev
       const provider = providerStep(readiness)
       if (provider !== 'ready' && !aiSetupSkipped) return provider
-      if (folderRoots.length > 0 || folderMountSkipped) return 'ready'
-      return 'mount-folder'
+      return 'ready'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped, aiSetupSkipped, modelCredentialStatus])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, aiSetupSkipped, modelCredentialStatus])
 
   // Onboarding completed (key + default model configured): the AI-setup skip
   // has served its purpose. Clear it so a LATER deliberate unconfigure (user
@@ -315,32 +305,17 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
     const provider = providerStep(readiness)
     if (provider !== 'ready' && !aiSetupSkipped) setStep(provider)
-    else if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
-    else setStep('mount-folder')
-  }, [readiness.hasApiKey, readiness.hasUsableModel, folderRoots.length, folderMountSkipped, aiSetupSkipped])
+    else setStep('ready')
+  }, [readiness.hasApiKey, readiness.hasUsableModel, aiSetupSkipped])
 
-  // "Skip for now" on the AI-setup cards (api-key / select-model) persists,
-  // mirroring the mount-folder skip: a refresh must not resurrect the card
-  // the user just dismissed. The flag self-clears once onboarding completes
-  // (see the readiness effect above), so a later deliberate unconfigure
-  // re-prompts. Sending is still blocked until ready (see handleSubmit).
+  // "Skip for now" on the AI-setup cards (api-key / select-model) persists:
+  // a refresh must not resurrect the card the user just dismissed. The flag
+  // self-clears once onboarding completes (see the readiness effect above),
+  // so a later deliberate unconfigure re-prompts. Sending stays blocked on
+  // these steps (see handleSubmit).
   const skipAiSetup = useCallback(() => {
     localStorage.setItem('creatorweave:onboarding:ai-setup-skipped', 'true')
     setAiSetupSkipped(true)
-    if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
-    else setStep('mount-folder')
-  }, [folderRoots.length, folderMountSkipped])
-
-  // "Skip" on the mount-folder step persists, so new conversations start at
-  // ready instead of nagging again. setFolderMountSkipped(true) matters on
-  // the very first skip: the state initializer ran before the flag existed,
-  // so without it the auto-advance effect would yank the user from ready
-  // back to mount-folder in this same session. Mounting later (Sidebar/
-  // FolderSelector/exec flow) still works and auto-completes onboarding
-  // once a root exists.
-  const advanceFromMount = useCallback(() => {
-    localStorage.setItem('creatorweave:onboarding:folder-mount-skipped', 'true')
-    setFolderMountSkipped(true)
     setStep('ready')
   }, [])
 
@@ -353,7 +328,8 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     // The persistent input also renders on setup steps, but those have no
     // working model yet — sending would start a conversation that fails on
     // every turn. Point the user at the setup card instead; the draft store
-    // keeps what they typed so nothing is lost.
+    // keeps what they typed so nothing is lost. (Only the provider steps
+    // gate — folder mounting is optional and never blocks, #82.)
     if (step !== 'ready') {
       toast.warning(t('welcome.sendBlockedNotReady'))
       if (step === 'api-key' || step === 'select-model') onOpenSettings?.('llm')
@@ -395,24 +371,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     const draft = useInputDraftStore.getState().peekDraft(draftKey)
     setDraftToRestore(draft?.text ?? null)
   }, [draftKey])
-
-  const handleSelectFolder = useCallback(async () => {
-    try {
-      await addRoot()
-    } catch (error) {
-      console.error('Failed to open folder:', error)
-    }
-  }, [addRoot])
-
-  const handleAddNativeHostRoot = useCallback(async () => {
-    if (!nativeHostAvailable || isAddingNativeHost) return
-    setIsAddingNativeHost(true)
-    try {
-      await addNativeHostRoot()
-    } finally {
-      setIsAddingNativeHost(false)
-    }
-  }, [addNativeHostRoot, isAddingNativeHost, nativeHostAvailable])
 
   const handleInputChange = useCallback(
     ({ text }: AgentRichInputValue) => {
@@ -668,98 +626,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </button>
             </div>
           </div>
-        ) : step === 'mount-folder' ? (
-          /* ── Local folder setup ──
-              Minimal card, same as welcome: bordered card container, no
-              icon decoration; primary action inverted, secondary as text
-              link. */
-          <div className="mb-6 rounded-xl border border-border bg-card px-6 py-5 text-center">
-            <h2 className="mb-1.5 text-lg font-semibold text-foreground">
-              {t('welcome.mountFolderTitle')}
-            </h2>
-            <p className="mx-auto mb-5 max-w-md text-sm text-neutral-500 dark:text-neutral-400">
-              {t('welcome.mountFolderDesc')}
-            </p>
-            <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
-              {nativeHostAvailable && (
-                // Primary path: the native-host connection survives reloads and
-                // re-authorizes silently, unlike per-session directory handles.
-                // Own provider: the screen-level TooltipProvider only wraps the
-                // screenshot button, so this one needs its own.
-                <TooltipProvider delayDuration={200}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={() => void handleAddNativeHostRoot()}
-                        disabled={isAddingNativeHost}
-                        className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary-600 px-5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-wait disabled:opacity-70"
-                      >
-                        {isAddingNativeHost
-                          ? <Loader2 className="h-4 w-4 animate-spin" />
-                          : <Cable className="h-4 w-4" />}
-                        {t('folderSelector.localConnection')}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" sideOffset={6}>
-                      {t('folderSelector.localConnectionDescription')}
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              )}
-              <button
-                type="button"
-                onClick={() => void handleSelectFolder()}
-                data-tour="welcome-open-folder"
-                className={
-                  nativeHostAvailable
-                    ? // Secondary peer while the local connection is available
-                      "inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-border bg-card px-5 text-sm font-medium text-secondary transition-colors hover:bg-muted"
-                    : // Only path when the native host is not installed
-                      "inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary-600 px-5 text-sm font-medium text-white transition-colors hover:bg-primary-700"
-                }
-              >
-                <FolderOpen className="h-4 w-4" />
-                {t('welcome.mountFolderButton')}
-              </button>
-            </div>
-            {/* Already mounted folders */}
-            {folderRoots.length > 0 && (
-              <div className="mx-auto mt-5 max-w-md border-t border-neutral-200/80 pt-3 dark:border-neutral-800/80">
-                {folderRoots.map((root) => (
-                  <div key={root.id} className="flex items-center justify-center gap-2 py-0.5 text-xs text-secondary">
-                    <Check className="h-3 w-3 text-success" />
-                    <span className="truncate">{root.name}</span>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={advanceFromMount}
-                  className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
-                >
-                  {t('welcome.continueButton')}
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-            {/* Skip + Back */}
-            <div className="mt-5 flex justify-center gap-4">
-              <button
-                type="button"
-                onClick={() => setStep('api-key')}
-                className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
-              >
-                {t('welcome.mountFolderBack')}
-              </button>
-              <button
-                type="button"
-                onClick={advanceFromMount}
-                className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
-              >
-                {t('welcome.skipButton')}
-              </button>
-            </div>
-          </div>
         ) : null}
 
         {/* ── Persistent rich input ──
@@ -768,7 +634,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             clearing an API key while replacing it in Settings) unmounted the
             editor and silently discarded unsent text. Drafts additionally
             persist per project via useInputDraftStore as a second safety net
-            for full remounts. */}
+            for full remounts.
+            Without a usable model (no provider/model chosen) the input stays
+            visible but disabled — the ModelQuickSwitch chip next to it is the
+            configuration entry, and its placeholder points there (#82). */}
         {!isLoading && step !== 'welcome' && (
           <>
             <div className="relative" data-tour="welcome-input">
@@ -776,8 +645,13 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   Renders null outside side-panel mode. */}
               <ActiveTabIndicator />
               <AgentRichInput
-                placeholder={t('welcome.placeholder')}
+                placeholder={
+                  hasSelectableModel
+                    ? t('welcome.placeholder')
+                    : t('conversation.input.placeholderNoModel')
+                }
                 ariaLabel={t('conversation.input.ariaLabel')}
+                disabled={!hasSelectableModel}
                 agents={[]}
                 onSearchFiles={handleSearchFiles}
                 activeAgentId={null}
@@ -789,8 +663,11 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 onSubmit={handleSubmit}
                 sendState={{
                   isProcessing: false,
-                  // Staged attachments alone are a sendable payload (plan A)
-                  isSendDisabled: !inputValue.trim() && pendingAssetCount === 0,
+                  // Staged attachments alone are a sendable payload (plan A);
+                  // no selectable model (no key, or no provider/model chosen)
+                  // also disables sending. The expired-credential case keeps
+                  // the input editable; the send path shows the re-auth toast.
+                  isSendDisabled: (!inputValue.trim() && pendingAssetCount === 0) || !hasSelectableModel,
                   onSend: handleSubmit,
                   onCancel: () => {},
                   sendTitle: t('welcome.send'),
