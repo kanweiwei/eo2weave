@@ -225,3 +225,127 @@ describe('WebMCP invocation boundary', () => {
     expect(executeTool).not.toHaveBeenCalled()
   })
 })
+
+
+describe('faithful per-generation boundary mocks (handler-level safety)', () => {
+  // A miniature but faithful re-implementation of each known executeTool
+  // boundary. The invariant under test: the REGISTERED HANDLER (the tool
+  // body) runs at most once, and never with a format its generation does
+  // not accept — regardless of what the wrapper is given.
+
+  type Kind = 'v6-polyfill' | 'v4-polyfill' | 'legacy-native' | 'current-native'
+
+  function makeBoundary(kind: Kind) {
+    const handler = vi.fn(async (parsed: Record<string, unknown>) => ({ ran: true, parsed }))
+    const stringSchema = '{"type":"object"}'
+    const tool: Record<string, unknown> =
+      kind === 'legacy-native'
+        ? { name: 'example', description: 'Example', inputSchema: stringSchema }
+        : { name: 'example', description: 'Example', inputSchema: { type: 'object' } }
+
+    const executeTool = vi.fn(async (_tool: unknown, input: unknown) => {
+      switch (kind) {
+        case 'v6-polyfill':
+          // dist/index.js validates isObject synchronously BEFORE dispatch.
+          if (input === null || typeof input !== 'object') {
+            throw new TypeError('inputObject must be an object')
+          }
+          return handler(input as Record<string, unknown>)
+        case 'v4-polyfill':
+          // JSON.parse gate: non-strings (or bad JSON) fail before dispatch.
+          if (typeof input !== 'string') throw new Error('Failed to parse input arguments')
+          return handler(JSON.parse(input) as Record<string, unknown>)
+        case 'legacy-native':
+          // 5bf782b7: serialized schemas, string-only input, NO marker.
+          if (typeof input !== 'string') throw new TypeError('inputObject must be an object')
+          return handler(JSON.parse(input) as Record<string, unknown>)
+        case 'current-native':
+          if (input === null || typeof input !== 'object') {
+            throw new TypeError('inputObject must be an object')
+          }
+          return handler(input as Record<string, unknown>)
+      }
+    })
+
+    const ModelContext = kind === 'legacy-native' || kind === 'current-native' ? Map : class {}
+    const context = Object.assign(new (ModelContext as any)(), {
+      getTools: vi.fn().mockResolvedValue([tool]),
+      executeTool,
+      ...(kind === 'v4-polyfill' ? { __isWebMCPPolyfill: true } : {}),
+    })
+    vi.stubGlobal('ModelContext', ModelContext)
+    vi.stubGlobal('document', { modelContext: context })
+    return { handler, executeTool, tool }
+  }
+
+  const CASES = [
+    { args: { query: 'q' }, label: 'object args' },
+    { args: 'raw-string', label: 'string args' },
+    { args: 42, label: 'number args' },
+    { args: null, label: 'null args' },
+  ] as const
+
+  it.each(CASES.map((c) => [c.label, c.args] as const))(
+    'v6 polyfill: %s → handler at most once, object format only',
+    async (_label, args) => {
+      const { handler, executeTool } = makeBoundary('v6-polyfill')
+      try {
+        await resolveAgentApi()!.executeToolByName('example', args as Record<string, unknown>)
+      } catch { /* rejection is fine — the invariant is below */ }
+      expect(handler.mock.calls.length).toBeLessThanOrEqual(1)
+      for (const [received] of handler.mock.calls) {
+        expect(received).toEqual(args ?? {}) // null normalizes to {} before the boundary // v6 passes objects through verbatim
+      }
+      if (args !== null && typeof args === 'object') {
+        expect(executeTool).toHaveBeenCalledWith(expect.anything(), args)
+      } else {
+        // malformed payloads never reach the boundary raw
+        for (const call of executeTool.mock.calls) expect(call[1]).not.toBe(args)
+      }
+    },
+  )
+
+  it.each(CASES.map((c) => [c.label, c.args] as const))(
+    'v4 polyfill: %s → handler at most once, parsed-object format only',
+    async (_label, args) => {
+      const { handler, executeTool } = makeBoundary('v4-polyfill')
+      try {
+        await resolveAgentApi()!.executeToolByName('example', args as Record<string, unknown>)
+      } catch { /* rejection is fine */ }
+      expect(handler.mock.calls.length).toBeLessThanOrEqual(1)
+      for (const [received] of handler.mock.calls) {
+        expect(received).toEqual(args ?? {}) // null normalizes to {} before the boundary // v4 JSON.parses before invoking
+      }
+      for (const call of executeTool.mock.calls) expect(typeof call[1]).toBe('string')
+    },
+  )
+
+  it.each(CASES.map((c) => [c.label, c.args] as const))(
+    'legacy native (string schema, no marker): %s → handler at most once, serialized input only',
+    async (_label, args) => {
+      const { handler, executeTool } = makeBoundary('legacy-native')
+      try {
+        await resolveAgentApi()!.executeToolByName('example', args as Record<string, unknown>)
+      } catch { /* rejection is fine */ }
+      expect(handler.mock.calls.length).toBeLessThanOrEqual(1)
+      for (const [received] of handler.mock.calls) {
+        expect(received).toEqual(args ?? {}) // null normalizes to {} before the boundary
+      }
+      for (const call of executeTool.mock.calls) expect(typeof call[1]).toBe('string')
+    },
+  )
+
+  it.each(CASES.map((c) => [c.label, c.args] as const))(
+    'current native: %s → handler at most once, object format only',
+    async (_label, args) => {
+      const { handler, executeTool: _executeTool } = makeBoundary('current-native')
+      try {
+        await resolveAgentApi()!.executeToolByName('example', args as Record<string, unknown>)
+      } catch { /* rejection is fine */ }
+      expect(handler.mock.calls.length).toBeLessThanOrEqual(1)
+      for (const [received] of handler.mock.calls) {
+        expect(received).toEqual(args ?? {}) // null normalizes to {} before the boundary
+      }
+    },
+  )
+})
