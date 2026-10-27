@@ -6,7 +6,7 @@
  * (`needs_user_activation`); until now the only signal was an amber row
  * buried in the FolderSelector dropdown, so users saw "AI can't read my
  * files" with no hint why. This banner surfaces the expired folders above
- * the workspace content with a one-click 重新授权 action.
+ * the workspace content with a one-click re-authorization action.
  *
  * - Native-host roots never lapse this way and are excluded.
  * - Dismiss hides the banner for the current browser session
@@ -14,7 +14,7 @@
  *   actually restored.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FolderOpen, RefreshCw, X } from 'lucide-react'
 import { useT } from '@/i18n'
 import { useFolderAccessStore } from '@/store/folder-access.store'
@@ -39,6 +39,10 @@ export function FolderPermissionBanner() {
   const activeProjectId = useFolderAccessStore((s) => s.activeProjectId)
   const loadRoots = useFolderAccessStore((s) => s.loadRoots)
   const [dismissed, setDismissed] = useState(true)
+  // Serialize refreshes: two restores triggered close together must not let
+  // the earlier loadRoots() resolution overwrite the newer roots snapshot
+  // (which would flip a just-granted root back to needs_user_activation).
+  const refreshQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     setDismissed(readDismissed())
@@ -64,7 +68,13 @@ export function FolderPermissionBanner() {
         denied: t('projectRoots.permissionDenied'),
         failed: t('projectRoots.permissionFailed'),
       },
-      loadRoots,
+      loadRoots: async () => {
+        // Chain onto the previous refresh so invocations run in order and
+        // a slower, superseded read can never clobber a newer snapshot.
+        const run = refreshQueueRef.current.then(() => loadRoots())
+        refreshQueueRef.current = run.catch(() => undefined)
+        await run
+      },
     })
     if (granted) {
       try {
@@ -103,7 +113,13 @@ export function FolderPermissionBanner() {
           <button
             key={root.id}
             type="button"
-            onClick={() => void handleRestore(root)}
+            onClick={(e) => {
+              // This click must not also reach AppBootstrap's once-only
+              // first-interaction handler, which would start a second,
+              // competing requestPermission() for the legacy record.
+              e.stopPropagation()
+              void handleRestore(root)
+            }}
             className={cn(
               'flex items-center gap-1.5 rounded-md border border-warning px-3 py-1',
               'text-xs font-medium text-warning transition-colors hover:bg-warning-50',

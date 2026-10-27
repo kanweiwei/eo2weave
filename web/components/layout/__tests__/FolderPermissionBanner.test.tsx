@@ -9,7 +9,15 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/agent/workspace-assistant-context', () => ({ isSidePanelMode: () => mocks.sidePanel }))
-vi.mock('@/i18n', () => ({ useT: () => (key: string) => key }))
+// Return templates containing the interpolation placeholders so the tests
+// fail if the component stops substituting {name}/{count}.
+vi.mock('@/i18n', () => ({
+  useT: () => (key: string) =>
+    ({
+      'projectRoots.bannerSingleTitle': 'Reauthorize {name}',
+      'projectRoots.bannerMultiTitle': 'Reauthorize {count} folders',
+    })[key] ?? key,
+}))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('@/native-fs', () => ({ bindRuntimeDirectoryHandle: vi.fn() }))
 vi.mock('@/store/agent.store', () => ({ useAgentStore: { setState: vi.fn() } }))
@@ -34,7 +42,10 @@ const nativeRoot = {
   scopeId: 'scope-1',
   handle: null,
   persistedHandle: null,
-  status: 'idle',
+  // needs_user_activation on purpose: if the fsaccess-only filter regresses,
+  // this fixture must surface in the banner and fail the exclusion test
+  // (an 'idle' status would mask the regression).
+  status: 'needs_user_activation',
 }
 
 vi.mock('@/store/folder-access.store', () => {
@@ -67,6 +78,8 @@ function setRoots(roots: unknown[], hydrated = true) {
 }
 
 import { FolderPermissionBanner } from '../FolderPermissionBanner'
+import { toast } from 'sonner'
+import { useAgentStore } from '@/store/agent.store'
 
 describe('FolderPermissionBanner (issue #83)', () => {
   beforeEach(() => {
@@ -83,7 +96,8 @@ describe('FolderPermissionBanner (issue #83)', () => {
   it('renders with a re-authorize action when a fsaccess root is needs_user_activation', () => {
     render(<FolderPermissionBanner />)
     expect(screen.getByTestId('folder-permission-banner')).toBeTruthy()
-    expect(screen.getByText('projectRoots.bannerSingleTitle')).toBeTruthy()
+    // Interpolation assertion: the {name} placeholder must be substituted.
+    expect(screen.getByText('Reauthorize photos')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'projectRoots.bannerReauthorize' })).toBeTruthy()
   })
 
@@ -94,10 +108,19 @@ describe('FolderPermissionBanner (issue #83)', () => {
     expect(container.childElementCount).toBe(0)
   })
 
-  it('excludes native-host roots (their permission never lapses)', () => {
+  it('excludes native-host roots even when they are needs_user_activation', () => {
     setRoots([nativeRoot])
     render(<FolderPermissionBanner />)
     expect(screen.queryByTestId('folder-permission-banner')).toBeNull()
+  })
+
+  it('lists only fsaccess roots when native-host and expired roots coexist', () => {
+    setRoots([nativeRoot, expiredRoot])
+    render(<FolderPermissionBanner />)
+    // Only the fsaccess root counts → single-folder title, not the multi one.
+    expect(screen.getByText('Reauthorize photos')).toBeTruthy()
+    expect(screen.queryByText(/disk-archive/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'projectRoots.bannerReauthorize' })).toBeTruthy()
   })
 
   it('waits for hydration before deciding', () => {
@@ -109,28 +132,52 @@ describe('FolderPermissionBanner (issue #83)', () => {
   it('lists every expired folder name when several lapse at once', () => {
     setRoots([expiredRoot, { ...expiredRoot, id: 'root-docs', name: 'documents' }])
     render(<FolderPermissionBanner />)
-    expect(screen.getByText('projectRoots.bannerMultiTitle')).toBeTruthy()
+    // Interpolation assertion: the {count} placeholder must be substituted.
+    expect(screen.getByText('Reauthorize 2 folders')).toBeTruthy()
     expect(screen.getByText('photos, documents')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'photos' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'documents' })).toBeTruthy()
   })
 
-  it('requests permission on click and hides the banner once granted', async () => {
+  it('requests permission on click, refreshes roots via loadRoots, and hides the banner once granted', async () => {
     mocks.requestPermission.mockResolvedValue('granted')
+    // The grant flow must refresh root status: simulate the real store by
+    // making loadRoots flip the root to ready. The banner must disappear as
+    // a result of that refresh — not because the test manually edits state.
+    mocks.loadRoots.mockImplementation(async () => {
+      setRoots([{ ...expiredRoot, status: 'ready', handle: {} }])
+    })
     const user = userEvent.setup()
     const { rerender } = render(<FolderPermissionBanner />)
     await user.click(screen.getByRole('button', { name: 'projectRoots.bannerReauthorize' }))
     await waitFor(() =>
       expect(mocks.requestPermission).toHaveBeenCalledWith({ mode: 'readwrite' })
     )
-    // The mock store doesn't notify subscribers — flip the root to ready and
-    // re-render to assert the banner disappears (a real grant flips the store
-    // status via loadRoots()).
-    act(() => {
-      setRoots([{ ...expiredRoot, status: 'ready', handle: {} }])
-    })
+    // The successful restore must call loadRoots() to refresh root statuses.
+    await waitFor(() => expect(mocks.loadRoots).toHaveBeenCalled())
+    // The mock store doesn't notify subscribers — re-render to let the
+    // component read the state loadRoots() just wrote. The banner must
+    // disappear because of the grant flow's refresh, not a manual edit.
     rerender(<FolderPermissionBanner />)
-    expect(screen.queryByTestId('folder-permission-banner')).toBeNull()
+    await waitFor(() =>
+      expect(screen.queryByTestId('folder-permission-banner')).toBeNull()
+    )
+  })
+
+  it('still treats the grant as success when loadRoots rejects after a grant', async () => {
+    mocks.requestPermission.mockResolvedValue('granted')
+    mocks.loadRoots.mockRejectedValue(new Error('db down'))
+    const user = userEvent.setup()
+    render(<FolderPermissionBanner />)
+    await user.click(screen.getByRole('button', { name: 'projectRoots.bannerReauthorize' }))
+    // The grant must not be reported as a failure…
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('projectRoots.permissionRestored'))
+    expect(toast.error).not.toHaveBeenCalledWith('projectRoots.permissionFailed')
+    // …and the agent store must still be synced with the granted handle.
+    await waitFor(() => expect(useAgentStore.setState).toHaveBeenCalled())
+    expect(useAgentStore.setState).toHaveBeenCalledWith(
+      expect.objectContaining({ directoryName: 'photos' })
+    )
   })
 
   it('keeps the banner visible after a denied permission request', async () => {
@@ -142,12 +189,21 @@ describe('FolderPermissionBanner (issue #83)', () => {
     expect(screen.getByTestId('folder-permission-banner')).toBeTruthy()
   })
 
-  it('dismiss hides it for the session and stores the session flag', async () => {
+  it('dismiss hides it for the session, stores the flag, and stays hidden after remount', async () => {
     const user = userEvent.setup()
-    render(<FolderPermissionBanner />)
+    const first = render(<FolderPermissionBanner />)
     await user.click(screen.getByRole('button', { name: 'projectRoots.bannerDismiss' }))
     expect(screen.queryByTestId('folder-permission-banner')).toBeNull()
     expect(window.sessionStorage.getItem('folder-permission-banner-dismissed')).toBe('1')
+
+    // Remount in the same session: the mount-time read of the session flag
+    // must keep the banner hidden (not just local component state).
+    first.unmount()
+    act(() => {
+      setRoots([expiredRoot])
+    })
+    render(<FolderPermissionBanner />)
+    expect(screen.queryByTestId('folder-permission-banner')).toBeNull()
   })
 
   it('hands off to /folder-pick in side-panel mode instead of prompting', async () => {

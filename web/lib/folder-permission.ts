@@ -51,14 +51,23 @@ export async function restoreRootPermission({
     const permission = await root.persistedHandle.requestPermission({ mode: 'readwrite' })
     if (permission === 'granted') {
       bindRuntimeDirectoryHandle(projectId, root.name, root.persistedHandle)
-      await loadRoots()
 
-      // Sync to agent.store
+      // Sync to agent.store first: the grant itself succeeded, so agent and
+      // UI state must reflect it even if the subsequent root reload fails.
       const { useAgentStore } = await import('@/store/agent.store')
       useAgentStore.setState({
         directoryHandle: root.persistedHandle,
         directoryName: root.name,
       })
+
+      // The root reload is best-effort: a failure here must not make the
+      // granted permission look like a failed restore (status is refreshed
+      // by the next hydrate/loadRoots cycle).
+      try {
+        await loadRoots()
+      } catch (error) {
+        console.error('[folder-permission] Failed to refresh roots after grant:', error)
+      }
 
       toast.success(strings.restored)
       return true
