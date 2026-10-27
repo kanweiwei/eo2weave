@@ -85,6 +85,13 @@ describe('checkHasApiKey deduplication', () => {
     resolveLoad('sk-test')
     expect(await first).toBe(true)
 
+    // Regression-proof the cache-hit state sync (Sourcery round 5): a stale
+    // `hasApiKey: true` from the first lookup would mask a cache-hit branch
+    // that returns the cached boolean without writing reactive state. Knock
+    // it down first; the cache-hit call must be the thing that restores it.
+    useSettingsStore.setState({ hasApiKey: false })
+    expect(useSettingsStore.getState().hasApiKey).toBe(false)
+
     // Later caller hits the key cache: same answer, no re-lookup.
     const later = await store.checkHasApiKey()
     expect(later).toBe(true)
