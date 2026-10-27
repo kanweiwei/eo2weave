@@ -37,7 +37,7 @@
 - 不改变 exec policy 的判定位置（仍在 Rust Native Host 侧解析 `execpolicy.json`）；web 侧 policy engine 只处理非 exec 工具，exec 的结果映射进统一框架。
 - 不改变 OPFS pending changes 的 review 流（机制 ③ 保持不变，作为文件安全的第二道防线）。
 - 不引入跨会话（重启浏览器后）的授权持久化——"始终允许"仅限当前会话。
-- 不修改 MCP host/group 级"启用插件"授权（扩展侧管理，与本次逐调用授权正交）。
+- 不修改 WebMCP 站点级"启用插件"授权（扩展侧管理，与本次逐调用授权正交）。
 
 ---
 

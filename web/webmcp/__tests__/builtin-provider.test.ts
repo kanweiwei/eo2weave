@@ -1,3 +1,4 @@
+import { builtinResources } from '../../../browser-extension/entrypoints/webmcp/builtin-resources'
 import { afterEach, expect, it, vi } from 'vitest'
 import { providerRegistry, startProviderDiscovery } from '@/vfs/provider-registry'
 import { resolveVfsTarget } from '@/agent/tools/vfs-resolver'
@@ -18,13 +19,14 @@ function setup() {
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Builtin reads must use bundled source text') }))
   return data
 }
-it('exposes all four structured bundled packages and ignores legacy switches', async () => {
+it('exposes every structured bundled package and ignores legacy switches', async () => {
   setup()
   const provider = await getBuiltinStorage()
   const entries = await readMountedWebMCPCatalog([providerMount('builtin-webmcp', provider)])
-  expect(entries).toHaveLength(5)
+  const manifests = Object.entries(builtinResources).filter(([path]) => path.endsWith('/manifest.json')).map(([, source]) => JSON.parse(source))
+  expect(entries.map(entry => entry.package!.manifest.id).sort()).toEqual(manifests.map(manifest => manifest.id).sort())
   expect(entries.every(entry => entry.activation === 'disabled' && !entry.diagnostics.length)).toBe(true)
-  expect(entries.flatMap(entry => entry.package!.manifest.tools)).toHaveLength(70)
+  expect(entries.flatMap(entry => entry.package!.manifest.tools)).toHaveLength(manifests.reduce((total, manifest) => total + manifest.tools.length, 0))
   for (const entry of entries) {
     expect((await provider.readdir(entry.directory)).map(item => item.name)).toContain('workflows')
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile(`${entry.directory}/config.json`)))).toEqual({})

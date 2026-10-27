@@ -25,12 +25,6 @@
   "webmcpDiscoverError": {
     "message": "WebMCP discovery failed"
   },
-  "webmcpToggleGroupTitle": {
-    "message": "Allow the agent to use this tool group"
-  },
-  "webmcpGroupDisabled": {
-    "message": "Disabled — this tool group is blocked"
-  },
   "extensionDescription": {
     "message": "AI workspace in your browser sidebar, using the current page to help you read, write, analyze, and act with WebMCP authorization."
   },

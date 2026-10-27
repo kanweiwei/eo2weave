@@ -1,13 +1,13 @@
-import { Globe, Layers3 } from 'lucide-react'
-import type { WebMCPHostCatalog, WebMCPToolGroupCatalog } from '@/webmcp'
+import { Globe } from 'lucide-react'
+import type { WebMCPHostCatalog, WebMCPTabInstance } from '@/webmcp'
 
 interface WebMCPHostListProps {
   t: (key: string) => string
   hosts: WebMCPHostCatalog[]
 }
 
-function summarizeTabs(group: WebMCPToolGroupCatalog): string {
-  return group.tabs
+function summarizeTabs(tabs: WebMCPTabInstance[]): string {
+  return tabs
     .slice(0, 2)
     .map((tab) => {
       if (tab.title.trim()) return tab.title.trim()
@@ -39,8 +39,8 @@ export function WebMCPHostList({ t, hosts }: WebMCPHostListProps) {
   return (
     <div className="space-y-3">
       {hosts.map((host) => {
-        const totalTools = host.groups.reduce((sum, group) => sum + group.registeredTools.length, 0)
-        const totalTabs = host.groups.reduce((sum, group) => sum + group.tabs.length, 0)
+        const totalTools = host.registeredTools.length
+        const totalTabs = host.tabs.length
         return (
           <div
             key={host.hostname}
@@ -55,47 +55,25 @@ export function WebMCPHostList({ t, hosts }: WebMCPHostListProps) {
               </div>
               <p className="mt-1 text-xs text-tertiary">
                 {t('settings.webMCPHostSummary')
-                  .replace('{groups}', String(host.groups.length))
                   .replace('{tools}', String(totalTools))
                   .replace('{tabs}', String(totalTabs))}
               </p>
             </div>
 
-            <div className="mt-3 space-y-2">
-              {host.groups.map((group) => (
-                <div
-                  key={group.groupKey}
-                  className="rounded-lg border border-neutral-200 bg-muted/40 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900/40"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <Layers3 className="mt-0.5 h-4 w-4 text-primary-600" />
-                      <p className="truncate text-sm font-medium text-secondary">
-                        {group.displayName}
-                      </p>
-                    </div>
-                    <p className="mt-1 text-xs text-tertiary">
-                      {t('settings.webMCPGroupSummary')
-                        .replace('{tools}', String(group.registeredTools.length))
-                        .replace('{tabs}', String(group.tabs.length))}
-                    </p>
-                  </div>
+            <div className="mt-3 rounded-lg border border-neutral-200 bg-muted/40 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900/40">
+              <div className="rounded bg-white/80 px-2 py-1.5 text-[11px] text-tertiary dark:bg-neutral-950/40">
+                {host.registeredTools
+                  .slice(0, 8)
+                  .map((tool) => tool.name)
+                  .join(' · ')}
+                {host.registeredTools.length > 8 ? ` +${host.registeredTools.length - 8}` : ''}
+              </div>
 
-                  <div className="mt-2 rounded bg-white/80 px-2 py-1.5 text-[11px] text-tertiary dark:bg-neutral-950/40">
-                    {group.registeredTools
-                      .slice(0, 5)
-                      .map((tool) => tool.name)
-                      .join(' · ')}
-                    {group.registeredTools.length > 5 ? ` +${group.registeredTools.length - 5}` : ''}
-                  </div>
-
-                  {group.tabs.length > 0 && (
-                    <div className="mt-2 text-[11px] text-tertiary">
-                      {t('settings.webMCPTabPreview').replace('{tabs}', summarizeTabs(group))}
-                    </div>
-                  )}
+              {host.tabs.length > 0 && (
+                <div className="mt-2 text-[11px] text-tertiary">
+                  {t('settings.webMCPTabPreview').replace('{tabs}', summarizeTabs(host.tabs))}
                 </div>
-              ))}
+              )}
             </div>
           </div>
         )

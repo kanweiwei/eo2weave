@@ -1,7 +1,13 @@
 export type WebMCPApiMode = 'documentModelContext'
 
-export interface WebMCPDiscoveredTool {
+export interface WebMCPToolDefinition {
+  /** Canonical page origin (scheme + host + optional port). */
+  origin: string
+  /** Raw tool name registered by the page or adapter. */
   name: string
+}
+
+export interface WebMCPDiscoveredTool extends WebMCPToolDefinition {
   description: string
   inputSchema: Record<string, unknown>
   annotations?: {
@@ -9,8 +15,7 @@ export interface WebMCPDiscoveredTool {
     untrustedContentHint?: boolean
   }
   hostname: string
-  groupKey: string
-  toolsetSignature: string
+  /** Provider-safe call_tool name derived from origin + raw tool name. */
   fullName: string
   tabId: number
   tabTitle?: string
@@ -19,8 +24,6 @@ export interface WebMCPDiscoveredTool {
   apiMode: WebMCPApiMode
   /** Extension-side per-host authorization flag (annotated by background) */
   hostEnabled?: boolean
-  /** Extension-side per-group authorization flag (annotated by background) */
-  groupEnabled?: boolean
 }
 
 export type WebMCPDiscoveredToolInstance = WebMCPDiscoveredTool
@@ -35,10 +38,10 @@ export interface WebMCPDiscoverResponse {
 }
 
 export interface WebMCPInvokeRequest {
-  groupKey: string
-  fullToolName: string
+  targetTabId: number
+  origin: string
+  toolName: string
   args?: Record<string, unknown>
-  preferredTabId?: number
   binding?: string
 }
 
@@ -87,9 +90,9 @@ export type WebMCPPluginDownloadFrame =
 
 export interface WebMCPInvokeResponse {
   ok: boolean
+  origin: string
   hostname: string
   toolName: string
-  fullToolName: string
   tabId?: number
   apiMode?: WebMCPApiMode
   result?: unknown
@@ -106,6 +109,7 @@ export interface WebMCPTabInstance {
 }
 
 export interface WebMCPRegisteredTool {
+  origin: string
   name: string
   description: string
   inputSchema: Record<string, unknown>
@@ -114,41 +118,27 @@ export interface WebMCPRegisteredTool {
     untrustedContentHint?: boolean
   }
   hostname: string
-  groupKey: string
-  toolsetSignature: string
   fullName: string
   apiMode: WebMCPApiMode
-  representativeTabId: number
-  representativeTabTitle?: string
-  representativeTabUrl?: string
+  tabs: WebMCPTabInstance[]
   discoveredAt: number
 }
 
-export interface WebMCPToolGroupCatalog {
-  groupKey: string
+export interface WebMCPHostCatalog {
   hostname: string
-  toolsetSignature: string
-  displayName: string
   registeredTools: WebMCPRegisteredTool[]
   tabs: WebMCPTabInstance[]
   lastDiscoveredAt: number
 }
 
-export interface WebMCPHostCatalog {
-  hostname: string
-  groups: WebMCPToolGroupCatalog[]
-  lastDiscoveredAt: number
-}
-
 export interface WebMCPBridge {
   ready: boolean
-  webMCPDiscover: (options?: { force?: boolean }) => Promise<WebMCPDiscoverResponse>
+  webMCPDiscover: (options?: { force?: boolean; binding?: string }) => Promise<WebMCPDiscoverResponse>
   webMCPInvoke: (payload: WebMCPInvokeRequest) => Promise<WebMCPInvokeResponse>
   /** Extension-side authorization state (storage.local is the source of truth) */
   webMCPGetAuthorization?: () => Promise<{
     ok: boolean
     enabledByHost?: Record<string, boolean>
-    enabledByGroup?: Record<string, boolean>
     error?: string
   }>
   webMCPPluginDownloadStream?: (payload: {

@@ -434,26 +434,29 @@ function renderCapline(): void {
     }
     if (guide) guide.style.display = 'none';
     box.style.display = capExpanded ? '' : 'none';
-    // Group by hostname → { groups: Map<groupKey, ...>, hostEnabled }
+    // Group by hostname for display. Authorization remains host-level.
     var byHost: Record<string, {
       count: number;
       tabId: number;
-      groups: Record<string, { count: number; tabId: number; toolNames: string[]; tabTitles: string[]; enabled?: boolean }>;
+      toolNames: string[];
+      tabTitles: string[];
       enabled?: boolean;
     }> = {};
     for (var i = 0; i < tools.length; i++) {
       var tool = tools[i];
       var host = tool.hostname || 'unknown';
-      if (!byHost[host]) byHost[host] = { count: 0, tabId: tool.tabId, groups: {} };
+      if (!byHost[host]) {
+        byHost[host] = { count: 0, tabId: tool.tabId, toolNames: [], tabTitles: [] };
+      }
       byHost[host].count++;
       if (typeof tool.hostEnabled === 'boolean') byHost[host].enabled = tool.hostEnabled;
-      var gk = tool.groupKey || (host + '_default');
-      if (!byHost[host].groups[gk]) byHost[host].groups[gk] = { count: 0, tabId: tool.tabId, toolNames: [], tabTitles: [] };
-      byHost[host].groups[gk].count++;
-      if (typeof tool.groupEnabled === 'boolean') byHost[host].groups[gk].enabled = tool.groupEnabled;
-      if (byHost[host].groups[gk].toolNames.length < 6 && byHost[host].groups[gk].toolNames.indexOf(tool.name) === -1) byHost[host].groups[gk].toolNames.push(tool.name);
+      if (byHost[host].toolNames.length < 6 && byHost[host].toolNames.indexOf(tool.name) === -1) {
+        byHost[host].toolNames.push(tool.name);
+      }
       var tt = (tool.tabTitle || '').trim();
-      if (tt && byHost[host].groups[gk].tabTitles.indexOf(tt) === -1 && byHost[host].groups[gk].tabTitles.length < 3) byHost[host].groups[gk].tabTitles.push(tt);
+      if (tt && byHost[host].tabTitles.indexOf(tt) === -1 && byHost[host].tabTitles.length < 3) {
+        byHost[host].tabTitles.push(tt);
+      }
     }
     var hosts = Object.keys(byHost);
     var totalTools = tools.length;
@@ -493,10 +496,6 @@ function renderCapline(): void {
       left.appendChild(name);
       left.appendChild(count);
 
-      // Group rows register here so the host switch can cascade state to
-      // them (mirrors web WebMCPHostList: host off → group switches disabled).
-      var groupUpdaters: Array<(hostOn: boolean) => void> = [];
-
       var hostToggle = buildToggle({
         checked: hostOn,
         titleOn: chrome.i18n.getMessage('webmcpToggleHostTitle') || 'webmcpToggleHostTitle',
@@ -507,7 +506,6 @@ function renderCapline(): void {
               hostEnabled[host] = next;
               item.classList.toggle('disabled-host', !next);
               left.title = next ? String(info.count) + ' tool(s)' : (chrome.i18n.getMessage('webmcpHostDisabled') || 'webmcpHostDisabled');
-              for (var u = 0; u < groupUpdaters.length; u++) groupUpdaters[u](next);
             }
             done(ok);
           });
@@ -520,104 +518,11 @@ function renderCapline(): void {
       head.appendChild(hostToggle);
       item.appendChild(head);
 
-      // Nested group rows (mirror the web app's WebMCPHostList hierarchy).
-      var groupKeys = Object.keys(info.groups);
-      if (groupKeys.length > 0) {
-        var groupsWrap = document.createElement('div');
-        groupsWrap.className = 'webmcp-groups';
-        groupKeys.forEach(function (gk, idx) {
-          var g = info.groups[gk];
-          // Switch position reflects the group's OWN state; the host gate is
-          // expressed via disabled + row dimming (mirrors web BrandSwitch:
-          // checked={groupChecked} disabled={!globalEnabled || !checked}).
-          // Using effective state here made the switch show "off" while the
-          // group itself was on — clicking then toggled the wrong direction.
-          var groupOwn = g.enabled !== false;
-          var effective = hostOn && groupOwn;
-          var row = document.createElement('div');
-          row.className = 'webmcp-group' + (effective ? '' : ' disabled-host');
-
-          // Group title = source tab title — that's a group's identity
-          // (one toolset version from one page). Tool names go to the
-          // preview line. Fallback: tabTitle → first tool name → Group N.
-          var titleText = (g.tabTitles && g.tabTitles[0])
-            || g.toolNames[0]
-            || ('Group ' + (idx + 1));
-
-          var gLeft = document.createElement('div');
-          gLeft.className = 'webmcp-group-left';
-          gLeft.title = g.toolNames.join(', ') + (g.tabTitles.length ? '\n' + g.tabTitles.join('\n') : '');
-          gLeft.addEventListener('click', function () {
-            if (typeof g.tabId === 'number') {
-              chrome.tabs.update(g.tabId, { active: true });
-              window.close();
-            }
-          });
-          var gNameWrap = document.createElement('div');
-          gNameWrap.className = 'webmcp-group-name-wrap';
-          var gName = document.createElement('span');
-          gName.className = 'webmcp-group-name';
-          gName.textContent = titleText;
-          var gCount = document.createElement('span');
-          gCount.className = 'webmcp-group-count';
-          gCount.textContent = String(g.count);
-          gCount.title = chrome.i18n.getMessage('webmcpToolCountTitle') || 'webmcpToolCountTitle';
-          var gNameRow = document.createElement('div');
-          gNameRow.className = 'webmcp-group-name-row';
-          gNameRow.appendChild(gName);
-          gNameRow.appendChild(gCount);
-          gNameWrap.appendChild(gNameRow);
-          // Tool name preview (light, one line, ellipsized) — mirrors the
-          // web group card's tool preview strip.
-          if (g.toolNames.length > 0) {
-            var gPreview = document.createElement('div');
-            gPreview.className = 'webmcp-group-preview';
-            gPreview.textContent = g.toolNames.join(' · ');
-            gNameWrap.appendChild(gPreview);
-          }
-          gLeft.appendChild(gNameWrap);
-
-          var gToggleInput: HTMLInputElement | null = null;
-          var gToggle = buildToggle({
-            checked: groupOwn,
-            disabled: !hostOn,
-            titleOn: chrome.i18n.getMessage('webmcpToggleGroupTitle') || 'webmcpToggleGroupTitle',
-            titleOff: chrome.i18n.getMessage('webmcpGroupDisabled') || 'webmcpGroupDisabled',
-            disabledTitle: chrome.i18n.getMessage('webmcpHostDisabled') || 'webmcpHostDisabled',
-            onToggle: function (next, done) {
-              sendSetEnabled({ type: 'webmcp_set_group_enabled', groupKey: gk, enabled: next }, function (ok) {
-                if (ok) {
-                  g.enabled = next;
-                  row.classList.toggle('disabled-host', !(hostEnabled[host] && next));
-                }
-                done(ok);
-              });
-            },
-          });
-          gToggleInput = gToggle.querySelector('input.webmcp-toggle');
-
-          // Cascade registration: recompute this group row's visual + switch
-          // state whenever the host switch changes. Mirrors the web app's
-          // effective = hostOn && groupOn semantics.
-          groupUpdaters.push(function (hostOnNow: boolean) {
-            var effective = hostOnNow && g.enabled !== false;
-            row.classList.toggle('disabled-host', !effective);
-            if (gToggleInput) {
-              gToggleInput.disabled = !hostOnNow;
-              gToggleInput.title = !hostOnNow
-                ? (chrome.i18n.getMessage('webmcpHostDisabled') || 'webmcpHostDisabled')
-                : (gToggleInput.checked
-                    ? (chrome.i18n.getMessage('webmcpToggleGroupTitle') || 'webmcpToggleGroupTitle')
-                    : (chrome.i18n.getMessage('webmcpGroupDisabled') || 'webmcpGroupDisabled'));
-            }
-          });
-
-          row.appendChild(gLeft);
-          row.appendChild(gToggle);
-          groupsWrap.appendChild(row);
-        });
-        item.appendChild(groupsWrap);
-      }
+      var preview = document.createElement('div');
+      preview.className = 'webmcp-tool-preview';
+      preview.textContent = info.toolNames.join(' · ')
+        + (info.count > info.toolNames.length ? ' +' + (info.count - info.toolNames.length) : '');
+      item.appendChild(preview);
 
       list.appendChild(item);
     });
@@ -625,7 +530,7 @@ function renderCapline(): void {
 
   renderIdle();
   // includeDisabled: the popup IS the management surface — it must see
-  // disabled hosts/groups so the user can re-enable them. Regular pages
+  // disabled hosts so the user can re-enable them. Regular pages
   // get the filtered view (disabled sites simply don't exist for them).
   //
   // Discovery is now registry-backed (event-fed by the static content

@@ -24,7 +24,11 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
-import { isSidePanelMode, getSidePanelHostname, getSidePanelBindingId } from './workspace-assistant-context'
+import {
+  getSidePanelBindingId,
+  isSidePanelMode,
+  getSidePanelHostname,
+} from './workspace-assistant-context'
 
 // Zod validation (for WebMCP)
 import { z } from 'zod'
@@ -48,9 +52,8 @@ interface UnifiedToolEntry {
   inputSchema: Record<string, unknown>
   /** WebMCP specific */
   hostname?: string
-  actualFullName?: string
-  groupKey?: string
-  toolsetSignature?: string
+  origin?: string
+  tabIds?: number[]
   annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean }
 }
 
@@ -60,7 +63,8 @@ type SearchResultRow = {
   sourceId: string
   description: string
   inputSchema: Record<string, unknown>
-  groupKey?: string
+  origin?: string
+  tabIds?: number[]
   score?: number
   relevanceReason?: string
 }
@@ -110,18 +114,16 @@ export function collectAllExternalTools(): UnifiedToolEntry[] {
     const store = useWebMCPStore.getState()
     const enabledTools = store.getEnabledTools()
     for (const tool of enabledTools) {
-      const lookupName = `${tool.groupKey}_${tool.fullName}`
       tools.push({
-        fullName: lookupName,
+        fullName: tool.fullName,
         name: tool.name,
         source: 'webmcp',
         sourceId: tool.hostname,
         description: tool.description || '',
         inputSchema: tool.inputSchema || { type: 'object', properties: {} },
         hostname: tool.hostname,
-        actualFullName: tool.fullName,
-        groupKey: tool.groupKey,
-        toolsetSignature: tool.toolsetSignature,
+        origin: tool.origin,
+        tabIds: tool.tabs.map((tab) => tab.tabId),
         annotations: tool.annotations,
       })
     }
@@ -414,7 +416,8 @@ function formatBm25Results(
     sourceId: s.tool.sourceId,
     description: s.tool.description.slice(0, 300),
     inputSchema: s.tool.inputSchema,
-    ...(s.tool.groupKey ? { groupKey: s.tool.groupKey } : {}),
+    ...(s.tool.origin ? { origin: s.tool.origin } : {}),
+    ...(s.tool.tabIds ? { tabIds: s.tool.tabIds } : {}),
     score: Math.round(s.score * 1000) / 1000,
   }))
 
@@ -451,7 +454,8 @@ interface EnrichedToolRow {
   sourceId: string
   description: string
   inputSchema: Record<string, unknown>
-  groupKey?: string
+  origin?: string
+  tabIds?: number[]
   relevanceReason: string
 }
 
@@ -486,7 +490,8 @@ function enrichWithCatalog(
         sourceId: catalogEntry?.sourceId || '',
         description: (catalogEntry?.description || t.description || '').slice(0, 300),
         inputSchema: catalogEntry?.inputSchema || {},
-        ...(catalogEntry?.groupKey ? { groupKey: catalogEntry.groupKey } : {}),
+        ...(catalogEntry?.origin ? { origin: catalogEntry.origin } : {}),
+        ...(catalogEntry?.tabIds ? { tabIds: catalogEntry.tabIds } : {}),
         relevanceReason: t.relevance_reason,
       }
     })
@@ -751,7 +756,8 @@ export const searchToolsExecutor: ToolExecutor = async (args, context) => {
       sourceId: c.tool.sourceId,
       description: c.tool.description.slice(0, 300),
       inputSchema: c.tool.inputSchema,
-      ...(c.tool.groupKey ? { groupKey: c.tool.groupKey } : {}),
+      ...(c.tool.origin ? { origin: c.tool.origin } : {}),
+      ...(c.tool.tabIds ? { tabIds: c.tool.tabIds } : {}),
       score: Math.round(c.score * 1000) / 1000,
     })),
     total: fallback.length,
@@ -784,9 +790,15 @@ export const callToolDefinition: ToolDefinition = {
           type: 'string',
           description:
             'The fullName string copied VERBATIM from search_tools results. ' +
-            'MCP names are "serverId:toolName"; WebMCP names embed a page host and a ' +
-            'toolset signature, so they cannot be assembled or guessed — the search_tools ' +
-            'result is the only valid source. Never construct, shorten, or modify this name.',
+            'MCP names are "serverId:toolName". WebMCP names are derived from the page ' +
+            'origin and raw tool name; copy the value returned by search_tools or ' +
+            'get_page_tools instead of assembling it.',
+        },
+        tab_id: {
+          type: 'number',
+          description:
+            'Required for WebMCP tools: the exact tab_id returned by search_tools or ' +
+            'get_page_tools. This selects the page instance that will execute the tool.',
         },
         args: {
           type: 'object',
@@ -800,8 +812,9 @@ export const callToolDefinition: ToolDefinition = {
 }
 
 export const callToolExecutor: ToolExecutor = async (args, context) => {
-  const { full_tool_name, args: toolArgs } = args as {
+  const { full_tool_name, tab_id, args: toolArgs } = args as {
     full_tool_name: string
+    tab_id?: number
     args?: Record<string, unknown>
   }
 
@@ -815,6 +828,25 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
       `Tool "${full_tool_name}" not found. Use search_tools to discover available tools.`,
       { retryable: true }
     )
+  }
+
+  if (tool.source === 'webmcp') {
+    if (!Number.isSafeInteger(tab_id) || tab_id! <= 0) {
+      return toolErrorJson(
+        'call_tool',
+        'TAB_TARGET_REQUIRED',
+        `WebMCP tool "${full_tool_name}" requires the exact tab_id returned by discovery.`,
+        { retryable: true, details: { fullToolName: full_tool_name, availableTabIds: tool.tabIds } }
+      )
+    }
+    if (!tool.tabIds?.includes(tab_id!)) {
+      return toolErrorJson(
+        'call_tool',
+        'TAB_TARGET_NOT_FOUND',
+        `Tab ${tab_id} does not currently expose WebMCP tool "${full_tool_name}".`,
+        { retryable: true, details: { fullToolName: full_tool_name, availableTabIds: tool.tabIds } }
+      )
+    }
   }
 
   // --- Per-call authorization (PR-2) --------------------------------------
@@ -832,6 +864,7 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     toolName: 'call_tool',
     args: {
       full_tool_name,
+      ...(tool.source === 'webmcp' ? { tab_id } : {}),
       untrusted: tool.annotations?.untrustedContentHint === true,
     },
     // Show the ACTUAL call arguments in the authorization modal (policy
@@ -871,7 +904,7 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
   if (tool.source === 'mcp') {
     return executeMCPTool(tool, toolArgs || {})
   } else {
-    return executeWebMCPTool(tool, toolArgs || {}, context)
+    return executeWebMCPTool(tool, tab_id!, toolArgs || {}, context)
   }
 }
 
@@ -998,8 +1031,29 @@ async function executeMCPTool(
 // WebMCP Execution
 //=============================================================================
 
+/** Refresh the page catalog after navigation without replaying any side effects. */
+async function navigationCatalog(tabId: number, rawToolName?: string) {
+  try {
+    const { refreshWebMCPCatalog } = await import('@/webmcp/manager')
+    const tools = (await refreshWebMCPCatalog())
+      .filter(tool => tool.tabs.some(tab => tab.tabId === tabId))
+    return {
+      tool_catalog_refreshed: true,
+      page_tools: tools.map(tool => ({
+        full_tool_name: tool.fullName, name: tool.name, origin: tool.origin,
+        tab_id: tabId, description: tool.description, inputSchema: tool.inputSchema,
+      })),
+      continuation_tool: tools.find(tool => tool.name === rawToolName)?.fullName ?? null,
+      next_step: tools.length ? 'Use the refreshed page tool names for subsequent calls.' : 'The destination is loading. Run get_page_tools or search_tools before continuing.',
+    }
+  } catch {
+    return { tool_catalog_refreshed: false, next_step: 'Run get_page_tools or search_tools on this tab before continuing.' }
+  }
+}
+
 async function executeWebMCPTool(
   tool: UnifiedToolEntry,
+  targetTabId: number,
   toolArgs: Record<string, unknown>,
   context: ToolContext
 ): Promise<string> {
@@ -1015,9 +1069,7 @@ async function executeWebMCPTool(
   }
 
   const store = useWebMCPStore.getState()
-  const enabledTools = store.getEnabledTools()
-  const toolMap = new Map(enabledTools.map(t => [`${t.groupKey}_${t.fullName}`, t]))
-  const toolInfo = toolMap.get(tool.fullName)
+  const toolInfo = store.getToolByCallName(tool.fullName)
 
   if (!toolInfo) {
     return toolErrorJson(
@@ -1028,44 +1080,38 @@ async function executeWebMCPTool(
       { retryable: true }
     )
   }
+  if (!toolInfo.tabs.some((tab) => tab.tabId === targetTabId)) {
+    return toolErrorJson(
+      'call_tool',
+      'TAB_TARGET_NOT_FOUND',
+      `Tab ${targetTabId} no longer exposes WebMCP tool "${tool.fullName}".`,
+      {
+        retryable: true,
+        details: {
+          fullToolName: tool.fullName,
+          availableTabIds: toolInfo.tabs.map((tab) => tab.tabId),
+        },
+      }
+    )
+  }
 
   const validationError = validateToolArgs(tool.fullName, toolArgs, toolInfo.inputSchema)
   if (validationError) return validationError
 
-  const preferredTabId = store.getPreferredTabIdForTool(toolInfo.groupKey, toolInfo.fullName)
-  const boundXiaohongshuTab = isSidePanelMode() && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(toolInfo.hostname)
-  const binding = boundXiaohongshuTab ? getSidePanelBindingId() : null
-  if (boundXiaohongshuTab && !binding) {
-    return toolErrorJson('call_tool', 'BOUND_TAB_UNAVAILABLE', 'The Xiaohongshu side-panel tab binding is unavailable.', {
-      retryable: true,
-    })
-  }
-
   try {
-    let invokeArgs = toolArgs
-    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_content') {
-      const { prepareXiaohongshuImage } = await import('./tools/xiaohongshu-image-transfer')
-      try { invokeArgs = await prepareXiaohongshuImage(toolArgs, context) }
-      catch (error) { return toolErrorJson('call_tool', 'IMAGE_TRANSFER_FAILED', error instanceof Error ? error.message : 'Image transfer failed; no image was silently skipped.', { retryable: false }) }
-      if (new TextEncoder().encode(JSON.stringify(invokeArgs)).length >= 64 * 1024 * 1024 - 4096) {
-        return toolErrorJson('call_tool', 'IMAGE_TRANSFER_TOO_LARGE', 'Image payload and bridge envelope exceed Chrome 64 MiB message capacity.', { retryable: false })
-      }
-    }
-    const invokeRequest = {
-      groupKey: toolInfo.groupKey,
-      fullToolName: toolInfo.fullName,
-      args: invokeArgs,
-      preferredTabId,
-      ...(binding ? { binding } : {}),
-    }
-    let response: import('@/webmcp/types').WebMCPInvokeResponse
-    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_video') {
-      const { invokeXiaohongshuVideo } = await import('./tools/xiaohongshu-video-transfer')
-      try { response = await invokeXiaohongshuVideo(invokeRequest, context, (request) => bridge.webMCPInvoke(request)) }
-      catch (error) { return toolErrorJson('call_tool', 'VIDEO_TRANSFER_FAILED', error instanceof Error ? error.message : 'Video file transfer failed.', { retryable: false }) }
-    } else response = await bridge.webMCPInvoke(invokeRequest)
+    const response = await bridge.webMCPInvoke({
+      targetTabId,
+      origin: toolInfo.origin,
+      toolName: toolInfo.name,
+      args: toolArgs,
+      ...(isSidePanelMode() && getSidePanelBindingId()
+        ? { binding: getSidePanelBindingId()! }
+        : {}),
+    })
 
     if (!response.ok) {
+      const refreshed = ['TARGET_ORIGIN_MISMATCH', 'TOOL_NOT_FOUND'].includes(response.errorCode || '')
+        ? await navigationCatalog(targetTabId, toolInfo.name) : {}
       const errorMessage = response.error
         ? String(wrapUntrustedContent(response.error, {
             untrusted,
@@ -1083,13 +1129,10 @@ async function executeWebMCPTool(
             fullToolName: tool.fullName,
             tabId: response.tabId,
             hostname: response.hostname,
+            ...refreshed,
           },
         }
       )
-    }
-
-    if (response.tabId) {
-      store.recordToolInvocation(toolInfo.groupKey, toolInfo.fullName, response.tabId)
     }
 
     // Handle plugin download
@@ -1150,7 +1193,12 @@ async function executeWebMCPTool(
       }
     }
 
+    const rawResult = response.result as { status?: string; result?: { status?: string; data?: { continuation?: unknown; phase?: string } }; data?: { continuation?: unknown; phase?: string } } | undefined
+    const observation = rawResult?.status === 'success' ? rawResult.result : rawResult
+    const navigation = observation?.status === 'navigated' || !!observation?.data?.continuation || observation?.data?.phase === 'navigation'
+      ? await navigationCatalog(targetTabId, toolInfo.name) : {}
     return toolOkJson('call_tool', {
+      ...navigation,
       result: response.result,
       fullToolName: tool.fullName,
       hostname: response.hostname,
@@ -1206,26 +1254,26 @@ function validateToolArgs(
 // In side-panel mode the task is almost always "operate the page the user is
 // browsing". Forcing the LLM through search_tools (cross-host BM25 / LLM
 // semantic search, 3ms-33s) just to learn this page's tool names is wasteful,
-// and call_tool requires the exact `${groupKey}_${fullName}` lookup name that
-// cannot be guessed. This tool returns the current page's enabled WebMCP
-// tools with full schemas in one cheap local store read — no search, no LLM.
+// and call_tool needs both an exact tool name and the runtime tab. This tool
+// returns the current page's enabled WebMCP tools with full schemas and tab
+// target in one cheap local store read — no search, no LLM.
 
 interface WebMCPRegisteredToolLike {
   name: string
   description: string
   inputSchema: Record<string, unknown>
   annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean }
+  origin: string
   hostname: string
-  groupKey: string
   fullName: string
-  representativeTabId?: number
+  tabs: Array<{ tabId: number }>
 }
 
 /**
  * The tab id of the side-panel's bound upstream tab, as reported by the
  * background's requestBoundPageContext response. Set by capturePageContext
- * on every context pull; null when unknown (older plugin builds didn't
- * attach it — falls back to hostname-only matching below).
+ * on every context pull. Unknown tab means no page-tool list is exposed;
+ * hostname-only fallback could select the wrong page instance.
  */
 let _sidePanelBoundTabId: number | null = null
 
@@ -1233,13 +1281,10 @@ export function setSidePanelBoundTabId(tabId: number | null): void {
   _sidePanelBoundTabId = typeof tabId === 'number' ? tabId : null
 }
 
-/** Enabled WebMCP tools for the side-panel's bound upstream tab (empty otherwise).
- *  Tab-scoped when the bound tab id is known: same-hostname tabs in different
- *  apps (jmail.world / vs /messages) expose disjoint tool groups, and
- *  hostname-only filtering would merge them. Falls back to hostname-only
- *  for plugin builds that don't report the tab id. */
+/** Enabled WebMCP tools for the side-panel's current upstream tab. */
 export function collectSidePanelPageTools(): WebMCPRegisteredToolLike[] {
   if (!isSidePanelMode()) return []
+  if (_sidePanelBoundTabId === null) return []
   const hostname = getSidePanelHostname()
   if (!hostname) return []
   try {
@@ -1249,7 +1294,7 @@ export function collectSidePanelPageTools(): WebMCPRegisteredToolLike[] {
       .filter(
         (t) =>
           t.hostname === hostname &&
-          (_sidePanelBoundTabId === null || t.representativeTabId === _sidePanelBoundTabId),
+          t.tabs.some((tab) => tab.tabId === _sidePanelBoundTabId),
       )
   } catch {
     return []
@@ -1258,7 +1303,7 @@ export function collectSidePanelPageTools(): WebMCPRegisteredToolLike[] {
 
 /** The exact string call_tool resolves for a page tool. */
 export function pageToolCallName(tool: WebMCPRegisteredToolLike): string {
-  return `${tool.groupKey}_${tool.fullName}`
+  return tool.fullName
 }
 
 export const getPageToolsDefinition: ToolDefinition = {
@@ -1317,15 +1362,17 @@ export const getPageToolsExecutor: ToolExecutor = async (args) => {
 
   return toolOkJson('get_page_tools', {
     hostname,
+    tab_id: _sidePanelBoundTabId,
     count: selected.length,
     tools: selected.map((t) => ({
       call_name: pageToolCallName(t),
+      tab_id: _sidePanelBoundTabId,
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema || { type: 'object', properties: {} },
       annotations: t.annotations,
     })),
-    hint: 'Call via call_tool with the exact call_name values above.',
+    hint: 'Call via call_tool with each call_name and its tab_id.',
   })
 }
 
@@ -1356,7 +1403,7 @@ export function buildSidePanelWebMCPBlock(): string {
   const hostname = getSidePanelHostname() || 'the current page'
   const lines: string[] = []
   lines.push(`<current_page_webmcp>`)
-  lines.push(`The page the user is browsing (${hostname}) exposes these WebMCP tools. For tasks about this page, call them DIRECTLY via call_tool using the exact names below — no search_tools round needed. Use get_page_tools to fetch full parameter schemas on demand.`)
+  lines.push(`The page the user is browsing (${hostname}) exposes these WebMCP tools. For tasks about this page, call them DIRECTLY via call_tool using the exact names below and tab_id=${_sidePanelBoundTabId} — no search_tools round needed. Use get_page_tools to fetch full parameter schemas on demand.`)
   for (const t of tools) {
     const desc = (t.description || '').replace(/\s+/g, ' ').trim().slice(0, PAGE_TOOL_DESC_CAP)
     lines.push(`- \`${pageToolCallName(t)}\`${desc ? `: ${desc}` : ''}`)
@@ -1375,7 +1422,7 @@ export const unifiedExternalToolsPromptDoc: ToolPromptDoc = {
   section: '### External Tools (MCP + WebMCP)',
   lines: [
     '- `search_tools(query?, intent?, limit?)` — **Always search first** before using any external tool. Returns matching tools with full parameter schemas. query: keywords (BM25, fast). intent: natural language description (slower but smarter). At least one required. Prefer intent when unsure. This ALSO covers EO2Weave itself: searching e.g. "project", "conversation", "send message", "provider" surfaces the self-control tools (create projects, manage conversations, read history, drive the agent, manage models).',
-    '- `call_tool(full_tool_name, args)` — Execute an external tool discovered via search_tools. full_tool_name must be the fullName copied VERBATIM from search_tools results — never construct it from memory; WebMCP names embed a host and a toolset signature that cannot be guessed. If a call fails with TOOL_NOT_FOUND, run search_tools again and retry with the exact fullName from its results.',
+    '- `call_tool(full_tool_name, tab_id?, args)` — Execute an external tool discovered via search_tools. WebMCP calls also require the exact tab_id returned by discovery. If a call fails with TOOL_NOT_FOUND or TAB_TARGET_NOT_FOUND, run discovery again before retrying.',
   ],
 }
 

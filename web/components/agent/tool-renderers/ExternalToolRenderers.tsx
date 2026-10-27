@@ -389,7 +389,7 @@ function formatDuration(ms: number): string {
 /** workspace_jianguoyun_com__fetch_ticket_messages → fetch_ticket_messages */
 function extractNameFromFullName(fullName: unknown): string {
   if (typeof fullName !== 'string') return ''
-  // WebMCP: hostname__toolName
+  // WebMCP: provider-safe origin__toolName
   const doubleSep = fullName.indexOf('__')
   if (doubleSep !== -1) return fullName.slice(doubleSep + 2)
   // MCP: serverId:toolName
@@ -398,26 +398,19 @@ function extractNameFromFullName(fullName: unknown): string {
   return fullName
 }
 
-/** workspace_jianguoyun_com__fetch_ticket_messages → workspace.jianguoyun.com */
+/** https_workspace_jianguoyun_com__fetch_ticket_messages → workspace.jianguoyun.com */
 function getSourceLabel(fullName: string): string {
   // MCP: openpencil:get_node → openpencil
   if (fullName.includes(':') && !fullName.includes('__')) {
     return fullName.split(':')[0] || ''
   }
-  // WebMCP: {hostname}_{hash}_{hostname}__{toolName}
-  // e.g. workspace.jianguoyun.com_46be71ea_workspace_jianguoyun_com__fetch_ticket_content
+  // WebMCP fullNames have no schema hash or duplicate normalized hostname.
   const sepIdx = fullName.indexOf('__')
   if (sepIdx === -1) return ''
   const hostPart = fullName.slice(0, sepIdx)
-  // Extract hostname: take the part before the first _{hash}_
-  // The hostname itself may contain dots (e.g. workspace.jianguoyun.com)
-  // followed by _{hash}_{normalized_hostname_with_underscores}
-  // Strategy: split by first _ that's preceded by a dot (hostname boundary)
-  // or simpler: the first segment that looks like a hash (8+ hex chars)
-  const match = hostPart.match(/^(.+?)_[a-f0-9]{6,}_/)
-  if (match) return match[1]
-  // Fallback: no hash found, just clean up underscores
-  return hostPart.replace(/_/g, '.')
+  // Best-effort display for a sanitized name. Search results retain the raw
+  // origin/hostname for callers that need an exact address.
+  return hostPart.replace(/^https_/, '').replace(/^http_/, '').replace(/_/g, '.')
 }
 
 /** workspace_jianguoyun_com__fetch_ticket_messages → fetch_ticket_messages */

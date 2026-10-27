@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { validateManifest, validatePackage, validatePackageSnapshot, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
 import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
 import { readPackage, readPackageCatalog } from '../adapters'
-import { webmcpCommand } from '@/agent/tools/bash-worker/webmcp-command'
 import { manifest, source, pkg } from './fixtures'
 
 describe('package validation', () => {
@@ -91,15 +90,7 @@ describe('package validation', () => {
     expect(() => parseWorkflow(source.replace("outputSchema: { type: 'string' }", "outputSchema: { $ref: '#/definitions/value', definitions: { value: {type:'string'} } }"))).not.toThrow()
     expect(() => parseWorkflow(source.replace("outputSchema: { type: 'string' }", "outputSchema: { $ref: 'https://remote.test/schema' }"))).toThrow()
   })
-  it('provides package validation errors and shell exit codes', async () => {
-    const context = { cwd: '/external/webmcp', fs: { resolvePath: (_: string, p: string) => p, readFile: async (p: string) => p.endsWith('.json') ? JSON.stringify(manifest) : source } }
-    const result = await webmcpCommand.execute(['validate', '/external/webmcp/com.example.tools'], context as never)
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('com.example.tools@1.0.0')
-    expect((await webmcpCommand.execute([], context as never)).exitCode).toBe(2)
-    context.fs.readFile = async () => 'invalid'
-    expect((await webmcpCommand.execute(['validate', manifest.id], context as never)).exitCode).toBe(1)
-  })
+
 })
 
 describe('URL matching', () => {

@@ -2,9 +2,9 @@
  * WebMCP tool name utilities.
  *
  * LLM providers (Azure OpenAI, OpenAI) restrict function names to [a-zA-Z0-9_-],
- * but hostnames contain `.` and port numbers contain `:`. We build a provider-safe
- * fullName at discovery time while preserving the original hostname and toolName
- * in the route cache for correct invocation.
+ * but origins contain `.`, `:`, and `/`. We build a provider-safe fullName
+ * at discovery time while preserving the original origin and raw tool name
+ * as the logical tool identity.
  */
 
 const MAX_PROVIDER_TOOL_NAME_LENGTH = 64
@@ -38,27 +38,27 @@ function fnv1aHex(value: string): string {
 }
 
 /**
- * Build a provider-safe fullName from a hostname and toolName.
+ * Build a provider-safe fullName from an origin and raw toolName.
  *
  * Example:
- *   hostname = "pan-test.intra.local"
+ *   origin   = "https://pan-test.intra.local"
  *   toolName = "nutstore_browse"
- *   result   = "pan_test_intra_local__nutstore_browse"
+ *   result   = "https_pan_test_intra_local__nutstore_browse"
  *
  * If the result exceeds 64 characters, it is truncated and a FNV-1a hash
  * suffix is appended to preserve uniqueness.
  */
-export function buildSafeFullName(hostname: string, toolName: string): string {
-  const safeHost = normalizeSegment(hostname)
+export function buildSafeFullName(origin: string, toolName: string): string {
+  const safeOrigin = normalizeSegment(origin)
   const safeTool = normalizeSegment(toolName)
-  const base = `${safeHost}${SEPARATOR}${safeTool}`
+  const base = `${safeOrigin}${SEPARATOR}${safeTool}`
 
   if (base.length <= MAX_PROVIDER_TOOL_NAME_LENGTH) {
     return base
   }
 
   // Truncate and append hash suffix for uniqueness.
-  const suffix = fnv1aHex(`${hostname}\0${toolName}`)
+  const suffix = fnv1aHex(`${origin}\0${toolName}`)
   const budget = MAX_PROVIDER_TOOL_NAME_LENGTH - suffix.length - 1 // -1 for '_' before suffix
   return `${base.slice(0, Math.max(1, budget))}_${suffix}`
 }

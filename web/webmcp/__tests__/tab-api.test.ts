@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTabWebMCPApi } from '../../../browser-extension/entrypoints/webmcp/tab-api'
 
-const mocks = vi.hoisted(() => ({ discover: vi.fn(), execute: vi.fn(), host: vi.fn(), group: vi.fn() }))
+const mocks = vi.hoisted(() => ({ discover: vi.fn(), execute: vi.fn(), host: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/discovery', () => ({
   discoverToolsInTab: mocks.discover,
+  parseOrigin: (url: string) => {
+    const parsed = new URL(url)
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.origin : null
+  },
   parseHostname: (url: string) => {
     const parsed = new URL(url)
     return ['http:', 'https:'].includes(parsed.protocol) ? parsed.hostname : null
   },
 }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/invoke', () => ({ executeWebMCPToolInTab: mocks.execute }))
-vi.mock('../../../browser-extension/entrypoints/webmcp/authorization', () => ({ isHostEnabled: mocks.host, isGroupEnabled: mocks.group }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/authorization', () => ({ isHostEnabled: mocks.host }))
 
 const descriptor = { routeId: 'route', name: 'com.example.focus', description: 'Focus', urlRegex: '^https://example.com/.*$', inputSchema: { type: 'object' } }
 const get = vi.fn()
@@ -23,7 +27,6 @@ beforeEach(() => {
   list.mockResolvedValue([descriptor])
   mocks.discover.mockResolvedValue({ ok: true, tools: [{ name: 'native', description: 'Native', inputSchema: { type: 'object' } }] })
   mocks.host.mockResolvedValue(true)
-  mocks.group.mockResolvedValue(true)
   mocks.execute.mockResolvedValue({ ok: true, result: { focused: true } })
 })
 afterEach(() => vi.unstubAllGlobals())
@@ -59,11 +62,6 @@ describe('exact-tab WebMCP API', () => {
     await expect(api().listForTab(101)).rejects.toMatchObject({ details: { code: 'UNSUPPORTED_URL' } })
     expect(mocks.discover).not.toHaveBeenCalled()
     expect(list).not.toHaveBeenCalled()
-  })
-  it('enforces group authorization for discovery and execution', async () => {
-    mocks.group.mockResolvedValue(false)
-    await expect(api().invokeForTab(101, 'native', {})).rejects.toMatchObject({ details: { code: 'GROUP_DISABLED' } })
-    expect(mocks.execute).not.toHaveBeenCalled()
   })
   it('rejects navigation during discovery instead of pairing old tools with a new URL', async () => {
     get.mockResolvedValueOnce({ url: 'https://example.com/old' }).mockResolvedValue({ url: 'https://example.com/new' })

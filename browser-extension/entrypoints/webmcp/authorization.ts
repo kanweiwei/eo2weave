@@ -20,7 +20,6 @@
  */
 
 const STORAGE_KEY = 'webmcp_host_authorization'
-const GROUP_STORAGE_KEY = 'webmcp_group_authorization'
 
 export interface WebMCPHostAuthorizationMap {
   /** hostname (lowercase) → enabled */
@@ -34,7 +33,6 @@ export interface WebMCPHostAuthorizationSnapshot {
 
 /** In-memory cache; storage.local is the source of truth. */
 let cached: WebMCPHostAuthorizationMap | null = null
-let cachedGroups: WebMCPHostAuthorizationMap | null = null
 const listeners = new Set<(map: WebMCPHostAuthorizationMap) => void>()
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -62,18 +60,9 @@ async function loadFromStorage(): Promise<WebMCPHostAuthorizationMap> {
   })
 }
 
-async function loadGroupsFromStorage(): Promise<WebMCPHostAuthorizationMap> {
+async function persistMap(map: WebMCPHostAuthorizationMap): Promise<void> {
   return new Promise((resolve) => {
-    chrome.storage.local.get(GROUP_STORAGE_KEY, (result) => {
-      const raw = result?.[GROUP_STORAGE_KEY]
-      resolve(sanitizeMap(raw))
-    })
-  })
-}
-
-async function persistMap(map: WebMCPHostAuthorizationMap, storageKey: string = STORAGE_KEY): Promise<void> {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [storageKey]: map }, () => resolve())
+    chrome.storage.local.set({ [STORAGE_KEY]: map }, () => resolve())
   })
 }
 
@@ -95,19 +84,8 @@ async function ensureLoaded(force = false): Promise<WebMCPHostAuthorizationMap> 
   return map
 }
 
-async function ensureGroupsLoaded(force = false): Promise<WebMCPHostAuthorizationMap> {
-  if (cachedGroups !== null && !force) return cachedGroups
-  const map = await loadGroupsFromStorage()
-  cachedGroups = map
-  return map
-}
-
 export async function getHostAuthorizationMap(): Promise<WebMCPHostAuthorizationMap> {
   return ensureLoaded()
-}
-
-export async function getGroupAuthorizationMap(): Promise<WebMCPHostAuthorizationMap> {
-  return ensureGroupsLoaded()
 }
 
 export function isHostEnabledSync(map: WebMCPHostAuthorizationMap, hostname: string): boolean {
@@ -121,13 +99,6 @@ export async function isHostEnabled(hostname: string): Promise<boolean> {
   return isHostEnabledSync(map, hostname)
 }
 
-export async function isGroupEnabled(groupKey: string): Promise<boolean> {
-  const map = await ensureGroupsLoaded()
-  const normalized = groupKey.trim()
-  if (!normalized) return false
-  return map[normalized] !== false
-}
-
 export async function setHostEnabled(hostname: string, enabled: boolean): Promise<WebMCPHostAuthorizationMap> {
   const normalized = hostname.trim().toLowerCase()
   if (!normalized) throw new Error('hostname is required')
@@ -139,38 +110,17 @@ export async function setHostEnabled(hostname: string, enabled: boolean): Promis
   return next
 }
 
-export async function setGroupEnabled(groupKey: string, enabled: boolean): Promise<WebMCPHostAuthorizationMap> {
-  const normalized = groupKey.trim()
-  if (!normalized) throw new Error('groupKey is required')
-  const map = await ensureGroupsLoaded()
-  const next: WebMCPHostAuthorizationMap = { ...map, [normalized]: enabled }
-  cachedGroups = next
-  await persistMap(next, GROUP_STORAGE_KEY)
-  notifyListeners(next)
-  return next
-}
-
 /**
- * Attach per-host + per-group enabled flags to a discover response.
- * Returns a new array of tools annotated with `hostEnabled` /
- * `groupEnabled` so clients (web app, popup) render one consistent truth.
+ * Attach the per-host enabled flag to a discover response so clients
+ * (web app, popup) render one consistent authorization truth.
  */
 export function annotateToolsWithHostAuthorization<
-  T extends { hostname: string; groupKey?: string }
->(tools: T[], map: WebMCPHostAuthorizationMap, groupMap?: WebMCPHostAuthorizationMap): Array<T & { hostEnabled: boolean; groupEnabled?: boolean }> {
+  T extends { hostname: string }
+>(tools: T[], map: WebMCPHostAuthorizationMap): Array<T & { hostEnabled: boolean }> {
   return tools.map((tool) => ({
     ...tool,
     hostEnabled: isHostEnabledSync(map, tool.hostname),
-    ...(tool.groupKey && groupMap
-      ? { groupEnabled: isGroupEnabledSync(groupMap, tool.groupKey) }
-      : {}),
   }))
-}
-
-function isGroupEnabledSync(map: WebMCPHostAuthorizationMap, groupKey: string): boolean {
-  const normalized = groupKey.trim()
-  if (!normalized) return false
-  return map[normalized] !== false
 }
 
 /** Subscribe to authorization changes (popup live-refresh). */
@@ -182,9 +132,8 @@ export function onAuthorizationChanged(
 }
 
 /**
- * Build the authorization error payload used by invoke when a host or
- * group is disabled. Kept here so the error shape stays consistent
- * across call sites.
+ * Build the authorization error payload used by invoke when a host is
+ * disabled. Kept here so the error shape stays consistent across call sites.
  */
 export function hostDisabledError(hostname: string): {
   ok: false
@@ -198,18 +147,6 @@ export function hostDisabledError(hostname: string): {
   }
 }
 
-export function groupDisabledError(groupKey: string): {
-  ok: false
-  errorCode: 'GROUP_DISABLED'
-  error: string
-} {
-  return {
-    ok: false,
-    errorCode: 'GROUP_DISABLED' as const,
-    error: `This WebMCP tool group (${groupKey}) is disabled. Enable the group in the extension popup to invoke its tools.`,
-  }
-}
-
 // storage change listener keeps popup/background views consistent
 // when multiple contexts write (e.g. popup + web app relay).
 if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
@@ -219,11 +156,6 @@ if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     if (hostChange) {
       cached = sanitizeMap(hostChange.newValue)
       notifyListeners(cached)
-    }
-    const groupChange = changes[GROUP_STORAGE_KEY]
-    if (groupChange) {
-      cachedGroups = sanitizeMap(groupChange.newValue)
-      notifyListeners(cachedGroups)
     }
   })
 }

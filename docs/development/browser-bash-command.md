@@ -9,6 +9,24 @@ Web checks extension liveness through a real round-trip.
 Playwright CLI. `browser help` returns the manual as JSON. The same manual is
 included in the Agent's Bash tool description. No `man` or `--json` is needed.
 
+## Registration and recovery
+
+`registerCommand()` returns a callable cleanup handle with `getStatus()`:
+`current`, `missing` (Web expired the registration), or `replaced`. Handles do
+not retain command implementations. Web still withdraws commands after a failed
+liveness probe. The extension checks its handles every five seconds and on page
+focus/readiness, probes the background before restoring missing commands, and
+stops recovery when superseded. Disposal clears timers/listeners and prevents
+late probe replies from registering an old instance. Existing providers using
+only the callable cleanup remain supported.
+
+The extension also registers `cw-webmcp-adapter validate
+/external/{webmcp|builtin-webmcp}/<package-id>` for package validation. It replaces
+the Web-owned `webmcp validate` command and reads extension-owned mounts;
+workspace-relative package paths must first be copied into the extension mount.
+Exit codes are 0 (valid), 1 (invalid/unreadable), and 2 (incorrect usage).
+`browser webmcp list/exec` remains the interface for live tool discovery/execution.
+
 ## Output and composition
 
 Each non-empty stdout/stderr contains one JSON value followed by a newline.
@@ -138,7 +156,7 @@ From Bash, use `browser webmcp list --tab=<id>` to discover exact names and
 schemas from the live target page and the SW adapter catalog. `browser webmcp
 exec <name> '{}' --tab=<id>` invokes one tool after exact-tab authorization,
 without same-host tab fallback. Arguments may also come from stdin. `list` returns
-`{tabId,url,hostname,groupKey,tools,pageProbeError?}`; `exec` returns
+`{tabId,url,origin,hostname,tools,pageProbeError?}`; `exec` returns
 `{tabId,url,name,source,result}`. Check `pageProbeError` before interpreting an
 empty catalog. See [WebMCP packages](webmcp-packages.md#exact-tab-discovery-and-execution).
 

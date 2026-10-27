@@ -224,8 +224,7 @@
     #usageRefreshBtn:focus-visible,
     .capline .mgr:focus-visible,
     .webmcp-toggle:focus-visible,
-    .webmcp-host-left:focus-visible,
-    .webmcp-group-left:focus-visible {
+    .webmcp-host-left:focus-visible {
       outline: 2px solid #0d9488;
       outline-offset: 2px;
     }
@@ -304,7 +303,7 @@
       color: #a3a3a3;
       line-height: 1.5;
     }
-    /* Host card: vertical container — header row + nested group rows */
+    /* Host card: header row + tool preview */
     .webmcp-host {
       padding: 4px 0;
     }
@@ -401,77 +400,7 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
-    /* Nested group rows: indent with padding only (craft-floor bans >1px
-       side-stripe borders). Color is teal-tinted to harmonize with the
-       Brand-Muted Rule (DESIGN.md). */
-    .webmcp-groups {
-      margin-top: 2px;
-      margin-left: 10px;
-      padding-left: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-    .webmcp-group {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 3px 6px;
-      border-radius: 6px;
-    }
-    .webmcp-group:hover {
-      background: #f8fafc;
-    }
-    .webmcp-group.disabled-host {
-      opacity: 0.55;
-    }
-    .webmcp-group-left {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-      flex: 1;
-      cursor: pointer;
-    }
-    .webmcp-group-name-wrap {
-      min-width: 0;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-    }
-    .webmcp-group-name-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-    }
-    .webmcp-group-name {
-      font-size: 11px;
-      font-weight: 500;
-      color: #334155;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      min-width: 0;
-      flex: 0 1 auto;
-    }
-    .webmcp-group.disabled-host .webmcp-group-name {
-      text-decoration: line-through;
-      text-decoration-color: #94a3b8;
-    }
-    .webmcp-group-count {
-      flex: 0 0 auto;
-      font-size: 9px;
-      font-weight: 600;
-      color: #0d9488;
-      background: #f4f8f7;
-      border: 1px solid #d5e8e5;
-      border-radius: 999px;
-      padding: 0 6px;
-    }
-    .webmcp-group-preview {
+    .webmcp-tool-preview {
       font-size: 10px;
       color: #94a3b8;
       white-space: nowrap;

@@ -73,7 +73,7 @@ export default {
         description: "Open the conversation",
         async run({ input, state, target }) {
           const selector = state.selector;
-          await browser.click(selector, undefined, { tab: target.tabId, activate: true, timeout: 15000 });
+          await browser.click(selector, undefined, { tab: target.tabId, timeout: 15000 });
           return "success";
         },
       },

@@ -1,5 +1,12 @@
 export type WebMCPApiMode = 'documentModelContext'
 
+export interface WebMCPToolDefinition {
+  /** Canonical page origin (scheme + host + optional port). */
+  origin: string
+  /** Raw tool name registered by the page or adapter. */
+  name: string
+}
+
 export interface WebMCPToolMeta {
   name: string
   description: string
@@ -10,10 +17,8 @@ export interface WebMCPToolMeta {
   }
 }
 
-export interface WebMCPDiscoveredTool extends WebMCPToolMeta {
+export interface WebMCPDiscoveredTool extends WebMCPToolDefinition, WebMCPToolMeta {
   hostname: string
-  groupKey: string
-  toolsetSignature: string
   fullName: string
   tabId: number
   tabTitle?: string
@@ -32,12 +37,15 @@ export interface WebMCPDiscoverResponse {
 }
 
 export interface WebMCPInvokeRequest {
-  groupKey: string
-  fullToolName: string
+  /** Exact browser tab selected by the caller after discovery. */
+  targetTabId: number
+  /** Expected page origin; the background verifies this against the live tab. */
+  origin: string
+  /** Raw WebMCP tool name; no schema-derived identity is involved. */
+  toolName: string
   args?: Record<string, unknown>
-  preferredTabId?: number
-  /** Resolved by the background from a trusted side-panel binding. */
-  requiredTabId?: number
+  /** Opaque side-panel session binding used to authorize a target window. */
+  binding?: string
 }
 
 export interface WebMCPPluginDownloadPlan {
@@ -85,9 +93,9 @@ export type WebMCPPluginDownloadFrame =
 
 export interface WebMCPInvokeResponse {
   ok: boolean
+  origin: string
   hostname: string
   toolName: string
-  fullToolName: string
   tabId?: number
   apiMode?: WebMCPApiMode
   result?: unknown

@@ -70,7 +70,7 @@ if (window.__agentWeb?.ready) {
 
 ### WebMCP Tool Discovery
 
-Any website can expose tools (functions the AI agent can call) to EO2Weave by registering them via the **standard WebMCP API** (`document.modelContext`). No private protocol, no allowlist, no registration process — the extension discovers standard-conforming tools automatically, keeps a live per-tab registry, and lets users grant/revoke per-site and per-tool-group authorization from the popup.
+Any website can expose tools (functions the AI agent can call) to EO2Weave by registering them via the **standard WebMCP API** (`document.modelContext`). No private protocol, no allowlist, no registration process — the extension discovers standard-conforming tools automatically, keeps a live per-tab registry, and lets users grant or revoke site-level authorization from the popup.
 
 → Full integration guide for websites: [WebMCP Tools — Integration Guide](#webmcp-tools--integration-guide-for-websites)
 
@@ -120,10 +120,10 @@ page registers tools
   → webmcp.content.ts (ISOLATED world, static)
       validates and relays as webmcp_tab_report
   → background registry (storage.session-persisted)
-      → popup lists sites/groups instantly (no tab scan)
+      → popup lists sites and tools instantly (no tab scan)
       → EO2Weave web app discovers tools via window.__agentWeb.webmcpDiscoverTools()
   → agent invokes a tool via webmcpInvokeTool()
-      → authorization gate (host + group) → relayed back into the source tab
+      → site authorization + exact-tab validation → relayed back into the source tab
 ```
 
 The legacy scan-on-demand probe still exists as a fallback for tabs opened before the extension was (re)loaded; new tabs are pure push.
@@ -138,36 +138,37 @@ const { tools } = await window.__agentWeb.webMCPDiscover();
 
 // 2. Pick a tool (inputSchema describes the expected arguments)
 const target = tools.find(
-  (t) => t.hostname === 'workspace.jianguoyun.com' && t.name === 'fetch_ticket_messages'
+  (t) => t.origin === 'https://workspace.jianguoyun.com' && t.name === 'fetch_ticket_messages'
 );
 
 // 3. Invoke
 const resp = await window.__agentWeb.webMCPInvoke({
-  groupKey: target.groupKey,        // hostname_toolsetSignature
-  fullToolName: target.fullName,    // hostname__toolName (provider-safe)
+  targetTabId: target.tabId,        // exact runtime tab instance
+  origin: target.origin,            // canonical origin
+  toolName: target.name,            // raw name registered by the page or adapter
   args: { public_id: '175157', count: 30 },  // per the tool's inputSchema
-  preferredTabId: target.tabId,     // optional: pin execution to a specific tab
 });
 // → { ok, result, tabId, hostname, errorCode?, error? }
 ```
 
-Under the hood: `webMCPInvoke` → background authorization gates (host + group; disabled tools are refused before any page script runs) → routing (`preferredTabId` → last successful route → any tab in the group) → relayed into the source tab → the page agent uses the v6 `executeTool(descriptor, args)` object API (serializing only at the native Chromium boundary) → result returns the same way.
+Under the hood: `webMCPInvoke` checks site authorization and verifies that the exact `targetTabId` still has the requested origin and raw tool name, then relays into that same tab. It never falls back to another tab, even when that tab has the same origin and exposes the same tool. The page agent uses the v6 `executeTool(descriptor, args)` API and serializes only at the native Chromium boundary.
 
 **Error codes worth handling:**
 
 | errorCode | Meaning | Recovery |
 |-----------|---------|----------|
-| `HOST_DISABLED` / `GROUP_DISABLED` | The user revoked authorization for this site/tool group | Ask the user to re-enable it in the extension popup |
-| `TOOL_TARGET_NOT_FOUND` | No open tab provides this group anymore | Ask the user to reopen the page, then re-invoke |
-| `TOOL_NOT_FOUND` | The page's toolset changed | Re-run `webMCPDiscover()` |
+| `HOST_DISABLED` | The user revoked authorization for this site | Ask the user to re-enable it in the extension popup |
+| `TARGET_TAB_NOT_FOUND` | The exact target tab was closed | Ask the user to reopen the page, then re-invoke |
+| `TARGET_ORIGIN_MISMATCH` | The target tab navigated to another origin | Re-run `webMCPDiscover()` and choose a new target |
+| `TOOL_NOT_FOUND` | The exact target tab no longer exposes the raw tool name | Re-run `webMCPDiscover()` |
 
-Why the discovery response is a **flat list** (not host→group→tools): every consumer folds it differently — the agent registry uses it as-is, the popup and settings page group by host/group, and per-tool authorization filtering happens at the flat-record level in the background before the response leaves the extension. Nesting would only serve one view and lose the rest.
+Why the discovery response is a **flat list**: each record is one `origin + raw tool name + tabId` runtime instance. Consumers may group the logical tool by origin and name for display, while every invocation still carries the exact tab instance selected during discovery.
 
 ### Authorization model
 
-- **Default allow, opt-out per site and per tool group.** Users manage switches in the extension popup.
-- Tools from disabled sites/groups are **removed from discovery responses entirely** — they simply don't exist for pages or agents.
-- The invoke path independently enforces `HOST_DISABLED` / `GROUP_DISABLED` regardless of what any UI shows.
+- **Default allow, opt-out per site.** Users manage switches in the extension popup.
+- Tools from disabled sites are **removed from discovery responses entirely** — they simply don't exist for pages or agents.
+- The invoke path independently enforces `HOST_DISABLED` regardless of what any UI shows.
 - Websites cannot detect or influence their authorization state.
 
 ### Constraints & known limits
@@ -176,7 +177,7 @@ Why the discovery response is a **flat list** (not host→group→tools): every 
 |------|-------|
 | Tools per page entering the catalog | 100 (extra tools dropped) |
 | Tool description length | 2000 chars (longer is truncated) |
-| Tool full names | Provider-safe: `hostname__toolName`, `[a-zA-Z0-9_-]`, ≤ 64 chars (hash suffix on collision) |
+| Tool full names | Provider-safe from `origin + raw tool name`; `[a-zA-Z0-9_-]`, ≤ 64 chars, with a hash suffix when truncated |
 | Declarative form tools (annotated HTML forms) | **Not discovered** — only JS-registered (imperative) tools are |
 | `execute` return values | JSON-serializable; must survive `JSON.parse(JSON.stringify(v))` |
 
@@ -186,7 +187,7 @@ Why the discovery response is a **flat list** (not host→group→tools): every 
 
 ### Debugging tips
 
-- Check discovery: open the extension popup — your site's hostname and tool groups should appear within ~2s of registration.
+- Check discovery: open the extension popup — your site's hostname and tool names should appear within ~2s of registration.
 - Pages expose tools through `document.modelContext`; invocation serializes arguments once as JSON, matching the Chromium WebMCP API.
 - The extension initializes the current WebMCP polyfill at `document_start`, before site scripts register tools. After reloading the extension, reload existing tabs to initialize the page API again.
 - The registry is per-tab: navigate away or unregister tools and the tab disappears from the catalog automatically.
@@ -292,7 +293,7 @@ codex mcp add eo2weave-webmcp -- "$HOME/Library/Application Support/EO2Weave Nat
 claude mcp add eo2weave-webmcp -- "$HOME/Library/Application Support/EO2Weave NativeHost/NativeMessagingHosts/cw-native-host" --mcp-stdio
 ```
 
-Tool names follow the provider-safe `host__tool` convention; the per-host/per-group authorization switches apply to external agents exactly as they do in-app (disabled sites simply don't exist in `tools/list`). Bridge state file: `~/.eo2weave/webmcp-bridge.json` (port + pid). Build the distribution zip with `native-host/installer/build-dist-mac.sh` (Windows: `cargo build --release` + `install.ps1`).
+Logical tool names derive from `origin + raw tool name`; each native-bridge tool instance also carries an exact `__tab_<tabId>` suffix so external agents cannot accidentally execute against a sibling tab. Site authorization applies exactly as it does in-app, and disabled sites simply don't exist in `tools/list`. Bridge state file: `~/.eo2weave/webmcp-bridge.json` (port + pid). Build the distribution zip with `native-host/installer/build-dist-mac.sh` (Windows: `cargo build --release` + `install.ps1`).
 
 ## Codex OAuth Proxy (Open-Source Community Version)
 
@@ -346,14 +347,14 @@ browser-extension/
 │   ├── side-panel-button.content.ts  # Floating "唤起怡氧知知" button
 │   ├── popup/
 │   │   ├── index.html
-│   │   └── main.ts            # Popup: injection status, WebMCP site/group switches, Codex box (community version)
+│   │   └── main.ts            # Popup: injection status, WebMCP site switches, Codex box (community version)
 │   └── webmcp/                # WebMCP background modules
 │       ├── relay-protocol.ts  # Dual-world envelope + parsers (tool/desc clamps)
 │       ├── agent-core.ts      # Page-API resolution ladder (document→navigator→testing)
 │       ├── registry.ts        # Tab registry (storage.session, seen-set)
 │       ├── discovery.ts       # Registry-first discover + legacy probe fallback
 │       ├── invoke.ts          # Authorization gates + relay-first invoke
-│       ├── authorization.ts   # Per-host / per-group opt-out store
+│       ├── authorization.ts   # Per-site opt-out store
 │       └── ...
 └── public/                    # Icons, _locales, static assets
 ```
@@ -407,7 +408,7 @@ website page (standard WebMCP registration)
   → popup (instant list + live refresh) / web app (webmcpDiscoverTools)
 
 invoke: web app → webmcpInvokeTool → invoke.ts
-  → host/group authorization gates → tabs.sendMessage('webmcp_invoke_in_tab')
+  → site authorization + exact-tab checks → tabs.sendMessage('webmcp_invoke_in_tab')
   → relay → page agent → executeTool → response
   (legacy executeScript probe only for tabs predating extension load)
 ```

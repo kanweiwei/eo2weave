@@ -1,5 +1,7 @@
 import { getExtensionSkillStorage } from './skill-resources'
-import { readEnabledWebMCPPackages } from './package-repository'
+import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
+import { validateAdapterDirectory } from './adapter-validation'
+import { getWebMCPMounts, readEnabledWebMCPPackages } from './package-repository'
 import { getBuiltinStorage, BUILTIN_CONFIG_STORAGE_KEY } from './builtin-storage'
 import { createPackageManagement } from './package-management'
 import { getAdapterStorage } from './provider-storage'
@@ -45,6 +47,15 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
   const manage = createPackageManagement(providerCall, refresh)
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (!isRecord(message) || typeof message.type !== 'string') return false
+    if (message.type === 'webmcp_adapter_validate') {
+      if (sender.id !== chrome.runtime.id || !isTrustedCreatorWeaveSenderUrl(sender.url)) {
+        respond({ ok: false, error: 'Adapter validation requires a trusted CreatorWeave page' })
+        return false
+      }
+      void getWebMCPMounts().then(mounts => validateAdapterDirectory(message.directory, mounts))
+        .then(value => respond({ ok: true, ...value }), error => respond({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+      return true
+    }
     if (message.type === 'webmcp_provider_call') {
       if (sender.id !== chrome.runtime.id) { respond({ ok: false, code: 'EACCES', error: 'Untrusted storage caller' }); return false }
       if (message.mount !== undefined && !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(String(message.mount))) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }

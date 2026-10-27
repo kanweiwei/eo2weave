@@ -29,7 +29,6 @@ import {
   buildRelayEnvelope,
   parseAgentEvent,
 } from './webmcp/relay-protocol'
-import { XHS_INPUT_RESPONSE, isXhsInputRequest, isXhsInputTool, xhsInputTimeout } from './webmcp/xiaohongshu/xiaohongshu-input-protocol'
 
 type InvokeWaiter = {
   resolve: (value: {
@@ -140,27 +139,9 @@ export default defineContentScript({
     })
 
     // ── Upstream: background → page agent ──
-    // Relay only input requests belonging to an invocation delivered by the
-    // background. The background additionally binds the capability to the
-    // sender's own tab when it opens the session.
-    const inputSessions = new Set<string>()
-    window.addEventListener('message', (event) => {
-      if (event.source !== window || !isXhsInputRequest(event.data) || !inputSessions.has(event.data.session)) return
-      const request = event.data
-      void chrome.runtime.sendMessage(request).then((response) => {
-        window.postMessage({ type: XHS_INPUT_RESPONSE, session: request.session, requestId: request.requestId, ...response }, location.origin)
-      }).catch((error: Error) => {
-        window.postMessage({ type: XHS_INPUT_RESPONSE, session: request.session, requestId: request.requestId, ok: false, error: error.message }, location.origin)
-      })
-    })
-
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === 'webmcp_adapter_changed') { refreshAdapters(); return false }
       if (message?.type === WEBMCP_INVOKE_IN_TAB_TYPE) {
-        const inputSession = isXhsInputTool(message.toolName) && typeof message.args?._eo2_input_session === 'string' ? message.args._eo2_input_session : undefined
-        if (inputSession) inputSessions.add(inputSession)
-        const finish = (response: unknown) => { if (inputSession) inputSessions.delete(inputSession); sendResponse(response) }
-        const timeoutMs = isXhsInputTool(message.toolName) ? xhsInputTimeout(message.toolName) + WEBMCP_INVOKE_RELAY_TIMEOUT_MS : WEBMCP_INVOKE_RELAY_TIMEOUT_MS
         const requestId = `cw_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
         const timeoutId = window.setTimeout(() => {
           const waiter = invokeWaiters.get(requestId)
@@ -171,12 +152,12 @@ export default defineContentScript({
               requestId,
               ok: false,
               errorCode: 'RELAY_TIMEOUT',
-              error: `No invoke-response from the page agent within ${timeoutMs}ms`,
+              error: `No invoke-response from the page agent within ${WEBMCP_INVOKE_RELAY_TIMEOUT_MS}ms`,
             })
           }
-        }, timeoutMs)
+        }, WEBMCP_INVOKE_RELAY_TIMEOUT_MS)
 
-        invokeWaiters.set(requestId, { resolve: finish, timeoutId })
+        invokeWaiters.set(requestId, { resolve: sendResponse, timeoutId })
 
         window.postMessage(
           buildRelayEnvelope({

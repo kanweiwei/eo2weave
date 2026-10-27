@@ -81,7 +81,6 @@ export default {
       state.awaiting = next.path;
       await browser.click('a[aria-label="Previous thread"]', undefined, {
         tab: target.tabId,
-        activate: true,
         timeout: 15000,
       });
       state.moved++;

@@ -118,13 +118,13 @@ await browser.goto('https://example.com/search', {
 });
 await browser.fill('#query', input.query, { tab: target.tabId });
 await browser.press('Enter', { tab: target.tabId });
-await browser.click('#result', undefined, { tab: target.tabId, activate: true });
+await browser.click('#result', undefined, { tab: target.tabId });
 const snapshot = await browser.snapshot(undefined, { tab: target.tabId });
 ```
 
 Other methods: `open`, `close`, `tab.list/new/select/close`, `goBack`, `goForward`, `reload`, `evalElement`, `dblclick`, `type`, `keydown`, `keyup`, `hover`, `select`, `check`, `uncheck`, `drag`, `mouse.move/down/up/wheel`, `dialog.accept/dismiss`, `screenshot`, `detach`. `browser.exec(command, positionals, options)` calls any browser CLI command.
 
-`browser.click` requires its target tab to be active and throws otherwise. Pass `activate: true` to make the click bring a background tab to the foreground first.
+`browser.click` supports background tabs through temporary CDP focus emulation without switching the active tab. The page observes focus/visibility changes during the click; emulation is cleared afterward, including on failure or cancellation. Use `browser tab-select` explicitly when switching the active tab is desired.
 
 Expose shared extraction as a read-only WebMCP tool. Readers observe once; callers poll them from `wait`. Register readers on destination URLs where needed and avoid circular calls.
 
@@ -149,7 +149,7 @@ Workflows survive navigation; wait for destination data after the navigation lif
 2. Write the manifest and tool files, then run:
 
    ```bash
-   webmcp validate /external/webmcp/com.example.tools
+   cw-webmcp-adapter validate /external/webmcp/com.example.tools
    ```
 
    Exit codes: 0 valid, 1 invalid/unreadable package, 2 incorrect usage. Validation does not execute workflows.

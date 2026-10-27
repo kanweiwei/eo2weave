@@ -84,7 +84,7 @@ The project is also exploring multi-agent collaboration workflows for content cr
 ### WebMCP & Browser Extension
 
 - **WebMCP Tool Discovery**: Any website can register agent-callable tools via the standard WebMCP API (`document.modelContext`) — no private protocol, no allowlist; the extension discovers standard-conforming tools automatically and keeps a live per-tab registry
-- **Authorization Controls**: Grant or revoke access per site and per tool group from the extension popup
+- **Authorization Controls**: Grant or revoke WebMCP access per site from the extension popup
 - **Agent Web Access**: Built-in `web_search` / `web_fetch` tools let in-browser agents search and read the web
 - **Native Host (optional)**: Rust companion process provides local disk and command execution bridges
 

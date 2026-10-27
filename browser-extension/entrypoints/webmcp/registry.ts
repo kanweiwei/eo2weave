@@ -15,25 +15,23 @@
 // (see discovery.ts fallbackForRegistrySilentTabs).
 //
 // Persistence: chrome.storage.session (survives service-worker
-// restarts, cleared on browser restart). Disabled hosts/groups
-// stay in storage.local via authorization.ts — unchanged.
+// restarts, cleared on browser restart). Disabled hosts stay in
+// storage.local via authorization.ts.
 // ============================================================
 
 import type { WebMCPApiMode, WebMCPDiscoveredTool, WebMCPToolMeta } from './types'
-import { buildWebMCPGroupKey } from './group-key'
-import { buildToolsetSignature } from './toolset-signature'
 import { buildSafeFullName } from './tool-name'
 import { WEBMCP_REGISTRY_UPDATED_TYPE } from './relay-protocol'
 
-// Local copy of discovery.ts#parseHostname's URL check to avoid a
+// Local copy of discovery.ts parsers' URL check to avoid a
 // registry ↔ discovery import cycle (discovery imports this module
 // for the legacy fallback path).
-function isSupportedTabUrl(url: string): boolean {
+function parseSupportedUrl(url: string): URL | null {
   try {
     const parsed = new URL(url)
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -41,13 +39,13 @@ export interface WebMCPRegisteredTabEntry {
   tabId: number
   /** Browser-verified from sender.tab (page content cannot forge it). */
   hostname: string
+  /** Canonical origin from the browser-verified tab URL. */
+  origin: string
   tabTitle: string
   tabUrl: string
   windowId?: number
   apiMode: WebMCPApiMode
   tools: WebMCPToolMeta[]
-  toolsetSignature: string
-  groupKey: string
   updatedAt: number
 }
 
@@ -141,25 +139,23 @@ function sanitizeEntry(raw: unknown, tabId: unknown): WebMCPRegisteredTabEntry |
   if (tools.length === 0) return null
 
   const hostname = item.hostname
-  const toolsetSignature =
-    typeof item.toolsetSignature === 'string' && item.toolsetSignature.length === 8
-      ? item.toolsetSignature
-      : buildToolsetSignature(tools)
+  const tabUrl = typeof item.tabUrl === 'string' ? item.tabUrl : ''
+  const parsedUrl = parseSupportedUrl(tabUrl)
+  if (!parsedUrl || parsedUrl.hostname !== hostname) return null
   const now = Date.now()
 
   return {
     tabId,
     hostname,
+    origin: parsedUrl.origin,
     tabTitle: typeof item.tabTitle === 'string' ? item.tabTitle : '',
-    tabUrl: typeof item.tabUrl === 'string' ? item.tabUrl : '',
+    tabUrl,
     windowId: typeof item.windowId === 'number' ? item.windowId : undefined,
     apiMode:
       typeof item.apiMode === 'string' && item.apiMode.length > 0
         ? (item.apiMode as WebMCPApiMode)
         : 'documentModelContext',
     tools,
-    toolsetSignature,
-    groupKey: buildWebMCPGroupKey(hostname, toolsetSignature),
     updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : now,
   }
 }
@@ -190,6 +186,7 @@ function notifyRegistryUpdated(): void {
 export interface RegisterTabInput {
   tabId: number
   hostname: string
+  origin: string
   tabTitle: string
   tabUrl: string
   windowId?: number
@@ -228,17 +225,15 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     .filter(Boolean) as WebMCPToolMeta[]
   if (tools.length === 0) return
 
-  const toolsetSignature = buildToolsetSignature(tools)
   const entry: WebMCPRegisteredTabEntry = {
     tabId: input.tabId,
     hostname: input.hostname,
+    origin: input.origin,
     tabTitle: input.tabTitle,
     tabUrl: input.tabUrl,
     windowId: input.windowId,
     apiMode: input.apiMode || 'documentModelContext',
     tools,
-    toolsetSignature,
-    groupKey: buildWebMCPGroupKey(input.hostname, toolsetSignature),
     updatedAt: Date.now(),
   }
 
@@ -247,7 +242,9 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
   // only refresh timestamps if metadata changed (title/url).
   const unchanged =
     previous &&
-    previous.groupKey === entry.groupKey &&
+    previous.origin === entry.origin &&
+    JSON.stringify(previous.tools) === JSON.stringify(entry.tools) &&
+    previous.apiMode === entry.apiMode &&
     previous.tabTitle === entry.tabTitle &&
     previous.tabUrl === entry.tabUrl
   if (unchanged) {
@@ -344,10 +341,9 @@ export function entriesToDiscoveredTools(
     for (const tool of entry.tools) {
       tools.push({
         ...tool,
+        origin: entry.origin,
         hostname: entry.hostname,
-        groupKey: entry.groupKey,
-        toolsetSignature: entry.toolsetSignature,
-        fullName: buildSafeFullName(entry.hostname, tool.name),
+        fullName: buildSafeFullName(entry.origin, tool.name),
         tabId: entry.tabId,
         tabTitle: entry.tabTitle,
         tabUrl: entry.tabUrl,
@@ -369,7 +365,7 @@ export async function getRegistrySilentTabs(): Promise<Array<{ tabId: number; wi
     return tabs
       .filter(
         (tab): tab is chrome.tabs.Tab & { id: number; url: string } =>
-          typeof tab.id === 'number' && typeof tab.url === 'string' && isSupportedTabUrl(tab.url),
+          typeof tab.id === 'number' && typeof tab.url === 'string' && parseSupportedUrl(tab.url) !== null,
       )
       .filter((tab) => !seenTabs.has(tab.id))
       .map((tab) => ({ tabId: tab.id, windowId: tab.windowId }))

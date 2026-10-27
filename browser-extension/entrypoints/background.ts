@@ -5,23 +5,18 @@ import { installAdapterBackground } from './webmcp/adapter-background'
 import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
-import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
+import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
-import { getXhsCdpInput } from './webmcp/xiaohongshu-cdp-input'
-import { XHS_INPUT_MESSAGE } from './webmcp/xiaohongshu/xiaohongshu-input-protocol'
 import { createTabWebMCPApi } from './webmcp/tab-api'
 import {
   getHostAuthorizationMap,
-  getGroupAuthorizationMap,
   setHostEnabled as setWebMCPHostEnabled,
-  setGroupEnabled as setWebMCPGroupEnabled,
   annotateToolsWithHostAuthorization,
 } from './webmcp/authorization'
 import { streamPluginDownload } from './webmcp/plugin-download-transfer'
 import type { WebMCPPluginDownloadPlan, WebMCPDiscoveredTool } from './webmcp/types'
 import { registerTab, unregisterTab } from './webmcp/registry'
 import { getRegistryEntries, entriesToDiscoveredTools } from './webmcp/registry'
-import { buildSafeFullName } from './webmcp/tool-name'
 import { getWebMCPNativeBridge } from './webmcp/native-bridge'
 import { WEBMCP_TAB_REPORT_TYPE } from './webmcp/relay-protocol'
 import {
@@ -61,6 +56,27 @@ function rememberSidePanelBinding(bindingId: string, tabId: number): void {
   void sidePanelBindings.remember(bindingId, tabId).catch(() => {})
 }
 
+function isTrustedExtensionPageSender(
+  sender: chrome.runtime.MessageSender | undefined,
+): boolean {
+  const extensionId = chrome.runtime.id
+  if (!sender || !extensionId || sender.id !== extensionId || typeof sender.url !== 'string') {
+    return false
+  }
+  try {
+    const url = new URL(sender.url)
+    return url.protocol === 'chrome-extension:' && url.hostname === extensionId
+  } catch {
+    return false
+  }
+}
+
+function isTrustedWebMCPSender(
+  sender: chrome.runtime.MessageSender | undefined,
+): sender is chrome.runtime.MessageSender {
+  return isTrustedExtensionPageSender(sender) || isTrustedCreatorWeaveSenderUrl(sender?.url)
+}
+
 /**
  * Resolve the tab whose page content the panel's AI should read.
  *
@@ -76,8 +92,11 @@ function rememberSidePanelBinding(bindingId: string, tabId: number): void {
  * SECURITY: the caller (sender trust + opaque binding id) is unchanged; we
  * only widen WHICH tab is read, never bypass the binding's existence check.
  */
-async function resolvePageContextTab(senderUrl: string | undefined, bindingId: unknown): Promise<number | null> {
-  if (!isTrustedCreatorWeaveSenderUrl(senderUrl) || !isSidePanelBindingId(bindingId)) return null
+async function resolvePageContextTab(
+  sender: chrome.runtime.MessageSender | undefined,
+  bindingId: unknown,
+): Promise<number | null> {
+  if (!isTrustedWebMCPSender(sender) || !isSidePanelBindingId(bindingId)) return null
   const binding = await sidePanelBindings.resolve(bindingId).catch(() => null)
   if (!binding || !Number.isSafeInteger(binding.tabId)) return null
 
@@ -94,8 +113,11 @@ async function resolvePageContextTab(senderUrl: string | undefined, bindingId: u
   }
 }
 
-async function resolveBoundSidePanelTab(senderUrl: string | undefined, bindingId: unknown): Promise<number | null> {
-  if (!isTrustedCreatorWeaveSenderUrl(senderUrl) || !isSidePanelBindingId(bindingId)) return null
+async function resolveBoundSidePanelTab(
+  sender: chrome.runtime.MessageSender | undefined,
+  bindingId: unknown,
+): Promise<number | null> {
+  if (!isTrustedWebMCPSender(sender) || !isSidePanelBindingId(bindingId)) return null
   const binding = await sidePanelBindings.resolve(bindingId).catch(() => null)
   if (!binding || !Number.isSafeInteger(binding.tabId)) return null
 
@@ -104,6 +126,41 @@ async function resolveBoundSidePanelTab(senderUrl: string | undefined, bindingId
     return binding.tabId
   } catch {
     return null
+  }
+}
+
+async function resolveSidePanelBindingWindowId(
+  sender: chrome.runtime.MessageSender | undefined,
+  bindingId: unknown,
+): Promise<number | null> {
+  if (!isTrustedWebMCPSender(sender) || !isSidePanelBindingId(bindingId)) return null
+  const binding = await sidePanelBindings.resolve(bindingId).catch(() => null)
+  if (!binding || !Number.isSafeInteger(binding.tabId)) return null
+  try {
+    const tab = await chrome.tabs.get(binding.tabId)
+    return typeof tab.windowId === 'number' ? tab.windowId : null
+  } catch {
+    return null
+  }
+}
+
+async function isTrustedWebMCPTarget(
+  sender: chrome.runtime.MessageSender | undefined,
+  targetTabId: unknown,
+  bindingId: unknown,
+): Promise<boolean> {
+  if (!isTrustedWebMCPSender(sender)) return false
+  if (!Number.isSafeInteger(targetTabId) || (targetTabId as number) <= 0) return false
+  try {
+    const target = await chrome.tabs.get(targetTabId as number)
+    if (typeof target.windowId !== 'number') return false
+    if (typeof sender.tab?.windowId === 'number') {
+      return target.windowId === sender.tab.windowId
+    }
+    const bindingWindowId = await resolveSidePanelBindingWindowId(sender, bindingId)
+    return bindingWindowId !== null && target.windowId === bindingWindowId
+  } catch {
+    return false
   }
 }
 
@@ -984,6 +1041,7 @@ export default defineBackground(() => {
       return runBrowserRequest(owner, request, signal, tabWebMCP)
     },
   })
+  installAdapterCatalog(tabId => adapterService.listForTab(tabId))
   tabWebMCP = createTabWebMCPApi(adapterService)
   installAdapterInvoker((tabId, name, args, signal) => adapterService.invokeForTab(tabId, name, args, signal))
   const browserTasks = new Map<string, AbortController>()
@@ -1323,30 +1381,16 @@ export default defineBackground(() => {
 
   // ── WebMCP native bridge (Codex / external agents) ──────────────────────
   // Long-lived connectNative port keeping the cw-native-host daemon alive.
-  // Relay requests are answered via invokeWebMCPTool + registry (per-host /
-  // per-group authorization enforced there, same as in-app invocations).
+  // Relay requests are answered via invokeWebMCPTool + registry (per-host
+  // authorization enforced there, same as in-app invocations).
   const webmcpNativeBridge = getWebMCPNativeBridge({
     invokeTool: async (request) => {
-      // fullToolName alone cannot route — invokeWebMCPTool matches the
-      // registry / route cache by (groupKey, fullToolName). Resolve the
-      // groupKey from the live registry before invoking.
-      const entries = await getRegistryEntries()
-      for (const entry of entries) {
-        for (const tool of entry.tools) {
-          if (buildSafeFullName(entry.hostname, tool.name) === request.fullToolName) {
-            return invokeWebMCPTool({
-              groupKey: entry.groupKey,
-              fullToolName: request.fullToolName,
-              args: request.args,
-            })
-          }
-        }
-      }
-      return {
-        ok: false,
-        errorCode: 'INVALID_TOOL_NAME',
-        error: `No open tab exposes tool: ${request.fullToolName}`,
-      }
+      return invokeWebMCPTool({
+        targetTabId: request.tabId,
+        origin: request.origin,
+        toolName: request.toolName,
+        args: request.args,
+      })
     },
     listTools: async (): Promise<WebMCPDiscoveredTool[]> => {
       // Bridge has no window context — list tools from ALL windows.
@@ -1358,16 +1402,13 @@ export default defineBackground(() => {
       // merges registry data + probes silent tabs across ALL windows.
       const discovery = await discoverWebMCPToolsInCurrentWindow(undefined)
       const tools: WebMCPDiscoveredTool[] = discovery.ok ? discovery.tools : entriesToDiscoveredTools(await getRegistryEntries())
-      // Authorization filter: disabled hosts/groups must not exist for
+      // Authorization filter: disabled hosts must not exist for
       // external agents either (mirrors webmcp_discover_tools policy).
-      const [hostMap, groupMap] = await Promise.all([
-        getHostAuthorizationMap(),
-        getGroupAuthorizationMap(),
-      ])
-      const annotated = annotateToolsWithHostAuthorization(tools, hostMap, groupMap)
+      const hostMap = await getHostAuthorizationMap()
+      const annotated = annotateToolsWithHostAuthorization(tools, hostMap)
       return annotated.filter(
-        (tool: WebMCPDiscoveredTool & { hostEnabled?: boolean; groupEnabled?: boolean }) =>
-          tool.hostEnabled !== false && tool.groupEnabled !== false,
+        (tool: WebMCPDiscoveredTool & { hostEnabled?: boolean }) =>
+          tool.hostEnabled !== false,
       )
     },
   })
@@ -1375,12 +1416,6 @@ export default defineBackground(() => {
   void webmcpNativeBridge.resumeIfEnabled()
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    // Xiaohongshu CDP input requests: scoped to an open input session and the
-    // sender's own tab, so a hostile page cannot drive another tab's input.
-    if (message?.type === XHS_INPUT_MESSAGE) {
-      void Promise.resolve().then(() => getXhsCdpInput().handle(message, _sender)).then(sendResponse).catch((error: Error) => sendResponse({ ok: false, error: error.message }))
-      return true
-    }
     // Only claim OUR message types — an unconditional `return true` would
     // keep the sendResponse channel open for unrelated messages and race
     // the main listener above.
@@ -1784,7 +1819,7 @@ export default defineBackground(() => {
           // Page-mode slash commands (/summary /titles on a page without a
           // selection): pull readable body text from the FOLLOWED tab (the
           // user's currently active tab — same target as page context).
-          const bodyTabId = await resolvePageContextTab(_sender?.url, message.binding)
+          const bodyTabId = await resolvePageContextTab(_sender, message.binding)
           if (bodyTabId === null) {
             sendResponse(null)
             return
@@ -1820,7 +1855,7 @@ export default defineBackground(() => {
           // tab; only the content target follows the user's focus. This is
           // what makes "switch tab mid-conversation and keep chatting" work:
           // every LLM call pulls fresh context from wherever the user is now.
-          const targetTabId = await resolvePageContextTab(_sender?.url, message.binding)
+          const targetTabId = await resolvePageContextTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse(null)
             return
@@ -1895,10 +1930,9 @@ export default defineBackground(() => {
               },
             })
             const result = Array.isArray(results) ? results[0]?.result : null
-            // Attach the bound tab's id so the web app can scope WebMCP tool
-            // groups to THIS tab (same-hostname tabs in different apps —
-            // e.g. jmail.world / vs /messages — expose disjoint toolsets;
-            // hostname-only filtering would merge them).
+            // Attach the bound tab's id so the web app can scope WebMCP tools
+            // to THIS tab. Same-hostname tabs in different apps (for example
+            // jmail.world / and /messages) may expose different toolsets.
             const payload =
               result && typeof result === 'object'
                 ? { ...(result as Record<string, unknown>), tabId: targetTabId }
@@ -1927,7 +1961,7 @@ export default defineBackground(() => {
         // untrusted webpages from invoking MAIN-world page actions. The agent
         // layer remains responsible for UI confirmation of write actions.
         if (message.type === 'runBoundPageAction') {
-          const targetTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
+          const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse({
               ok: false,
@@ -2000,7 +2034,7 @@ export default defineBackground(() => {
         // this path does not attach the debugger, so no debug bar is shown). Only captures the current viewport — for
         // full-page capture, the agent should scroll + capture multiple times.
         if (message.type === 'captureBoundTab') {
-          const targetTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
+          const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse({ ok: false, errorCode: 'UNAUTHORIZED_TARGET', error: 'Missing or invalid side-panel binding.' })
             return
@@ -2082,13 +2116,16 @@ export default defineBackground(() => {
             return;
           }
           let hostname = '';
+          let origin = '';
           try {
             const parsed = new URL(tab.url);
             hostname = parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.hostname : '';
+            origin = parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : '';
           } catch {
             hostname = '';
+            origin = '';
           }
-          if (!hostname) {
+          if (!hostname || !origin) {
             sendResponse({ ok: false, error: 'webmcp_tab_report sender is not an http(s) tab' });
             return;
           }
@@ -2100,6 +2137,7 @@ export default defineBackground(() => {
             await registerTab({
               tabId: tab.id,
               hostname,
+              origin,
               tabTitle: tab.title || '',
               tabUrl: tab.url,
               windowId: tab.windowId,
@@ -2114,6 +2152,18 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'webmcp_discover_tools') {
+          if (!isTrustedWebMCPSender(_sender)) {
+            sendResponse({
+              ok: false,
+              tools: [],
+              scannedTabs: 0,
+              discoveredTabs: 0,
+              discoveredAt: Date.now(),
+              errorCode: 'UNAUTHORIZED_SENDER',
+              error: 'WebMCP discovery is available only to CreatorWeave',
+            });
+            return;
+          }
           // Window scoping: a web page sender is scoped to ITS window via
           // sender.tab.windowId. The popup (no sender.tab) must scope itself
           // explicitly — it passes options.windowId from its own
@@ -2121,26 +2171,27 @@ export default defineBackground(() => {
           // returned a CROSS-WINDOW global list (“ghost” sites from other
           // windows). Only trusted extension-internal senders may override.
           const isExtensionInternalSender = !_sender?.tab;
-          const senderWindowId = _sender?.tab?.windowId
+          const bindingWindowId = await resolveSidePanelBindingWindowId(
+            _sender,
+            message?.options?.binding,
+          );
+          const senderWindowId = bindingWindowId
+            ?? _sender?.tab?.windowId
             ?? (isExtensionInternalSender && typeof message?.options?.windowId === 'number'
               ? message.options.windowId
               : undefined);
-          const response = await discoverWebMCPToolsInCurrentWindow(senderWindowId);
+          const response = await discoverWebMCPToolsInCurrentWindow(senderWindowId, message?.options?.force === true);
           // Authorization is enforced at DISCOVERY time: tools from disabled
-          // hosts/groups are filtered out entirely — a disabled site simply
+          // hosts are filtered out entirely — a disabled site simply
           // does not exist for consumers. Unauthorized metadata (names,
           // schemas, source tabs) must not leak to pages either.
           // The popup is exempt: it needs the full picture to let the user
           // re-enable hidden sites, so it passes includeDisabled.
           if (response.ok) {
-            const [hostMap, groupMap] = await Promise.all([
-              getHostAuthorizationMap(),
-              getGroupAuthorizationMap(),
-            ]);
+            const hostMap = await getHostAuthorizationMap();
             const annotated = annotateToolsWithHostAuthorization(
               response.tools || [],
-              hostMap,
-              groupMap
+              hostMap
             );
             // includeDisabled is honored ONLY for extension-internal senders
             // (popup/background pages have no sender.tab). Messages relayed
@@ -2151,22 +2202,27 @@ export default defineBackground(() => {
             const includeDisabled = isExtensionInternal && message?.options?.includeDisabled === true;
             (response as any).tools = includeDisabled
               ? annotated
-              : annotated.filter((tool: any) => tool.hostEnabled !== false && tool.groupEnabled !== false);
+              : annotated.filter((tool: any) => tool.hostEnabled !== false);
           }
           sendResponse(response);
           return;
         }
 
         if (message.type === 'webmcp_get_host_authorization') {
-          const [hostMap, groupMap] = await Promise.all([
-            getHostAuthorizationMap(),
-            getGroupAuthorizationMap(),
-          ]);
-          sendResponse({ ok: true, enabledByHost: hostMap, enabledByGroup: groupMap });
+          if (!isTrustedWebMCPSender(_sender)) {
+            sendResponse({ ok: false, error: 'Unauthorized sender' });
+            return;
+          }
+          const hostMap = await getHostAuthorizationMap();
+          sendResponse({ ok: true, enabledByHost: hostMap });
           return;
         }
 
         if (message.type === 'webmcp_set_host_enabled') {
+          if (!isTrustedWebMCPSender(_sender)) {
+            sendResponse({ ok: false, error: 'Unauthorized sender' });
+            return;
+          }
           const hostname = typeof message.hostname === 'string' ? message.hostname : '';
           const enabled = message.enabled === true;
           if (!hostname) {
@@ -2182,39 +2238,20 @@ export default defineBackground(() => {
           return;
         }
 
-        if (message.type === 'webmcp_set_group_enabled') {
-          const groupKey = typeof message.groupKey === 'string' ? message.groupKey : '';
-          const enabled = message.enabled === true;
-          if (!groupKey) {
-            sendResponse({ ok: false, error: 'groupKey is required' });
+        if (message.type === 'webmcp_invoke_tool') {
+          if (!await isTrustedWebMCPTarget(_sender, message.targetTabId, message.binding)) {
+            sendResponse({
+              ok: false,
+              origin: typeof message.origin === 'string' ? message.origin : '',
+              hostname: '',
+              toolName: typeof message.toolName === 'string' ? message.toolName : '',
+              tabId: typeof message.targetTabId === 'number' ? message.targetTabId : undefined,
+              errorCode: 'UNAUTHORIZED_TARGET',
+              error: 'WebMCP invocation target is not authorized for this CreatorWeave session',
+            });
             return;
           }
-          try {
-            const map = await setWebMCPGroupEnabled(groupKey, enabled);
-            sendResponse({ ok: true, enabledByGroup: map });
-          } catch (err: any) {
-            sendResponse({ ok: false, error: err?.message || String(err) });
-          }
-          return;
-        }
-
-        if (message.type === 'webmcp_invoke_tool') {
-          const request = {
-            groupKey: message.groupKey,
-            fullToolName: message.fullToolName,
-            args: message.args,
-            preferredTabId: message.preferredTabId,
-          }
-          if (message.binding !== undefined) {
-            const requiredTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
-            if (requiredTabId === null) {
-              sendResponse({ ok: false, errorCode: 'BOUND_TAB_UNAVAILABLE', error: 'The side-panel tab binding is invalid or unavailable.' })
-              return
-            }
-            sendResponse(await invokeWebMCPTool({ ...request, requiredTabId }))
-            return
-          }
-          sendResponse(await invokeWebMCPTool(request));
+          sendResponse(await invokeWebMCPTool(message));
           return;
         }
 
