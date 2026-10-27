@@ -15,7 +15,7 @@ vi.mock('@/i18n', () => ({
   },
 }))
 
-import { ErrorBoundary } from '../ErrorBoundary'
+import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 
 // Silence React's error-boundary console.error noise during tests
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>
@@ -78,6 +78,9 @@ describe('ErrorBoundary', () => {
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe('kaboom')
     expect(typeof info.componentStack).toBe('string')
+    // The stack must be non-empty and identify the throwing component
+    expect((info.componentStack as string).trim()).not.toBe('')
+    expect(info.componentStack).toContain('Bomb')
   })
 
   it('recovers after clicking Retry', async () => {
