@@ -15,6 +15,7 @@ export const topbar = {
       noModels: "利用可能なモデルがありません",
       credentialExpired: "再ログインが必要です",
             noUsableModelWarning: "利用可能なモデルが未選択です。クリックして選択してください",
+            credentialExpiredWarning: "選択したモデルは再ログインが必要です。クリックして資格情報を管理",
       temporarilyUnavailable: "一時的に確認できません",
       noPinnedModels: "まだピン留めされたモデルはありません。設定で追加してください。",
       searchPlaceholder: "モデルを検索…",

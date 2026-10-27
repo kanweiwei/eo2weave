@@ -231,7 +231,11 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // user may want to copy the error message / re-login), so it still counts
   // as usable here — the send path shows the re-auth toast, not a dead
   // input. Same rule useConversationLogic applies at send time.
+  // No API key at all disables the composer too. The input only renders
+  // after `isLoading` (which includes `hasApiKeyLoaded`), so the hydration
+  // flash guard is already satisfied by the render gate here.
   const hasUsableModel = !!providerType && !!modelName
+  const hasSelectableModel = (hasUsableModel || modelCredentialStatus === 'expired') && hasApiKey
 
   const readiness: ProviderReadiness = {
     hasApiKey,
@@ -639,12 +643,12 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               <ActiveTabIndicator />
               <AgentRichInput
                 placeholder={
-                  hasUsableModel
+                  hasSelectableModel
                     ? t('welcome.placeholder')
                     : t('conversation.input.placeholderNoModel')
                 }
                 ariaLabel={t('conversation.input.ariaLabel')}
-                disabled={!hasUsableModel}
+                disabled={!hasSelectableModel}
                 agents={[]}
                 onSearchFiles={handleSearchFiles}
                 activeAgentId={null}
@@ -657,8 +661,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 sendState={{
                   isProcessing: false,
                   // Staged attachments alone are a sendable payload (plan A);
-                  // no usable model also disables sending.
-                  isSendDisabled: (!inputValue.trim() && pendingAssetCount === 0) || !hasUsableModel,
+                  // no selectable model (no key, or no provider/model chosen)
+                  // also disables sending. The expired-credential case keeps
+                  // the input editable; the send path shows the re-auth toast.
+                  isSendDisabled: (!inputValue.trim() && pendingAssetCount === 0) || !hasSelectableModel,
                   onSend: handleSubmit,
                   onCancel: () => {},
                   sendTitle: t('welcome.send'),

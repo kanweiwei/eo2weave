@@ -207,10 +207,13 @@ export function ModelQuickSwitch({
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
   // model selection. Expired credentials keep the selection (label above
-  // already appends the re-login hint) and get the warning too.
-  const noUsableModel = !loading && (
-    (!hasApiKey || !providerType || !modelName) || modelCredentialStatus === 'expired'
-  )
+  // already appends the re-login hint) and get the warning too — but the
+  // accessible label must NOT claim "no model selected" in that state
+  // (#84 review): it would misdirect screen-reader users away from the
+  // visible re-login action.
+  const noModelSelected = !loading && (!hasApiKey || !providerType || !modelName)
+  const credentialExpired = !loading && modelCredentialStatus === 'expired'
+  const noUsableModel = noModelSelected || credentialExpired
 
   const thinkingLevels: { value: ExtendedThinkingLevel; label: string }[] = [
     { value: 'minimal', label: t('conversation.thinkingLevels.minimal') },
@@ -288,7 +291,13 @@ export function ModelQuickSwitch({
           className={`h-7 w-fit max-w-full min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs ${
             noUsableModel ? 'text-amber-600 dark:text-amber-400' : ''
           }`}
-          aria-label={noUsableModel ? t('topbar.modelSwitcher.noUsableModelWarning') : undefined}
+          aria-label={
+            noModelSelected
+              ? t('topbar.modelSwitcher.noUsableModelWarning')
+              : credentialExpired
+                ? t('topbar.modelSwitcher.credentialExpiredWarning')
+                : undefined
+          }
         >
           <span className="flex min-w-0 items-center gap-1.5">
             <span

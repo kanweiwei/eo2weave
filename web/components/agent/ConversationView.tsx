@@ -90,8 +90,14 @@ export function ConversationView({
   // credential KEEPS the input editable — the user may need to copy the
   // error message or re-login — only the send path blocks (toast). The
   // ModelQuickSwitch chip shows the amber warning state for both cases.
+  // No API key at all disables the composer too — but only after
+  // `checkHasApiKey()` has run once: `hasApiKey` defaults to false before
+  // hydration, so gating on it alone would flash the input disabled on
+  // every load (see settings.store.hasApiKeyLoaded).
   const hasUsableModel = !!providerType && !!modelName
-  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired'
+  const hasSelectableModel =
+    (hasUsableModel || modelCredentialStatus === 'expired') &&
+    (logic.hasApiKey || !logic.hasApiKeyLoaded)
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,

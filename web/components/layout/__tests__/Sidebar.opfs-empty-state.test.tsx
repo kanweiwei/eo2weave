@@ -30,6 +30,7 @@ function renderPanel() {
       onFileDelete={() => {}}
       currentPendingCount={0}
       refreshPending={async () => {}}
+      activeProjectId={null}
       t={t}
     />,
   )

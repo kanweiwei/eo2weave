@@ -788,9 +788,20 @@ export const useSettingsStore = create<SettingsState>()(
 
       switchProviderAndModel: (newProviderType, newModelName) => {
         const state = get()
+        // The expired-credential flag describes the PREVIOUS provider's
+        // gateway auth (#84 review): switching to a different provider must
+        // clear it, or noUsableModel marks the new valid selection unusable.
+        // Switching WITHIN llm-gateway keeps it — the new model hits the
+        // same expired credential.
+        const credentialStillApplies = newProviderType === state.providerType
         const updates: Partial<SettingsState> = {
           providerType: newProviderType,
           modelName: newModelName,
+          ...(credentialStillApplies ||
+            (state.modelCredentialStatus !== 'expired' &&
+              state.modelCredentialStatus !== 'unauthorized')
+            ? {}
+            : { modelCredentialStatus: 'unknown' as const }),
           lastUsedModelByProvider: {
             ...state.lastUsedModelByProvider,
             [newProviderType]: newModelName,

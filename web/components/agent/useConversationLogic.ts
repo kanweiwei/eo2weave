@@ -111,6 +111,7 @@ export function useConversationLogic() {
 
   // ── Settings store (fine-grained selectors to avoid cascade re-renders) ──
   const hasApiKey = useSettingsStore((s) => s.hasApiKey)
+  const hasApiKeyLoaded = useSettingsStore((s) => s.hasApiKeyLoaded)
   const enableThinking = useSettingsStore((s) => s.enableThinking)
   const thinkingLevel = useSettingsStore((s) => s.thinkingLevel)
   const setEnableThinking = useSettingsStore((s) => s.setEnableThinking)
@@ -723,6 +724,7 @@ export function useConversationLogic() {
     queueDepth,
     // Settings
     hasApiKey,
+    hasApiKeyLoaded,
     enableThinking,
     thinkingLevel,
     setEnableThinking,

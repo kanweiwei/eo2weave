@@ -50,6 +50,7 @@ import { useWorkspaceStore } from '@/store/workspace.store'
 import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
+import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { FileTreePanel } from '@/components/file-viewer/FileTreePanel'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
@@ -517,6 +518,7 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   onRevealComplete,
   currentPendingCount,
   refreshPending,
+  activeProjectId,
   t,
 }: {
   resourceTab: ResourceTab
@@ -531,6 +533,7 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   onRevealComplete?: (() => void) | undefined
   currentPendingCount: number
   refreshPending: () => Promise<void>
+  activeProjectId: string | null
   t: (key: string, params?: Record<string, string | number>) => string
 }) {
   // Root collapse state for multi-root file tree
@@ -547,24 +550,34 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
   const opfsDisplayableCount =
     opfsPendingChanges.filter((c) => c.type !== 'delete').length + opfsCachedCount
 
-  // "Choose local folder" empty-state button (#82): mirrors FolderSelector's
-  // addFolder picker path (browser directory picker; side-panel users are
-  // excluded via canPickDirectory because in-panel showDirectoryPicker is
-  // unreliable and the topbar hands off to /folder-pick there instead).
+  // "Choose local folder" empty-state button (#82): same entry as the topbar
+  // FolderSelector's addFolder. In a side panel the in-panel
+  // showDirectoryPicker is unreliable (crbug 40240444 family), so this
+  // handler mirrors FolderSelector and hands off to the full-tab
+  // /folder-pick page instead of calling addRoot() directly.
   const canPickDirectory = getRuntimeCapability().canPickDirectory
+  const isSidePanel = isSidePanelMode()
   const addRoot = useFolderAccessStore((s) => s.addRoot)
   const [isAddingFolder, setIsAddingFolder] = useState(false)
   const handleChooseLocalFolder = useCallback(async () => {
     if (!canPickDirectory || isAddingFolder) return
     setIsAddingFolder(true)
     try {
+      if (isSidePanel) {
+        const url = new URL(window.location.href)
+        url.hash = ''
+        url.search = activeProjectId ? `?projectId=${encodeURIComponent(activeProjectId)}` : ''
+        url.pathname = '/folder-pick'
+        window.open(url.toString(), '_blank', 'noopener')
+        return
+      }
       await addRoot()
     } catch (error) {
       console.error('[Sidebar] Failed to open folder:', error)
     } finally {
       setIsAddingFolder(false)
     }
-  }, [addRoot, canPickDirectory, isAddingFolder])
+  }, [addRoot, canPickDirectory, isAddingFolder, isSidePanel, activeProjectId])
 
   const handleToggleCollapse = useCallback((rootName: string) => {
     setCollapsedRoots((prev) => {
@@ -1415,6 +1428,7 @@ export const Sidebar = memo(function Sidebar({
               onRevealComplete={onRevealComplete}
               currentPendingCount={currentPendingCount}
               refreshPending={refreshPending}
+              activeProjectId={activeProjectId}
               t={t}
             />
           </div>
