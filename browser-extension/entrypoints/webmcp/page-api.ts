@@ -98,19 +98,19 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
     ): Promise<unknown> => {
       const serialize =
         modelContext?.__isWebMCPPolyfill === true || typeof targetTool?.inputSchema === 'string'
-      // Security-first retry policy (mirrors agent-core.ts): retry only when
-      // we KNOW the tool never started — i.e. our own pre-dispatch object
-      // check failed on the object path. Page-thrown format rejections on the
-      // serialized path are never retried (the tool may have run already).
+      // Security-first policy (mirrors agent-core.ts): malformed payloads on
+      // the object path are rejected by local pre-dispatch validation BEFORE
+      // any executeTool call, then retried once in serialized form. If that
+      // retry also rejects, the tool never ran — surface the error.
       if (!serialize && (args === null || typeof args !== 'object')) {
         try {
-          return await callExecuteTool(modelContext, targetTool, args, false)
+          return await callExecuteTool(modelContext, targetTool, args, true)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (!/inputObject must be an object|Failed to parse input arguments/i.test(message)) {
             throw error
           }
-          return callExecuteTool(modelContext, targetTool, args, true)
+          throw new TypeError(`inputObject must be an object: ${typeof args}`)
         }
       }
       return callExecuteTool(modelContext, targetTool, args, serialize)

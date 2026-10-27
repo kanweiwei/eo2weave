@@ -101,25 +101,39 @@ describe('WebMCP invocation boundary', () => {
     }
   })
 
-  it('retries via the serialized format when our own pre-dispatch check fails the object path', async () => {
-    // Object path + non-object args: our pre-check fails before dispatch, so
-    // the tool provably never ran and the flip is side-effect-free.
-    const stringSchemaNativeTool = {
+  it('skips executeTool for malformed args on the object path and succeeds via the serialized retry', async () => {
+    // Local pre-dispatch validation rejects the payload BEFORE any
+    // executeTool call, so the malformed first attempt is provably never
+    // executed — the serialized retry is the tool's first and only run.
+    const objectSchemaNativeTool = {
       name: 'example', description: 'Example',
       inputSchema: { type: 'object' },
     }
-    const executeTool = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError('inputObject must be an object'))
-      .mockResolvedValue({ ok: true })
-    installContext(executeTool, 'native', stringSchemaNativeTool)
+    const executeTool = vi.fn().mockResolvedValue({ ok: true })
+    installContext(executeTool, 'native', objectSchemaNativeTool)
 
     await expect(
       resolveAgentApi()!.executeToolByName('example', 'raw-string' as unknown as Record<string, unknown>)
     ).resolves.toEqual({ ok: true })
-    expect(executeTool).toHaveBeenCalledTimes(2)
-    expect(executeTool).toHaveBeenNthCalledWith(1, stringSchemaNativeTool, 'raw-string')
-    expect(executeTool).toHaveBeenNthCalledWith(2, stringSchemaNativeTool, JSON.stringify('raw-string'))
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(executeTool).toHaveBeenCalledWith(objectSchemaNativeTool, JSON.stringify('raw-string'))
+  })
+
+  it('propagates without ever executing the tool when the serialized retry of malformed args also rejects', async () => {
+    const objectSchemaNativeTool = {
+      name: 'example', description: 'Example',
+      inputSchema: { type: 'object' },
+    }
+    const executeTool = vi.fn().mockRejectedValue(new TypeError('Failed to parse input arguments'))
+    installContext(executeTool, 'native', objectSchemaNativeTool)
+
+    await expect(
+      resolveAgentApi()!.executeToolByName('example', 42 as unknown as Record<string, unknown>)
+    ).rejects.toThrow('inputObject must be an object: number')
+    // The malformed payload never reached the boundary; the tool ran at most
+    // once (the serialized form), and the rejection propagates.
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(executeTool).toHaveBeenCalledWith(objectSchemaNativeTool, JSON.stringify(42))
   })
 
   it('never retries a page-thrown format rejection on the serialized path (tool may have run)', async () => {

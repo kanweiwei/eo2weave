@@ -87,17 +87,15 @@ function callExecuteTool(
 /**
  * Call a tool with the predicted argument format.
  *
- * Retry policy (security-first): a retry is only safe when we KNOW the tool
- * never started executing. That is decidable solely on the object-input
- * path, where we validate the args shape ourselves BEFORE dispatch — a
- * failure there cannot have run the tool, so flipping to the serialized
- * format and retrying once is side-effect-free. On the serialized path we
- * cannot distinguish a boundary rejection from a tool that ran and then
- * threw a matching error (a page controls both its hint and its error
- * text), so page-thrown format rejections are never retried — a lying page
- * could otherwise double-execute its side effect. This also removes the
- * dependency on page-provided annotations, which v6 polyfill's getTools()
- * may omit entirely.
+ * Retry policy (security-first): the wrapper never re-dispatches after a
+ * tool-visible failure. On the object-input path a non-object payload is
+ * rejected by local pre-dispatch validation BEFORE any executeTool call —
+ * so if the serialized flip also rejects, the tool still never ran, and
+ * the error propagates. Serialized-path rejections come from the page and
+ * could mean the tool already executed (it controls both its hint and its
+ * error text), so they are never retried. This also removes the dependency
+ * on page-provided annotations, which v6 polyfill's getTools() may omit
+ * entirely.
  */
 async function invokeToolWithFormat(
   modelContext: any,
@@ -108,17 +106,17 @@ async function invokeToolWithFormat(
     targetTool?.inputSchema,
     modelContext?.[WEBMCP_POLYFILL_MARKER],
   )
-  if (!serialize) {
-    // Pre-dispatch validation: a non-object payload can only fail at the
-    // boundary. Fail here — before the tool exists in the picture — and the
-    // alternate-format retry below is provably side-effect-free.
-    if (args === null || typeof args !== 'object') {
-      try {
-        return await callExecuteTool(modelContext, targetTool, args, false)
-      } catch (error) {
-        if (!isArgumentFormatRejection(error)) throw error
-        return callExecuteTool(modelContext, targetTool, args, true)
-      }
+  if (!serialize && (args === null || typeof args !== 'object')) {
+    // Local pre-dispatch validation: the object boundary (v6 polyfill's
+    // isObject gate) would reject this payload before running the tool, so
+    // the wrapper rejects it itself — executeTool is never called with a
+    // payload that cannot run — and the serialized retry is provably the
+    // tool's FIRST and only invocation.
+    try {
+      return await callExecuteTool(modelContext, targetTool, args, true)
+    } catch (error) {
+      if (!isArgumentFormatRejection(error)) throw error
+      throw new TypeError(`inputObject must be an object: ${typeof args}`)
     }
   }
   return callExecuteTool(modelContext, targetTool, args, serialize)
