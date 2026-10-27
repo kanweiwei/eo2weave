@@ -18,6 +18,11 @@
 
 import type { WebMCPApiMode } from './types'
 import type { WebMCPAgentToolMeta } from './relay-protocol'
+import {
+  WEBMCP_POLYFILL_MARKER,
+  isArgumentFormatRejection,
+  shouldSerializeToolArgs,
+} from './call-format'
 
 export interface ResolvedAgentApi {
   mode: WebMCPApiMode
@@ -63,19 +68,58 @@ export function normalizeAgentTools(tools: unknown): WebMCPAgentToolMeta[] {
 }
 
 /**
- * Invoke without retrying: current/native contexts accept objects, while
- * legacy v4 polyfills identify themselves and require serialized input.
+ * Invoke without retrying: pick the argument contract before the call so a
+ * side-effecting tool is never executed twice. Serialized JSON input is used
+ * for the marked legacy v4 polyfill AND for any context whose getTools()
+ * hands out string schemas (legacy native Chromium); everything else (v6
+ * polyfill, current native Chromium) receives objects.
  */
 function callExecuteTool(
   modelContext: any,
   targetTool: any,
   args: Record<string, unknown>,
+  serialize: boolean,
 ): Promise<unknown> {
-  const input =
-    modelContext?.__isWebMCPPolyfill === true
-      ? JSON.stringify(args || {})
-      : args || {}
+  const input = serialize ? JSON.stringify(args || {}) : args || {}
   return modelContext.executeTool(targetTool, input)
+}
+
+/**
+ * Call a tool with the predicted argument format.
+ *
+ * Retry policy (security-first): the wrapper never re-dispatches after a
+ * tool-visible failure. On the object-input path a non-object payload is
+ * rejected by local pre-dispatch validation BEFORE any executeTool call —
+ * so if the serialized flip also rejects, the tool still never ran, and
+ * the error propagates. Serialized-path rejections come from the page and
+ * could mean the tool already executed (it controls both its hint and its
+ * error text), so they are never retried. This also removes the dependency
+ * on page-provided annotations, which v6 polyfill's getTools() may omit
+ * entirely.
+ */
+async function invokeToolWithFormat(
+  modelContext: any,
+  targetTool: any,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const serialize = shouldSerializeToolArgs(
+    targetTool?.inputSchema,
+    modelContext?.[WEBMCP_POLYFILL_MARKER],
+  )
+  if (!serialize && (args === null || typeof args !== 'object')) {
+    // Local pre-dispatch validation: the object boundary (v6 polyfill's
+    // isObject gate) would reject this payload before running the tool, so
+    // the wrapper rejects it itself — executeTool is never called with a
+    // payload that cannot run — and the serialized retry is provably the
+    // tool's FIRST and only invocation.
+    try {
+      return await callExecuteTool(modelContext, targetTool, args, true)
+    } catch (error) {
+      if (!isArgumentFormatRejection(error)) throw error
+      throw new TypeError(`inputObject must be an object: ${typeof args}`)
+    }
+  }
+  return callExecuteTool(modelContext, targetTool, args, serialize)
 }
 
 /** Resolve the current document.modelContext WebMCP API. */
@@ -118,7 +162,7 @@ export function resolveAgentApi(): ResolvedAgentApi | null {
         if (!targetTool) {
           throw new Error(`Tool not found in tab: ${toolName}`)
         }
-        return callExecuteTool(modelContext, targetTool, args || {})
+        return invokeToolWithFormat(modelContext, targetTool, args || {})
       },
     }
   }

@@ -151,7 +151,7 @@ const resp = await window.__agentWeb.webMCPInvoke({
 // → { ok, result, tabId, hostname, errorCode?, error? }
 ```
 
-Under the hood: `webMCPInvoke` checks site authorization and verifies that the exact `targetTabId` still has the requested origin and raw tool name, then relays into that same tab. It never falls back to another tab, even when that tab has the same origin and exposes the same tool. The page agent uses the v6 `executeTool(descriptor, args)` API; only legacy v4 polyfills receive serialized arguments.
+Under the hood: `webMCPInvoke` checks site authorization and verifies that the exact `targetTabId` still has the requested origin and raw tool name, then relays into that same tab. It never falls back to another tab, even when that tab has the same origin and exposes the same tool. The page agent uses the v6 `executeTool(descriptor, args)` API; serialized arguments are used for legacy v4 polyfills (marker) and for contexts exposing string input schemas (legacy native Chromium). One-shot format handling: when the wrapper predicts the object format but the payload shape is invalid, it rejects locally BEFORE any `executeTool` call and retries once in serialized form — there, a failed call provably never executed the tool. Beyond that, callers must NOT assume a failed invocation was side-effect-free: on any serialized dispatch the page runs the tool at its own discretion and may perform side effects before throwing a format-shaped rejection. Such page-thrown rejections are converted to errors and never retried.
 
 **Error codes worth handling:**
 

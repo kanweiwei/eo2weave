@@ -194,7 +194,23 @@ async function invoke(page: Page, name: string, args: Record<string, unknown> = 
       const tools = await context.getTools()
       const tool = tools.find((candidate: any) => candidate?.name === name)
       if (!tool) throw new Error(`Registered tool disappeared: ${name}`)
-      const usesSerializedInput = context?.__isWebMCPPolyfill === true
+      // Mirrors browser-extension call-format.ts shouldSerializeToolArgs +
+      // invokeToolWithFormat: legacy v4 polyfill marker OR legacy-native
+      // string schema ⇒ JSON input. Malformed payloads on the object path
+      // are rejected locally BEFORE any executeTool call and retried once
+      // in serialized form (mirrors agent-core/page-api). Page-thrown
+      // format rejections are not retried (the tool may have executed).
+      const usesSerializedInput =
+        context?.__isWebMCPPolyfill === true || typeof tool?.inputSchema === 'string'
+      if (!usesSerializedInput && (args === null || typeof args !== 'object')) {
+        const result = await context.executeTool(tool, JSON.stringify(args))
+        if (typeof result === 'string') return JSON.parse(result)
+        try {
+          return JSON.parse(JSON.stringify(result))
+        } catch {
+          return String(result)
+        }
+      }
       const result = await context.executeTool(tool, usesSerializedInput ? JSON.stringify(args) : args)
       if (typeof result === 'string') return JSON.parse(result)
       try {

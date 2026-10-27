@@ -79,16 +79,41 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
     executeToolByName: (toolName: string, args: Record<string, unknown>) => Promise<unknown>
   } | null => {
     // Choose before invocation so side-effecting legacy tools are never retried.
+    // Dependency-free inlined copy of call-format.ts's shouldSerializeToolArgs +
+    // invokeToolWithFormat (executeScript cannot import modules) — keep in sync.
     const callExecuteTool = (
       modelContext: any,
       targetTool: any,
       args: Record<string, unknown>,
+      serialize: boolean,
     ): Promise<unknown> => {
-      const input =
-        modelContext?.__isWebMCPPolyfill === true
-          ? JSON.stringify(args || {})
-          : args || {}
+      const input = serialize ? JSON.stringify(args || {}) : args || {}
       return modelContext.executeTool(targetTool, input)
+    }
+
+    const invokeToolWithFormat = async (
+      modelContext: any,
+      targetTool: any,
+      args: Record<string, unknown>,
+    ): Promise<unknown> => {
+      const serialize =
+        modelContext?.__isWebMCPPolyfill === true || typeof targetTool?.inputSchema === 'string'
+      // Security-first policy (mirrors agent-core.ts): malformed payloads on
+      // the object path are rejected by local pre-dispatch validation BEFORE
+      // any executeTool call, then retried once in serialized form. If that
+      // retry also rejects, the tool never ran — surface the error.
+      if (!serialize && (args === null || typeof args !== 'object')) {
+        try {
+          return await callExecuteTool(modelContext, targetTool, args, true)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!/inputObject must be an object|Failed to parse input arguments/i.test(message)) {
+            throw error
+          }
+          throw new TypeError(`inputObject must be an object: ${typeof args}`)
+        }
+      }
+      return callExecuteTool(modelContext, targetTool, args, serialize)
     }
 
     const createImperativeApi = (
@@ -118,7 +143,7 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
           }
 
           // Keep this dependency-free probe in sync with agent-core.ts.
-          return callExecuteTool(modelContext, targetTool, args || {})
+          return invokeToolWithFormat(modelContext, targetTool, args || {})
         },
       }
     }
