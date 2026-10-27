@@ -17,7 +17,6 @@
 import { WorkerVfsBridgeFs, type VfsRpcInvoker } from './worker-vfs-bridge'
 import { createProxyCommand } from './proxy-command'
 import type { BashCommandResult } from '@/agent/bash-commands/registry'
-import { webmcpCommand } from './webmcp-command'
 import type {
   ToWorkerMessage,
   FromWorkerMessage,
@@ -172,7 +171,7 @@ async function handleExec(req: WorkerExecRequest): Promise<void> {
 
   const defaultCwd = rootNames.length > 0 ? `/workspace/${rootNames[0]}` : '/workspace'
 
-  const customCommands = new Map([[webmcpCommand.name, webmcpCommand]])
+  const customCommands = new Map<string, ReturnType<typeof createProxyCommand>>()
   for (const name of req.readOnly ? [] : req.externalCommands ?? []) {
     customCommands.set(name, createProxyCommand(name, (name, input) => {
       const rpcId = ++rpcCounter

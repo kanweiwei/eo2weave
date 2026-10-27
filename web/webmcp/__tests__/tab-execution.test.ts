@@ -2,39 +2,60 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { executeWebMCPToolInTab, installAdapterInvoker, invokeWebMCPTool } from '../../../browser-extension/entrypoints/webmcp/invoke'
 const mocks = vi.hoisted(() => ({ adapter: vi.fn(), send: vi.fn(), script: vi.fn(), info: vi.fn(), get: vi.fn(), route: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/discovery', () => ({
-  discoverToolsInTab: vi.fn(), getRecentRoute: mocks.route,
-  getRecentTabsForGroup: () => [{ tabId: 102 }], getTabGroupInfo: mocks.info,
+  discoverToolsInTab: mocks.info,
   parseHostname: (url: string) => new URL(url).hostname,
-  rememberSuccessfulInvocation: vi.fn(),
+  parseOrigin: (url: string) => new URL(url).origin,
 }))
-vi.mock('../../../browser-extension/entrypoints/webmcp/registry', () => ({ getRegistryEntries: async () => [] }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/registry', () => ({ getRegistryEntries: mocks.route }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/authorization', () => ({
-  isHostEnabled: async () => true, isGroupEnabled: async () => true,
-  hostDisabledError: vi.fn(), groupDisabledError: vi.fn(),
+  isHostEnabled: async () => true,
+  hostDisabledError: vi.fn(),
 }))
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.adapter.mockResolvedValue(null)
-  mocks.route.mockReturnValue({ tabId: 102, hostname: 'example.com', groupKey: 'group', toolName: 'native', toolsetSignature: 'signature' })
+  mocks.route.mockResolvedValue([{
+    tabId: 102,
+    origin: 'https://example.com',
+    hostname: 'example.com',
+    tools: [{ name: 'native', description: '', inputSchema: { type: 'object' } }],
+  }])
   mocks.get.mockImplementation(async (id: number) => ({ id, url: 'https://example.com/' }))
-  mocks.info.mockImplementation(async (id: number) => ({ groupKey: id === 102 ? 'group' : 'other' }))
+  mocks.info.mockResolvedValue({ ok: true, tools: [] })
   vi.stubGlobal('chrome', { tabs: { get: mocks.get, sendMessage: mocks.send }, scripting: { executeScript: mocks.script }, runtime: {} })
   installAdapterInvoker(mocks.adapter)
 })
 afterEach(() => vi.unstubAllGlobals())
 
-it('never falls back to a same-host tab when the explicit target does not match', async () => {
-  expect(await invokeWebMCPTool({ preferredTabId: 101, groupKey: 'group', fullToolName: 'full', args: {} }))
-    .toMatchObject({ ok: false, errorCode: 'TOOL_TARGET_NOT_FOUND' })
+it('never falls back to a same-host tab when the exact target lacks the tool', async () => {
+  expect(await invokeWebMCPTool({
+    targetTabId: 101,
+    origin: 'https://example.com',
+    toolName: 'native',
+    args: {},
+  })).toMatchObject({ ok: false, errorCode: 'TOOL_NOT_FOUND' })
   expect(mocks.adapter).not.toHaveBeenCalled()
   expect(mocks.send).not.toHaveBeenCalled()
 })
-it('does not scan other tabs for an explicit target even when no route is cached', async () => {
-  mocks.route.mockReturnValue(null)
-  expect(await invokeWebMCPTool({ preferredTabId: 101, groupKey: 'group', fullToolName: 'full', args: {} }))
-    .toMatchObject({ ok: false, errorCode: 'INVALID_TOOL_NAME' })
+it('probes only the exact target tab', async () => {
+  expect(await invokeWebMCPTool({
+    targetTabId: 101,
+    origin: 'https://example.com',
+    toolName: 'native',
+    args: {},
+  })).toMatchObject({ ok: false, errorCode: 'TOOL_NOT_FOUND' })
   expect(mocks.info).toHaveBeenCalledTimes(1)
   expect(mocks.info).toHaveBeenCalledWith(101)
+  expect(mocks.send).not.toHaveBeenCalled()
+})
+it('rejects a target tab that no longer has the expected origin', async () => {
+  expect(await invokeWebMCPTool({
+    targetTabId: 101,
+    origin: 'https://other.example',
+    toolName: 'native',
+    args: {},
+  })).toMatchObject({ ok: false, errorCode: 'TARGET_ORIGIN_MISMATCH' })
+  expect(mocks.info).not.toHaveBeenCalled()
   expect(mocks.send).not.toHaveBeenCalled()
 })
 it('executes available adapters without a page relay or script probe', async () => {

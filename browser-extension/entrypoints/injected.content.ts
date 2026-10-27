@@ -13,6 +13,7 @@ import { installWebMcpProvider } from './webmcp/provider'
 import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
+import { installAdapterCommand } from '../lib/bash-commands/adapter'
 import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts). Store builds
@@ -797,12 +798,15 @@ export default defineContentScript({
       },
 
       /** Discover WebMCP tools across tabs in the current window. */
-      async webMCPDiscover(options?: { force?: boolean }) {
+      async webMCPDiscover(options?: { force?: boolean; binding?: string }) {
         // Only `force` is honored from pages. includeDisabled is a popup-only
         // escape hatch — a page must never see disabled (unauthorized) tools,
         // so it is stripped here regardless of what the caller sends.
         return sendToBridge('webmcp_discover_tools', {
-          options: { force: options?.force === true },
+          options: {
+            force: options?.force === true,
+            ...(typeof options?.binding === 'string' ? { binding: options.binding } : {}),
+          },
         });
       },
 
@@ -810,17 +814,18 @@ export default defineContentScript({
        * Invoke a discovered WebMCP tool.
        */
       async webMCPInvoke(payload: {
-        groupKey: string
-        fullToolName: string
+        targetTabId: number
+        origin: string
+        toolName: string
         args?: Record<string, unknown>
-        preferredTabId?: number
+        binding?: string
       }) {
         return sendToBridge('webmcp_invoke_tool', payload || {});
       },
 
       /**
        * Get the extension-side WebMCP authorization state.
-       * The extension storage is the single source of truth for host/group
+       * The extension storage is the single source of truth for host
        * switches (enforced by the background invoke gate); the web app only
        * renders this state. Management (toggling) lives exclusively in the
        * extension popup — no set methods are exposed to the page.
@@ -1072,12 +1077,14 @@ export default defineContentScript({
     };
 
     const disposeBrowserCommand = installBrowserCommand(sendToBridge)
+    const disposeAdapterCommand = installAdapterCommand(sendToBridge)
     const disposeProvider = isTrustedCreatorWeaveSenderUrl(location.href)
       ? installWebMcpProvider(sendToBridge) : () => {}
 
     ;(window as any).__agentWebBridgeState = {
       dispose() {
         disposeBrowserCommand()
+        disposeAdapterCommand()
         disposeProvider()
         window.removeEventListener('message', onBridgeMessage)
         window.removeEventListener('message', onScheduleTrigger)

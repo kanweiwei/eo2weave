@@ -1,9 +1,7 @@
 import { BrowserError } from '../../lib/bash-commands/browser/errors'
-import { discoverToolsInTab, parseHostname } from './discovery'
+import { discoverToolsInTab, parseHostname, parseOrigin } from './discovery'
 import { executeWebMCPToolInTab } from './invoke'
-import { isHostEnabled, isGroupEnabled } from './authorization'
-import { buildToolsetSignature } from './toolset-signature'
-import { buildWebMCPGroupKey } from './group-key'
+import { isHostEnabled } from './authorization'
 import type { AdapterDescriptor } from '@creatorweave/shared/webmcp-adapter-protocol'
 import type { WebMCPToolMeta } from './types'
 
@@ -14,8 +12,8 @@ export interface TabWebMCPTool extends WebMCPToolMeta {
 export interface TabWebMCPCatalog {
   tabId: number
   url: string
+  origin: string
   hostname: string
-  groupKey: string
   tools: TabWebMCPTool[]
   pageProbeError?: string
 }
@@ -54,13 +52,14 @@ export function createTabWebMCPApi(adapters: { listForTab(tabId: number): Promis
     if (!Number.isSafeInteger(tabId) || tabId <= 0) fail('INVALID_TAB', 'Expected a positive Chrome tab ID')
     const tab = await chrome.tabs.get(tabId)
     const hostname = parseHostname(tab.url || '')
-    if (!hostname) fail('UNSUPPORTED_URL', 'WebMCP requires an HTTP(S) tab')
+    const origin = parseOrigin(tab.url || '')
+    if (!hostname || !origin) fail('UNSUPPORTED_URL', 'WebMCP requires an HTTP(S) tab')
     if (!await isHostEnabled(hostname)) fail('HOST_DISABLED', `WebMCP is disabled for ${hostname}`)
-    return { url: tab.url!, hostname }
+    return { url: tab.url!, origin, hostname }
   }
   const listForTab = async (tabId: number, signal?: AbortSignal): Promise<TabWebMCPCatalog> => {
     signal?.throwIfAborted()
-    const { url, hostname } = await checkHost(tabId)
+    const { url, origin, hostname } = await checkHost(tabId)
     signal?.throwIfAborted()
     const [page, descriptors] = await waitForWebMCP(Promise.all([
       discoverToolsInTab(tabId), adapters.listForTab(tabId),
@@ -72,19 +71,14 @@ export function createTabWebMCPApi(adapters: { listForTab(tabId: number): Promis
         ? tool.inputSchema as Record<string, unknown> : { type: 'object', properties: {} },
       source: 'page',
     })
-    const pageGroupKey = buildWebMCPGroupKey(hostname, buildToolsetSignature([...tools.values()]))
     // The SW catalog wins over a page proxy, including its schema and execution route.
     for (const tool of descriptors) tools.set(tool.name, {
       name: tool.name, description: tool.description, inputSchema: tool.inputSchema, source: 'adapter',
     })
     const current = await checkHost(tabId)
     if (current.url !== url) fail('PAGE_CHANGED', 'The tab navigated during WebMCP discovery; list tools again')
-    const groupKey = buildWebMCPGroupKey(hostname, buildToolsetSignature([...tools.values()]))
-    // Also respect the page-only group when adapter proxies have not appeared yet.
-    if (!await isGroupEnabled(groupKey) || !await isGroupEnabled(pageGroupKey))
-      fail('GROUP_DISABLED', `WebMCP is disabled for this tool group: ${groupKey}`)
     signal?.throwIfAborted()
-    return { tabId, url, hostname, groupKey, tools: [...tools.values()],
+    return { tabId, url, origin, hostname, tools: [...tools.values()],
       ...(!page.ok ? { pageProbeError: page.error || 'Page WebMCP discovery failed' } : {}) }
   }
   return {

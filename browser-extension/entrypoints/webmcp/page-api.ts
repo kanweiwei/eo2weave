@@ -78,6 +78,19 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
     getTools: () => Promise<WebMCPToolMeta[]>
     executeToolByName: (toolName: string, args: Record<string, unknown>) => Promise<unknown>
   } | null => {
+    // Choose before invocation so side-effecting legacy tools are never retried.
+    const callExecuteTool = (
+      modelContext: any,
+      targetTool: any,
+      args: Record<string, unknown>,
+    ): Promise<unknown> => {
+      const input =
+        modelContext?.__isWebMCPPolyfill === true
+          ? JSON.stringify(args || {})
+          : args || {}
+      return modelContext.executeTool(targetTool, input)
+    }
+
     const createImperativeApi = (
       modelContext: any,
       mode: WebMCPApiMode,
@@ -90,14 +103,6 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
       ) {
         return null
       }
-
-      // The v6 polyfill accepts an object. Chromium's native ModelContext
-      // currently accepts serialized JSON; select its boundary before execution.
-      const ModelContext = (globalThis as any).ModelContext
-      const usesNativeInput =
-        typeof ModelContext === 'function' &&
-        modelContext instanceof ModelContext &&
-        Function.prototype.toString.call(ModelContext).includes('[native code]')
 
       return {
         mode,
@@ -113,7 +118,7 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
           }
 
           // Keep this dependency-free probe in sync with agent-core.ts.
-          return modelContext.executeTool(targetTool, usesNativeInput ? JSON.stringify(args || {}) : args || {})
+          return callExecuteTool(modelContext, targetTool, args || {})
         },
       }
     }

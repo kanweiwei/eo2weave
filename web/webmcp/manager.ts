@@ -3,6 +3,7 @@ import { dedupeDiscoveredInstances } from './catalog-normalizer'
 import { useWebMCPStore } from './store'
 import type { WebMCPRegisteredTool } from './types'
 import { useSettingsStore } from '@/store/settings.store'
+import { getSidePanelBindingId, isSidePanelMode } from '@/agent/workspace-assistant-context'
 
 const DISCOVERY_TTL_MS = 8000
 
@@ -16,20 +17,17 @@ function isExtensionContextInvalidatedError(error: unknown): boolean {
 
 /**
  * Sync extension-side authorization state into the store mirror.
- * Called after discovery — the tools' hostEnabled/groupEnabled annotations
+ * Called after discovery — the tools' hostEnabled annotations
  * (attached by the extension background) are the source of truth; the web
  * app's localStorage copy is read-only from now on.
  */
-function syncAuthorizationFromTools(tools: Array<{ hostname: string; groupKey: string; hostEnabled?: boolean; groupEnabled?: boolean }>): void {
+function syncAuthorizationFromTools(tools: Array<{ hostname: string; hostEnabled?: boolean }>): void {
   const enabledByHost: Record<string, boolean> = {}
-  const enabledByGroup: Record<string, boolean> = {}
   for (const tool of tools) {
     const host = tool.hostname.trim().toLowerCase()
     if (host && typeof tool.hostEnabled === 'boolean') enabledByHost[host] = tool.hostEnabled
-    const group = tool.groupKey.trim()
-    if (group && typeof tool.groupEnabled === 'boolean') enabledByGroup[group] = tool.groupEnabled
   }
-  useWebMCPStore.getState().setAuthorizationMirror(enabledByHost, enabledByGroup)
+  useWebMCPStore.getState().setAuthorizationMirror(enabledByHost)
 }
 
 /**
@@ -55,7 +53,12 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
       return []
     }
 
-    const response = await bridge.webMCPDiscover({ force })
+    const response = await bridge.webMCPDiscover({
+      force,
+      ...(isSidePanelMode() && getSidePanelBindingId()
+        ? { binding: getSidePanelBindingId()! }
+        : {}),
+    })
     if (!response.ok) {
       console.warn('[WebMCP] Discovery failed:', response.error || 'unknown error')
       if (isExtensionContextInvalidatedError(response.error)) {
@@ -92,14 +95,14 @@ export async function discoverWebMCPCatalog(force = false): Promise<WebMCPRegist
 /** Refresh WebMCP catalog (force re-discovery). Returns AUTHORIZED tools. */
 export async function refreshWebMCPCatalog(): Promise<WebMCPRegisteredTool[]> {
   // The settings page and callers treat this count as "tools you can use",
-  // so filter to authorized tools (host && group on). Discovery itself still
+  // so filter to tools from authorized hosts. Discovery itself still
   // caches the full catalog — authorization is enforced by the extension
   // invoke gate and mirrored here via annotations.
   await discoverWebMCPCatalog(true)
   return useWebMCPStore.getState().getEnabledTools()
 }
 
-// NOTE: host/group authorization toggles were removed from the web app.
+// NOTE: host authorization toggles were removed from the web app.
 // The extension popup is the only management surface; the extension-side
 // store is the single source of truth, mirrored into the web store via
 // discovery annotations (syncAuthorizationFromTools).

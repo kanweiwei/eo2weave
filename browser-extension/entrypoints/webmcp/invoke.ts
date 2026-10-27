@@ -1,14 +1,10 @@
 import {
   discoverToolsInTab,
-  getRecentRoute,
-  getRecentTabsForGroup,
-  getTabGroupInfo,
   parseHostname,
-  rememberSuccessfulInvocation,
+  parseOrigin,
 } from './discovery'
 import { getRegistryEntries } from './registry'
-import { buildSafeFullName } from './tool-name'
-import { isHostEnabled, isGroupEnabled, hostDisabledError, groupDisabledError } from './authorization'
+import { isHostEnabled, hostDisabledError } from './authorization'
 import type {
   WebMCPApiMode,
   WebMCPInvokeRequest,
@@ -17,9 +13,6 @@ import type {
 } from './types'
 import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
-import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
-import { getXhsCdpInput } from './xiaohongshu-cdp-input'
-import { isXhsPreparationTool, isXhsMainSiteInputTool, isXhsInputTool, xhsInputTimeout } from './xiaohongshu/xiaohongshu-input-protocol'
 import type { ExecutionResult } from '@creatorweave/quickjs-runtime'
 
 let invokeAdapter: ((tabId: number, name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<ExecutionResult | null>) | undefined
@@ -102,14 +95,13 @@ async function invokeViaRelay(
       resolve(value)
     }
 
-    const timeoutMs = isXhsInputTool(toolName) ? xhsInputTimeout(toolName) + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
     const timeout = setTimeout(() => {
       finish({
         ok: false,
         errorCode: 'RELAY_TIMEOUT',
-        error: `WebMCP relay invoke timed out after ${timeoutMs}ms`,
+        error: `WebMCP relay invoke timed out after ${INVOKE_RELAY_TIMEOUT_MS}ms`,
       })
-    }, timeoutMs)
+    }, INVOKE_RELAY_TIMEOUT_MS)
 
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) { abort(); return }
@@ -257,253 +249,145 @@ function parsePluginDownloadPlan(result: unknown): WebMCPPluginDownloadPlan | nu
   }
 }
 
-async function tabMatchesGroup(tabId: number, groupKey: string, hostname: string): Promise<boolean> {
-  try {
-    const tab = await chrome.tabs.get(tabId)
-    if (!tab.url) return false
-    if (parseHostname(tab.url) !== hostname) return false
-    const info = await getTabGroupInfo(tabId)
-    return info?.groupKey === groupKey
-  } catch {
-    return false
-  }
-}
-
-async function pickTargetTabId(
-  groupKey: string,
-  hostname: string,
-  request: WebMCPInvokeRequest,
-): Promise<number | null> {
-  if (typeof request.requiredTabId === 'number') {
-    return (await tabMatchesGroup(request.requiredTabId, groupKey, hostname))
-      ? request.requiredTabId
-      : null
-  }
-
-  if (typeof request.preferredTabId === 'number') {
-    return await tabMatchesGroup(request.preferredTabId, groupKey, hostname) ? request.preferredTabId : null
-  }
-
-  // Run-scoped tools stick to the tab that started the run (M-3): the run
-  // registry lives in that page's memory, other tabs return Unknown runId.
-  const runTab = getRunTab((request.args as any)?.runId)
-  if (runTab !== null && (await tabMatchesGroup(runTab, groupKey, hostname))) {
-    return runTab
-  }
-
-  const recentByTool = getRecentRoute(groupKey, request.fullToolName)
-  if (recentByTool && (await tabMatchesGroup(recentByTool.tabId, groupKey, hostname))) {
-    return recentByTool.tabId
-  }
-
-  for (const recentTab of getRecentTabsForGroup(groupKey)) {
-    if (await tabMatchesGroup(recentTab.tabId, groupKey, hostname)) {
-      return recentTab.tabId
-    }
-  }
-
-  const tabs = await chrome.tabs.query({})
-  const matched = tabs
-    .filter((tab): tab is chrome.tabs.Tab & { id: number; url: string } => {
-      return typeof tab.id === 'number' && typeof tab.url === 'string'
-    })
-    .filter((tab) => parseHostname(tab.url) === hostname)
-
-  if (matched.length === 0) return null
-
-  const sorted = matched.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
-  for (const tab of sorted) {
-    if (await tabMatchesGroup(tab.id, groupKey, hostname)) return tab.id
-  }
-
-  return null
-}
-
-async function resolveRouteFromTabs(
-  request: WebMCPInvokeRequest,
-): Promise<{
-  tabId: number
-  hostname: string
-  groupKey: string
-  toolName: string
-  fullToolName: string
-  toolsetSignature: string
-} | null> {
-  const candidateTabIds = typeof request.preferredTabId === 'number'
-    ? [request.preferredTabId]
-    : getRecentTabsForGroup(request.groupKey).map((entry) => entry.tabId)
-
-  if (typeof request.preferredTabId !== 'number') {
-    const allTabs = await chrome.tabs.query({})
-    const additionalTabIds = allTabs
-      .filter((tab): tab is chrome.tabs.Tab & { id: number; url: string } => {
-        return typeof tab.id === 'number' && typeof tab.url === 'string'
-      })
-      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
-      .map((tab) => tab.id)
-    for (const tabId of additionalTabIds) {
-      if (!candidateTabIds.includes(tabId)) candidateTabIds.push(tabId)
-    }
-  }
-
-  for (const tabId of candidateTabIds) {
-    const groupInfo = await getTabGroupInfo(tabId)
-    if (!groupInfo || groupInfo.groupKey !== request.groupKey) continue
-    const result = await discoverToolsInTab(tabId)
-    if (!result.ok || !result.tools) continue
-    const matched = result.tools.find((tool) => {
-      return buildSafeFullName(groupInfo.hostname, String(tool.name)) === request.fullToolName
-    })
-    if (!matched) continue
-    return {
-      tabId,
-      hostname: groupInfo.hostname,
-      groupKey: groupInfo.groupKey,
-      toolName: String(matched.name),
-      fullToolName: request.fullToolName,
-      toolsetSignature: groupInfo.toolsetSignature,
-    }
-  }
-
-  return null
-}
-
 export async function invokeWebMCPTool(
   request: WebMCPInvokeRequest
 ): Promise<WebMCPInvokeResponse> {
-  // Route via the registry first: the background's tab registry is the
-  // authoritative snapshot of which tabs expose which tools. The legacy
-  // resolveRouteFromTabs (probe-based) remains as a fallback for tabs the
-  // registry hasn't seen (pre-extension-load tabs probed via fallbackScan).
-  let route = getRecentRoute(request.groupKey || '', request.fullToolName || '')
-  if (!route) {
-    const registryEntries = await getRegistryEntries()
-    const registryMatch = registryEntries.find(
-      (entry) =>
-        entry.groupKey === request.groupKey &&
-        entry.tools.some((tool) => buildSafeFullName(entry.hostname, tool.name) === request.fullToolName),
-    )
-    if (registryMatch) {
-      const matchedTool = registryMatch.tools.find(
-        (tool) => buildSafeFullName(registryMatch.hostname, tool.name) === request.fullToolName,
-      )!
-      route = {
-        tabId: registryMatch.tabId,
-        hostname: registryMatch.hostname,
-        groupKey: registryMatch.groupKey,
-        toolName: matchedTool.name,
-        fullToolName: request.fullToolName,
-        toolsetSignature: registryMatch.toolsetSignature,
-        seenAt: registryMatch.updatedAt,
-      }
-    }
-  }
-  if (!route) {
-    const resolved = await resolveRouteFromTabs(request)
-    if (resolved) {
-      rememberSuccessfulInvocation(resolved)
-      route = { ...resolved, seenAt: Date.now() }
-    }
-  }
+  const targetTabId = request.targetTabId
+  const requestedOrigin = typeof request.origin === 'string' ? request.origin.trim() : ''
+  const toolName = typeof request.toolName === 'string' ? request.toolName.trim() : ''
 
-  if (!route) {
+  if (!Number.isSafeInteger(targetTabId) || targetTabId <= 0) {
     return {
       ok: false,
+      origin: requestedOrigin,
       hostname: '',
       toolName: '',
-      fullToolName: request.fullToolName || '',
-      errorCode: 'INVALID_TOOL_NAME',
-      error: 'No route cache entry for tool and group — try re-discovering WebMCP tools',
+      errorCode: 'INVALID_TAB',
+      error: 'WebMCP invocation requires a positive exact targetTabId',
+    }
+  }
+  if (!requestedOrigin || !toolName) {
+    return {
+      ok: false,
+      origin: requestedOrigin,
+      hostname: '',
+      toolName,
+      errorCode: !requestedOrigin ? 'INVALID_ORIGIN' : 'INVALID_TOOL_NAME',
+      error: !requestedOrigin
+        ? 'WebMCP invocation requires the expected page origin'
+        : 'WebMCP invocation requires an exact raw tool name',
+      tabId: targetTabId,
     }
   }
 
-  const { hostname, toolName, groupKey } = route
-
-  // Authorization gate: per-host opt-out is enforced here, in the extension
-  // layer, not just as a UI filter on the web side. Disabled host → refuse
-  // before any script is executed in a tab (privacy policy: per-site
-  // authorization, revocable at any time).
-  if (!(await isHostEnabled(hostname))) {
+  let tab: chrome.tabs.Tab
+  try {
+    tab = await chrome.tabs.get(targetTabId)
+  } catch {
     return {
+      ok: false,
+      origin: requestedOrigin,
+      hostname: '',
+      toolName,
+      tabId: targetTabId,
+      errorCode: 'TARGET_TAB_NOT_FOUND',
+      error: `Target tab ${targetTabId} is no longer open`,
+    }
+  }
+  const liveOrigin = parseOrigin(tab.url || '')
+  const hostname = parseHostname(tab.url || '')
+  if (!liveOrigin || !hostname) {
+    return {
+      ok: false,
+      origin: requestedOrigin,
+      hostname: '',
+      toolName,
+      tabId: targetTabId,
+      errorCode: 'UNSUPPORTED_URL',
+      error: 'WebMCP requires an HTTP(S) target tab',
+    }
+  }
+  if (liveOrigin !== requestedOrigin) {
+    return {
+      ok: false,
+      origin: requestedOrigin,
       hostname,
       toolName,
-      fullToolName: request.fullToolName,
+      tabId: targetTabId,
+      errorCode: 'TARGET_ORIGIN_MISMATCH',
+      error: `Target tab ${targetTabId} is now on ${liveOrigin}, not ${requestedOrigin}`,
+    }
+  }
+
+  if (!(await isHostEnabled(hostname))) {
+    return {
+      origin: liveOrigin,
+      hostname,
+      toolName,
+      tabId: targetTabId,
       ...hostDisabledError(hostname),
     }
   }
 
-  // Group gate: same enforcement for per-group opt-out (mirrors the web
-  // app's enabledByGroup switches in WebMCPHostList).
-  if (groupKey && !(await isGroupEnabled(groupKey))) {
-    return {
-      hostname,
-      toolName,
-      fullToolName: request.fullToolName,
-      ...groupDisabledError(groupKey),
-    }
-  }
+  const entries = await getRegistryEntries()
+  const entry = entries.find((candidate) => candidate.tabId === targetTabId)
+  let registered = entry?.origin === liveOrigin
+    ? entry.tools.some((tool) => tool.name === toolName)
+    : false
 
-  const tabId = await pickTargetTabId(groupKey, hostname, request)
-  if (tabId === null) {
+  // Registry-silent tabs opened before the extension reload are probed only
+  // on their exact target tab. A failure never expands to another tab.
+  if (!registered) {
+    const probe = await discoverToolsInTab(targetTabId)
+    registered = probe.ok === true && (probe.tools || []).some((tool) => String(tool.name) === toolName)
+  }
+  if (!registered) {
     return {
       ok: false,
+      origin: liveOrigin,
       hostname,
       toolName,
-      fullToolName: request.fullToolName,
-      errorCode: typeof request.requiredTabId === 'number' ? 'BOUND_TAB_UNAVAILABLE' : 'TOOL_TARGET_NOT_FOUND',
-      error: typeof request.requiredTabId === 'number'
-        ? 'The bound tab no longer exposes this WebMCP tool group'
-        : `No open tab found for WebMCP group: ${groupKey}`,
+      tabId: targetTabId,
+      errorCode: 'TOOL_NOT_FOUND',
+      error: `Tool "${toolName}" is not currently exposed by tab ${targetTabId}`,
     }
   }
 
-  let inputSession: string | undefined
+  const runId = (request.args as Record<string, unknown> | undefined)?.runId
+  const affinityTabId = getRunTab(runId)
+  if (affinityTabId !== null && affinityTabId !== targetTabId) {
+    return {
+      ok: false,
+      origin: liveOrigin,
+      hostname,
+      toolName,
+      tabId: targetTabId,
+      errorCode: 'RUN_TARGET_MISMATCH',
+      error: `Run "${String(runId)}" belongs to tab ${affinityTabId}, not tab ${targetTabId}`,
+    }
+  }
+
   try {
-    // XHS publish tools transfer image bytes through the SW (host permissions
-    // permit the cross-origin fetch); comment/like tools open a CDP input
-    // session so retained elements are driven as real user input.
-    const isXhsPublish = hostname === 'creator.xiaohongshu.com' && isXhsPreparationTool(toolName)
-    const isXhsMainInput = hostname === 'www.xiaohongshu.com' && isXhsMainSiteInputTool(toolName)
-    const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : { ...request.args || {} }
-    // The existing invocation gates and bound-tab routing have already passed.
-    // Attach only for the authorized actions that use browser input.
-    if (isXhsMainInput || (isXhsPublish && ['prepare', 'configure'].includes(String(invokeArgs.action)))) {
-      inputSession = isXhsMainInput
-        ? await getXhsCdpInput().open(tabId, { hostname, timeoutMs: xhsInputTimeout(toolName) })
-        : await getXhsCdpInput().open(tabId)
-      invokeArgs._eo2_input_session = inputSession
-    }
-    if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
-      return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: toolName === 'xhs_publish_video' ? 'VIDEO_MESSAGE_TOO_LARGE' : 'IMAGE_TRANSFER_TOO_LARGE', error: 'File transfer message exceeds Chrome 64 MiB message capacity.' }
-    }
-    const result = await executeWebMCPToolInTab(tabId, toolName, invokeArgs)
+    const result = await executeWebMCPToolInTab(targetTabId, toolName, request.args || {})
 
     if (!result.ok) {
       return {
         ok: false,
+        origin: liveOrigin,
         hostname,
         toolName,
-        fullToolName: request.fullToolName,
-        tabId,
+        tabId: targetTabId,
         apiMode: result.apiMode,
         errorCode: result.errorCode || 'INVOKE_FAILED',
         error: result.error || 'Tool execution failed',
       }
     }
 
-    rememberSuccessfulInvocation({
-      tabId,
-      hostname,
-      groupKey,
-      toolName,
-      fullToolName: request.fullToolName,
-      toolsetSignature: route.toolsetSignature,
-    })
-
-    // Record run affinity so run-scoped follow-ups route back to this tab (M-3).
+    // Record run affinity so run-scoped follow-ups reject a different tab
+    // instead of silently switching page-memory contexts.
     try {
       const resultObj = typeof result.result === 'string' ? JSON.parse(result.result) : result.result as { runId?: string } | null
-      rememberRunTab(resultObj?.runId, tabId)
+      rememberRunTab(resultObj?.runId, targetTabId)
     } catch {
       // non-JSON result — nothing to pin
     }
@@ -511,10 +395,10 @@ export async function invokeWebMCPTool(
     const plan = parsePluginDownloadPlan(result.result)
     return {
       ok: true,
+      origin: liveOrigin,
       hostname,
       toolName,
-      fullToolName: request.fullToolName,
-      tabId,
+      tabId: targetTabId,
       apiMode: result.apiMode,
       result: result.result,
       ...(plan ? { pluginDownloadPlan: plan } : {}),
@@ -522,14 +406,12 @@ export async function invokeWebMCPTool(
   } catch (error: any) {
     return {
       ok: false,
+      origin: liveOrigin,
       hostname,
       toolName,
-      fullToolName: request.fullToolName,
-      tabId,
+      tabId: targetTabId,
       errorCode: 'INVOKE_FAILED',
       error: typeof error?.message === 'string' ? error.message : String(error),
     }
-  } finally {
-    if (inputSession) await getXhsCdpInput().close(inputSession).catch(() => {})
   }
 }

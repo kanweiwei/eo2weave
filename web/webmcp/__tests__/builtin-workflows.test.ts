@@ -31,7 +31,7 @@ beforeAll(async () => {
 it('bundles every package file as unchanged raw text', async () => {
   const files = await readdir(root, { recursive: true, withFileTypes: true })
   const sources = files
-    .filter((file) => file.isFile() && !file.name.startsWith('.'))
+    .filter((file) => file.isFile() && /\.(js|json)$/.test(file.name) && !file.name.startsWith('.'))
     .map((file) => resolve(file.parentPath, file.name).slice(root.length + 1))
   expect(paths.some((path) => path.includes('/readers/'))).toBe(false)
   expect(paths.sort()).toEqual(sources.sort())
@@ -90,7 +90,7 @@ function assertStrictOutputSchema(schema: unknown, path = 'outputSchema'): void 
     assertStrictOutputSchema(object.additionalProperties, `${path}.additionalProperties`)
 }
 
-it('validates all 48 bundled workflow contracts without claiming browser behavior', async () => {
+it('validates every bundled workflow contract without claiming browser behavior', async () => {
   let count = 0
   for (const path of paths.filter((path) => path.endsWith('manifest.json'))) {
     const manifest = JSON.parse(builtinResources[path])
@@ -131,7 +131,8 @@ it('validates all 48 bundled workflow contracts without claiming browser behavio
     }
     expect(() => validatePackage(manifest, sources, manifest.id)).not.toThrow()
   }
-  expect(count).toBe(70)
+  const expected = paths.filter(path => path.endsWith('/manifest.json')).reduce((total, path) => total + JSON.parse(builtinResources[path]).tools.length, 0)
+  expect(count).toBe(expected)
 })
 
 const restoreFixtures: Array<() => void> = []

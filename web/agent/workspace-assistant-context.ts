@@ -489,10 +489,9 @@ async function readWebmcpToolsForHost(
     const out: Array<{ name: string; description: string; fullName: string }> = []
     for (const tool of tools) {
       if ((tool.hostname || '').trim().toLowerCase() !== host) continue
-      // Tab scoping (when known): same-hostname tabs in different apps
-      // (jmail.world / vs /messages) expose disjoint tool groups; only the
-      // group backed by the BOUND tab is relevant to this snapshot.
-      if (typeof tabId === 'number' && tool.representativeTabId !== tabId) continue
+      // Same-host tabs may expose different tools. Only include a logical
+      // tool when the current page instance actually provides it.
+      if (typeof tabId === 'number' && !tool.tabs.some((tab) => tab.tabId === tabId)) continue
       if (seen.has(tool.fullName)) continue
       seen.add(tool.fullName)
       out.push({
@@ -561,14 +560,13 @@ export async function capturePageContext(): Promise<PageContextSnapshot | null> 
     }
     // Share the followed tab id (the tab the background actually read — the
     // active one) with the get_page_tools / <current_page_webmcp> fast path
-    // so it lists only THIS tab's tool group (same-hostname tabs in different
-    // apps expose disjoint toolsets).
+    // so it lists only tools exposed by THIS exact tab.
     const boundTabId = pick<number>('tabId')
     try {
       const { setSidePanelBoundTabId } = await import('./external-tool-bridge')
       setSidePanelBoundTabId(typeof boundTabId === 'number' ? boundTabId : null)
     } catch {
-      // bridge module unavailable — fast path falls back to hostname-only
+      // bridge module unavailable — the fast path exposes no page tools
     }
     return {
       hostname,

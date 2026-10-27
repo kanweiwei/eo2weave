@@ -194,12 +194,8 @@ async function invoke(page: Page, name: string, args: Record<string, unknown> = 
       const tools = await context.getTools()
       const tool = tools.find((candidate: any) => candidate?.name === name)
       if (!tool) throw new Error(`Registered tool disappeared: ${name}`)
-      const ModelContext = (globalThis as any).ModelContext
-      const usesNativeInput =
-        typeof ModelContext === 'function' &&
-        context instanceof ModelContext &&
-        Function.prototype.toString.call(ModelContext).includes('[native code]')
-      const result = await context.executeTool(tool, usesNativeInput ? JSON.stringify(args) : args)
+      const usesSerializedInput = context?.__isWebMCPPolyfill === true
+      const result = await context.executeTool(tool, usesSerializedInput ? JSON.stringify(args) : args)
       if (typeof result === 'string') return JSON.parse(result)
       try {
         return JSON.parse(JSON.stringify(result))

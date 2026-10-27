@@ -50,6 +50,7 @@ export default defineContentScript({
       'extension_get_version',
       'browser_command',
       'browser_command_ping',
+      'webmcp_adapter_validate',
       'browser_command_cancel',
       // Native host requests are additionally origin- and action-gated in background.
       'native_host_call',

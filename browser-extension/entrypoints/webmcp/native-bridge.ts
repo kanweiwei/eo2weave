@@ -17,7 +17,7 @@
 //   - The bridge is OPT-IN: it only starts when the user enables it in the
 //     popup (storage.local key below). Default off.
 //   - Loopback only; no token (per product decision 2026-08-21).
-//   - Per-host / per-group authorization is enforced in invokeWebMCPTool
+//   - Per-host authorization is enforced in invokeWebMCPTool
 //     and at discovery time (disabled sites do not exist for Codex either).
 // ============================================================
 
@@ -47,9 +47,19 @@ class WebMCPNativeBridge {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private status: BridgeStatus = { running: false }
   private listeners = new Set<StatusListener>()
+  private toolsByBridgeName = new Map<string, {
+    origin: string
+    toolName: string
+    tabId: number
+  }>()
   /** Injected for tests. */
   private deps: {
-    invokeTool: (request: { fullToolName: string; args?: Record<string, unknown> }) => Promise<{ ok: boolean; error?: string; errorCode?: string; result?: unknown }>
+    invokeTool: (request: {
+      origin: string
+      toolName: string
+      tabId: number
+      args?: Record<string, unknown>
+    }) => Promise<{ ok: boolean; error?: string; errorCode?: string; result?: unknown }>
     listTools: () => Promise<WebMCPDiscoveredTool[]>
   }
 
@@ -264,16 +274,29 @@ class WebMCPNativeBridge {
     if (kind === 'list') {
       try {
         const tools = await this.deps.listTools()
+        this.toolsByBridgeName.clear()
         this.postResponse({
           type: 'webmcp_bridge_response',
           reqId,
           ok: true,
           tools: tools.map((tool) => ({
-            name: tool.fullName,
+            name: `${tool.fullName}__tab_${tool.tabId}`,
             description: tool.description || tool.name,
             inputSchema: tool.inputSchema,
+            _meta: {
+              'eo2weave/origin': tool.origin,
+              'eo2weave/toolName': tool.name,
+              'eo2weave/tabId': tool.tabId,
+            },
           })),
         })
+        for (const tool of tools) {
+          this.toolsByBridgeName.set(`${tool.fullName}__tab_${tool.tabId}`, {
+            origin: tool.origin,
+            toolName: tool.name,
+            tabId: tool.tabId,
+          })
+        }
       } catch (error: any) {
         this.postResponse({
           type: 'webmcp_bridge_response',
@@ -286,13 +309,24 @@ class WebMCPNativeBridge {
     }
 
     if (kind === 'call') {
-      const fullToolName = typeof message.tool === 'string' ? message.tool : ''
+      const bridgeToolName = typeof message.tool === 'string' ? message.tool : ''
       const args =
         message.args && typeof message.args === 'object' && !Array.isArray(message.args)
           ? (message.args as Record<string, unknown>)
           : {}
       try {
-        const response = await this.deps.invokeTool({ fullToolName, args })
+        const target = this.toolsByBridgeName.get(bridgeToolName)
+        if (!target) {
+          this.postResponse({
+            type: 'webmcp_bridge_response',
+            reqId,
+            ok: false,
+            errorCode: 'TOOL_NOT_FOUND',
+            error: `Unknown WebMCP bridge tool instance: ${bridgeToolName}`,
+          })
+          return
+        }
+        const response = await this.deps.invokeTool({ ...target, args })
         if (response.ok) {
           this.postResponse({
             type: 'webmcp_bridge_response',
@@ -359,7 +393,9 @@ class WebMCPNativeBridge {
 /** Injectable dependency surface (keeps the class unit-testable). */
 export interface WebMCPNativeBridgeDeps {
   invokeTool: (request: {
-    fullToolName: string
+    origin: string
+    toolName: string
+    tabId: number
     args?: Record<string, unknown>
   }) => Promise<{ ok: boolean; error?: string; errorCode?: string; result?: unknown }>
   listTools: () => Promise<WebMCPDiscoveredTool[]>

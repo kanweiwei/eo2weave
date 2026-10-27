@@ -73,7 +73,6 @@ export default {
         async run({ input, state, target }) {
           await browser.click(state.selector, undefined, {
             tab: target.tabId,
-            activate: true,
             timeout: 15000,
           });
           return "success";

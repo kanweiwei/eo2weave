@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
+  refreshCatalog: vi.fn(),
   getMCPManager: vi.fn(),
   getWebMCPBridge: vi.fn(),
   getWebMCPState: vi.fn(),
 }))
+
+vi.mock('@/webmcp/manager', () => ({ refreshWebMCPCatalog: mocks.refreshCatalog }))
 
 vi.mock('@/mcp/mcp-manager', () => ({
   getMCPManager: mocks.getMCPManager,
@@ -35,8 +38,7 @@ describe('external tool bridge error isolation', () => {
     mocks.getWebMCPBridge.mockReturnValue(null)
     mocks.getWebMCPState.mockReturnValue({
       getEnabledTools: () => [],
-      getPreferredTabIdForTool: () => undefined,
-      recordToolInvocation: vi.fn(),
+      getToolByCallName: () => undefined,
     })
   })
 
@@ -63,15 +65,68 @@ describe('external tool bridge error isolation', () => {
   })
   it('keeps untrusted WebMCP JSON machine-readable and wraps only its Agent presentation', async () => {
     const value = {status:'completed',result:{ok:true,value:1,output:[{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}}
-    const webTool = {name:'picture',fullName:'picture',groupKey:'example_com',hostname:'example.com',description:'',inputSchema,toolsetSignature:'signature',apiMode:'documentModelContext' as const,representativeTabId:1,annotations:{untrustedContentHint:true}}
+    const webTool = {name:'picture',origin:'https://example.com',fullName:'picture',hostname:'example.com',description:'',inputSchema,apiMode:'documentModelContext' as const,tabs:[{tabId:1,title:'Example',url:'https://example.com',lastSeenAt:1}],annotations:{untrustedContentHint:true}}
     mocks.getMCPManager.mockReturnValue({getAllTools:()=>new Map()})
-    mocks.getWebMCPState.mockReturnValue({getEnabledTools:()=>[webTool],getPreferredTabIdForTool:()=>1,recordToolInvocation:vi.fn()})
-    mocks.getWebMCPBridge.mockReturnValue({webMCPInvoke:vi.fn().mockResolvedValue({ok:true,result:value,hostname:'example.com',toolName:'picture'})})
-    const response = JSON.parse(await callToolExecutor({full_tool_name:'example_com_picture'},toolContext))
+    mocks.getWebMCPState.mockReturnValue({getEnabledTools:()=>[webTool],getToolByCallName:(name:string)=>name==='picture'?webTool:undefined})
+    mocks.getWebMCPBridge.mockReturnValue({webMCPInvoke:vi.fn().mockResolvedValue({ok:true,origin:'https://example.com',result:value,hostname:'example.com',toolName:'picture',tabId:1})})
+    const response = JSON.parse(await callToolExecutor({full_tool_name:'picture',tab_id:1},toolContext))
     expect(response.data.result).toEqual(value)
     expect(response.contentParts).toHaveLength(1)
     expect(response.contentParts[0].type).toBe('text')
     expect(response.contentParts[0].text).toContain('<untrusted_external_content')
+  })
+  it('requires an exact tab for WebMCP calls', async () => {
+    const webTool = {
+      name: 'picture',
+      origin: 'https://example.com',
+      fullName: 'picture',
+      hostname: 'example.com',
+      description: '',
+      inputSchema,
+      apiMode: 'documentModelContext' as const,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+    }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [webTool],
+      getToolByCallName: (name: string) => name === 'picture' ? webTool : undefined,
+    })
+
+    const response = JSON.parse(await callToolExecutor({
+      full_tool_name: 'picture',
+    }, toolContext))
+
+    expect(response.error).toMatchObject({
+      code: 'TAB_TARGET_REQUIRED',
+      details: { availableTabIds: [1] },
+    })
+  })
+  it('rejects a tab that no longer exposes the selected WebMCP tool', async () => {
+    const webTool = {
+      name: 'picture',
+      origin: 'https://example.com',
+      fullName: 'picture',
+      hostname: 'example.com',
+      description: '',
+      inputSchema,
+      apiMode: 'documentModelContext' as const,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+    }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [webTool],
+      getToolByCallName: (name: string) => name === 'picture' ? webTool : undefined,
+    })
+
+    const response = JSON.parse(await callToolExecutor({
+      full_tool_name: 'picture',
+      tab_id: 2,
+    }, toolContext))
+
+    expect(response.error).toMatchObject({
+      code: 'TAB_TARGET_NOT_FOUND',
+      details: { availableTabIds: [1] },
+    })
   })
   it('wraps error text returned by an untrusted MCP tool', async () => {
     const tools = new Map([[
@@ -101,35 +156,35 @@ describe('external tool bridge error isolation', () => {
   it('wraps error text returned by an untrusted WebMCP tool', async () => {
     const webTool = {
       name: 'failing_tool',
+      origin: 'https://example.com',
       fullName: 'failing_tool',
-      groupKey: 'example_com',
       hostname: 'example.com',
       description: '',
       inputSchema,
-      toolsetSignature: 'signature',
       apiMode: 'documentModelContext' as const,
-      representativeTabId: 1,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
       annotations: { untrustedContentHint: true },
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
       getEnabledTools: () => [webTool],
-      getPreferredTabIdForTool: () => 1,
-      recordToolInvocation: vi.fn(),
+      getToolByCallName: (name: string) => name === 'failing_tool' ? webTool : undefined,
     })
     mocks.getWebMCPBridge.mockReturnValue({
       webMCPInvoke: vi.fn().mockResolvedValue({
         ok: false,
+        origin: 'https://example.com',
         error: 'Remote WebMCP failure',
         errorCode: 'REMOTE_FAILURE',
         hostname: 'example.com',
         toolName: 'failing_tool',
-        fullToolName: 'failing_tool',
+        tabId: 1,
       }),
     })
 
     const response = JSON.parse(await callToolExecutor({
-      full_tool_name: 'example_com_failing_tool',
+      full_tool_name: 'failing_tool',
+      tab_id: 1,
     }, toolContext))
 
     expect(response.error.message).toContain('<untrusted_external_content')
@@ -139,34 +194,34 @@ describe('external tool bridge error isolation', () => {
   it('leaves error text returned by an unmarked WebMCP tool unchanged', async () => {
     const webTool = {
       name: 'failing_tool',
+      origin: 'https://example.com',
       fullName: 'failing_tool',
-      groupKey: 'example_com',
       hostname: 'example.com',
       description: '',
       inputSchema,
-      toolsetSignature: 'signature',
       apiMode: 'documentModelContext' as const,
-      representativeTabId: 1,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
       getEnabledTools: () => [webTool],
-      getPreferredTabIdForTool: () => 1,
-      recordToolInvocation: vi.fn(),
+      getToolByCallName: (name: string) => name === 'failing_tool' ? webTool : undefined,
     })
     mocks.getWebMCPBridge.mockReturnValue({
       webMCPInvoke: vi.fn().mockResolvedValue({
         ok: false,
+        origin: 'https://example.com',
         error: 'Remote WebMCP failure',
         errorCode: 'REMOTE_FAILURE',
         hostname: 'example.com',
         toolName: 'failing_tool',
-        fullToolName: 'failing_tool',
+        tabId: 1,
       }),
     })
 
     const response = JSON.parse(await callToolExecutor({
-      full_tool_name: 'example_com_failing_tool',
+      full_tool_name: 'failing_tool',
+      tab_id: 1,
     }, toolContext))
 
     expect(response.error.message).toBe('Remote WebMCP failure')
@@ -175,34 +230,34 @@ describe('external tool bridge error isolation', () => {
   it('preserves the WebMCP error fallback when an untrusted tool returns no error text', async () => {
     const webTool = {
       name: 'failing_tool',
+      origin: 'https://example.com',
       fullName: 'failing_tool',
-      groupKey: 'example_com',
       hostname: 'example.com',
       description: '',
       inputSchema,
-      toolsetSignature: 'signature',
       apiMode: 'documentModelContext' as const,
-      representativeTabId: 1,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
       annotations: { untrustedContentHint: true },
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
       getEnabledTools: () => [webTool],
-      getPreferredTabIdForTool: () => 1,
-      recordToolInvocation: vi.fn(),
+      getToolByCallName: (name: string) => name === 'failing_tool' ? webTool : undefined,
     })
     mocks.getWebMCPBridge.mockReturnValue({
       webMCPInvoke: vi.fn().mockResolvedValue({
         ok: false,
+        origin: 'https://example.com',
         errorCode: 'REMOTE_FAILURE',
         hostname: 'example.com',
         toolName: 'failing_tool',
-        fullToolName: 'failing_tool',
+        tabId: 1,
       }),
     })
 
     const response = JSON.parse(await callToolExecutor({
-      full_tool_name: 'example_com_failing_tool',
+      full_tool_name: 'failing_tool',
+      tab_id: 1,
     }, toolContext))
 
     expect(response.error.message).toBe('WebMCP tool invocation failed')
@@ -251,4 +306,23 @@ describe('external tool bridge error isolation', () => {
 
     expect(response.error.message).toBe('Remote MCP failure')
   })
+})
+
+
+it('refreshes navigation tools and returns the exact creator continuation without invoking again', async () => {
+  const main = { name: 'com.xiaohongshu.main.publish_content', fullName: 'main_publish',
+    origin: 'https://www.xiaohongshu.com', hostname: 'www.xiaohongshu.com', description: '', inputSchema,
+    tabs: [{ tabId: 7 }], apiMode: 'documentModelContext' }
+  const creator = { ...main, fullName: 'creator_publish', origin: 'https://creator.xiaohongshu.com', hostname: 'creator.xiaohongshu.com' }
+  mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+  mocks.getWebMCPState.mockReturnValue({ getEnabledTools: () => [main], getToolByCallName: () => main })
+  mocks.refreshCatalog.mockResolvedValue([creator, { ...creator, fullName: 'other_tab', tabs: [{ tabId: 8 }] }])
+  const invoke = vi.fn().mockResolvedValue({ ok: true, hostname: main.hostname, tabId: 7,
+    result: { status: 'success', result: { status: 'navigated', data: { continuation: { origin: creator.origin } } } } })
+  mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+  const result = JSON.parse(await callToolExecutor({ full_tool_name: main.fullName, tab_id: 7, args: {} }, toolContext))
+  expect(result.data.continuation_tool).toBe('creator_publish')
+  expect(result.data.page_tools).toHaveLength(1)
+  expect(result.data.page_tools[0]).toMatchObject({ full_tool_name: 'creator_publish', tab_id: 7, origin: creator.origin })
+  expect(invoke).toHaveBeenCalledTimes(1)
 })

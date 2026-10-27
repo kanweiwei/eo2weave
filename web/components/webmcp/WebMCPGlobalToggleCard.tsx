@@ -20,7 +20,7 @@ interface WebMCPGlobalToggleCardProps {
 /**
  * WebMCP connection card — status + local discovery toggle only.
  *
- * Per-site / per-group authorization is managed exclusively in the
+ * Per-site authorization is managed exclusively in the
  * extension popup; this card only tells the user whether the extension
  * bridge is alive and offers a catalog refresh.
  */

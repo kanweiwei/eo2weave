@@ -1,7 +1,7 @@
-import { bashCommandRegistry, type ExternalBashCommand } from './registry'
+import { bashCommandRegistry, type CommandRegistration, type ExternalBashCommand } from './registry'
 
 export interface BashCommandAPI {
-  registerCommand(command: ExternalBashCommand): () => void
+  registerCommand(command: ExternalBashCommand): CommandRegistration
 }
 
 declare global {

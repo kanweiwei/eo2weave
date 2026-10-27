@@ -7,7 +7,7 @@ import { BrowserTask } from '../../../browser-extension/lib/bash-commands/browse
 import { installBrowserCommand } from '../../../browser-extension/lib/bash-commands/browser/provider'
 import { createProxyCommand } from '../tools/bash-worker/proxy-command'
 import { runBrowserRequest } from '../../../browser-extension/lib/bash-commands/browser/runtime'
-import { withTabLock } from '../../../browser-extension/lib/bash-commands/browser/cdp'
+import { clearDebuggerState, withTabLock } from '../../../browser-extension/lib/bash-commands/browser/cdp'
 import type { TabWebMCPApi } from '../../../browser-extension/entrypoints/webmcp/tab-api'
 
 const input = (args: string[], stdin = '') => ({ args, stdin })
@@ -32,9 +32,8 @@ describe('composable browser commands', () => {
     expect(() => parseBrowserCommand(input(['type']))).toThrow('Invalid arguments')
     expect(parseBrowserCommand(input(['type', '#name', '--', '--value']))).toMatchObject({ positionals: ['#name', '--value'] })
     expect(parseBrowserCommand(input(['tab-new', '--background']))).toMatchObject({ options: { background: true } })
-    expect(parseBrowserCommand(input(['click', '#save', '--activate']))).toMatchObject({ options: { activate: true } })
-    expect(() => parseBrowserCommand(input(['click', '#save', '--activate=true']))).toThrow('takes no value')
-    expect(() => parseBrowserCommand(input(['fill', '#save', 'value', '--activate']))).toThrow('Unknown option')
+    expect(() => parseBrowserCommand(input(['click', '#save', '--activate']))).toThrow()
+    expect(() => parseBrowserCommand(input(['click', '#save', '--activate=true']))).toThrow('Unknown option')
     expect(() => parseBrowserCommand(input(['fill', '#name', 'value', '--submit']))).toThrow()
     expect(() => parseBrowserCommand(input(['goto', 'https://example.com', '--wait-until=networkidle']))).toThrow('--wait-until')
   })
@@ -65,7 +64,7 @@ describe('browser provider lifecycle', () => {
     const finish: Array<(value: unknown) => void> = []
     const send = vi.fn((type: string) => type === 'browser_command'
       ? new Promise(resolve => { finish.push(resolve) }) : Promise.resolve({ ok: true }))
-    window.creatorWeave = { bash: { registerCommand: value => { command = value; return () => {} } } }
+    window.creatorWeave = { bash: { registerCommand: value => { command = value; return Object.assign(() => {}, { getStatus: () => 'current' as const }) } } }
     const dispose = installBrowserCommand(send)
     const outerInput = input(['webmcp', 'exec', 'com.example.focus', '--tab=10'])
     const innerInput = input(['eval', '() => 1', '--tab=10'])
@@ -88,7 +87,7 @@ describe('browser provider lifecycle', () => {
     const send = vi.fn((type: string) => type === 'browser_command'
       ? new Promise(resolve => { finish = resolve }) : Promise.resolve({ ok: true }))
     const unregister = vi.fn()
-    window.creatorWeave = { bash: { registerCommand: value => { command = value; return unregister } } }
+    window.creatorWeave = { bash: { registerCommand: value => { command = value; return Object.assign(unregister, { getStatus: () => 'current' as const }) } } }
     const dispose = installBrowserCommand(send)
     expect(await command.isAlive()).toBe(true)
     const running = command.invoke(input(['eval', '() => {}']))
@@ -106,7 +105,7 @@ describe('browser provider lifecycle', () => {
 })
 
 describe('WebMCP browser runtime', () => {
-  const api = (): TabWebMCPApi => ({ listForTab: vi.fn(async () => ({ tabId: 10, url: 'https://example.com', hostname: 'example.com', groupKey: 'group', tools: [] })), invokeForTab: vi.fn(async () => ({ tabId: 10, url: 'https://example.com', name: 'exact.name', source: 'page' as const, result: true })) })
+  const api = (): TabWebMCPApi => ({ listForTab: vi.fn(async () => ({ tabId: 10, url: 'https://example.com', origin: 'https://example.com', hostname: 'example.com', tools: [] })), invokeForTab: vi.fn(async () => ({ tabId: 10, url: 'https://example.com', name: 'exact.name', source: 'page' as const, result: true })) })
   it('uses the explicit tab without acquiring a debugger or the primitive tab lock', async () => {
     const webmcp = api()
     webmcp.invokeForTab = vi.fn(async (tabId, name, args) => withTabLock(tabId, async () => ({ tabId, url: 'https://example.com', name, source: 'adapter' as const, result: args })))
@@ -141,49 +140,48 @@ describe('WebMCP browser runtime', () => {
   })
 })
 
-describe('browser foreground guard', () => {
-  it('rejects click on a background tab before attaching the debugger', async () => {
+describe('browser background click', () => {
+  afterEach(() => clearDebuggerState(410))
+  it.each(['success', 'failure', 'canceled', 'already-visible'])('keeps the tab inactive and restores focus emulation after %s', async mode => {
+    const controller = new AbortController()
     const get = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 1, active: false, url: 'https://example.com', title: 'Example' }))
-    const attach = vi.fn()
-    const sendCommand = vi.fn()
-    vi.stubGlobal('chrome', {
-      tabs: { get },
-      debugger: { attach, sendCommand, onDetach: { addListener: vi.fn() } },
-      runtime: {},
-    })
-
-    const running = runBrowserRequest('owner', parseBrowserCommand(input(['click', '#save', '--tab=10'])))
-    await expect(running).rejects.toMatchObject({
-      name: 'BrowserError',
-      message: expect.stringMatching(/click.*tab.*foreground/i),
-      details: { tabId: 10, windowId: 1 },
-    })
-    expect(get).toHaveBeenCalledWith(10)
-    expect(attach).not.toHaveBeenCalled()
-    expect(sendCommand).not.toHaveBeenCalled()
-  })
-  it('activates a background click target when requested', async () => {
-    const get = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 1, active: false, url: 'https://example.com', title: 'Example' }))
-    const update = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 1, active: true, url: 'https://example.com', title: 'Example' }))
-    const sendCommand = vi.fn()
+    const update = vi.fn()
     const runtime: { lastError?: { message: string } } = {}
-    const attach = vi.fn((_target: unknown, _version: string, done: () => void) => {
-      runtime.lastError = { message: 'debugger unavailable' }
-      done()
-      delete runtime.lastError
+    const sendCommand = vi.fn((_target: unknown, method: string, params: Record<string, any>, done: (result?: unknown) => void) => {
+      if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+        if (mode === 'failure') {
+          runtime.lastError = { message: 'mouse input failed' }
+          done()
+          delete runtime.lastError
+          return
+        }
+        if (mode === 'canceled') controller.abort(new Error('click canceled'))
+      }
+      if (method === 'Runtime.evaluate') {
+        done({ result: params.expression === 'document.visibilityState === "hidden"'
+          ? { value: mode !== 'already-visible' } : { objectId: 'button' } })
+      } else if (method === 'Runtime.callFunctionOn') {
+        done({ result: { value: params.functionDeclaration.includes('return this.isConnected;') ? true
+          : { ok: true, point: { x: 5, y: 5 }, rect: { x: 0, y: 0, width: 10, height: 10 } } } })
+      } else if (method === 'DOM.getBoxModel') done({ model: { border: [0, 0, 10, 0, 10, 10, 0, 10] } })
+      else done({})
     })
-    vi.stubGlobal('chrome', {
-      tabs: { get, update },
-      debugger: { attach, sendCommand, onDetach: { addListener: vi.fn() } },
-      runtime,
-    })
+    const attach = vi.fn((_target: unknown, _version: string, done: () => void) => done())
+    vi.stubGlobal('chrome', { tabs: { get, update }, debugger: { attach, sendCommand }, runtime })
 
-    const running = runBrowserRequest('owner', parseBrowserCommand(input(['click', '#save', '--tab=10', '--activate'])))
-    await expect(running).rejects.toThrow('debugger unavailable')
-    expect(update).toHaveBeenCalledWith(10, { active: true })
-    expect(attach).toHaveBeenCalled()
-    expect(sendCommand).not.toHaveBeenCalled()
+    const running = runBrowserRequest('owner', parseBrowserCommand(input(['click', '#save', '--tab=410'])), controller.signal)
+    if (mode === 'failure' || mode === 'canceled') await expect(running).rejects.toThrow(mode === 'failure' ? 'mouse input failed' : 'click canceled')
+    else await expect(running).resolves.toEqual({ tabId: 410, action: 'click' })
+    expect(update).not.toHaveBeenCalled()
+    const focusCalls = sendCommand.mock.calls.filter(([, method]) => method === 'Emulation.setFocusEmulationEnabled')
+    expect(focusCalls.map(([, , params]) => params.enabled)).toEqual(mode === 'already-visible' ? [] : [true, false])
+    const methods = sendCommand.mock.calls.map(([, method]) => method)
+    if (mode !== 'already-visible') {
+      expect(methods.indexOf('Emulation.setFocusEmulationEnabled')).toBeLessThan(methods.indexOf('Input.dispatchMouseEvent'))
+      expect(methods.lastIndexOf('Emulation.setFocusEmulationEnabled')).toBeGreaterThan(methods.lastIndexOf('Input.dispatchMouseEvent'))
+    }
   })
+
 })
 
 describe('browser task deadline', () => {

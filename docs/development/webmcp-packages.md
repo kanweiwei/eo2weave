@@ -129,7 +129,7 @@ from business workflows to readers, ending at browser observations.
 
 Readers are normal discoverable WebMCP tools with schemas and URL matching.
 Their `urlRegex` must include destination URLs where callers use them after
-navigation. They enforce the same host/group authorization and exact-tab routing
+navigation. They enforce the same site authorization and exact-tab routing
 as other tools. Selectors returned in a snapshot are short-lived; callers should
 use them immediately and observe the destination after the input operation.
 
@@ -176,10 +176,11 @@ The extension's `createTabWebMCPApi` provides `listForTab(tabId, signal)` and
 `invokeForTab(tabId, name, args, signal)`. Discovery probes the target page and
 merges available adapters directly from the service worker catalog; adapter
 metadata does not depend on page proxy injection or the web app's tool cache.
-Native page-tool host and group authorization still applies at the exact-tab
+Native page-tool site authorization still applies at the exact-tab
 API. Extension adapter execution has no workspace binding. Specifying a tab
-never falls back to another same-host tab. The legacy routed invoke also treats
-`preferredTabId` as a strict target when supplied.
+never falls back to another same-host tab. Logical tool identity is the page
+origin plus the raw tool name; runtime identity additionally includes the exact
+tab that exposed the tool.
 
 The Bash browser command exposes the API:
 
@@ -211,7 +212,7 @@ cap. Explicit cancellation and package withdrawal still abort in-flight calls.
 ## Validate
 
 ```bash
-webmcp validate /external/webmcp/com.example.tools
+cw-webmcp-adapter validate /external/webmcp/com.example.tools
 ```
 
 Exit code 0 means the whole package is valid, 1 means invalid/unreadable, 2 means

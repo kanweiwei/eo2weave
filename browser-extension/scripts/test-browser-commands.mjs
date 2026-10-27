@@ -75,15 +75,12 @@ try {
     await run(['tab-close', String(other.tabId)])
   })
   const page = tabs.get(1)
-  await check('click foreground guard and explicit activation', async () => {
+  await check('click works in a background tab without activating it', async () => {
     const other = await run(['tab-new', url, '--background'])
     const otherPage = tabs.get(other.tabId)
-    const blocked = await command(['click', '#save', '--tab=' + other.tabId])
-    assert.equal(blocked.exitCode, 1); assert.match(blocked.stderr, /foreground/)
-    assert.equal(await otherPage.locator('#save').getAttribute('data-clicked'), null)
-    await run(['click', '#save', '--tab=' + other.tabId, '--activate'])
+    await run(['click', '#save', '--tab=' + other.tabId])
     assert.equal(await otherPage.locator('#save').getAttribute('data-clicked'), '1')
-    assert.equal((await run(['tab-list'])).tabs.find(tab => tab.tabId === other.tabId).active, true)
+    assert.equal((await run(['tab-list'])).tabs.find(tab => tab.tabId === other.tabId).active, false)
     await run(['tab-select', '1'])
     await run(['tab-close', String(other.tabId)])
   })

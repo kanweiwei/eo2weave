@@ -64,22 +64,29 @@ async function screenshot(task: BrowserTask, owner: string, request: BrowserRequ
 }
 
 async function runTab(task: BrowserTask, owner: string, request: BrowserRequest): Promise<unknown> {
-  const { command, positionals: p, options: o, stdin } = request, tabId = task.tabId!
+  const { command } = request, tabId = task.tabId!
   task.check()
-  let tab = await task.wait(chrome.tabs.get(tabId))
-  if (command === 'click' && !tab.active) {
-    if (!o.activate) {
-      throw new BrowserError(
-        `Cannot click in tab ${tabId} because it is in the background. Click requires the target tab to be in the foreground; run browser tab-select ${tabId} or add --activate and retry.`,
-        { tabId, windowId: tab.windowId },
-      )
-    }
-    tab = await task.wait(chrome.tabs.update(tabId, { active: true }))
-    if (!tab.active) throw new BrowserError(`Could not activate tab ${tabId} for click`, { tabId, windowId: tab.windowId })
-  }
   if (command === 'close' || command === 'tab-close') { await task.wait(chrome.tabs.remove(tabId)); return { tabId, closed: true } }
   if (command === 'detach') { await releaseInput(tabId); await task.wait(detachDebugger(tabId)); clearSnapshotsForTab(tabId); return { tabId, detached: true } }
   await task.wait(ensureAttached(tabId))
+  // Hidden renderers do not reliably acknowledge or deliver CDP mouse input.
+  // Emulate page focus for this click without activating the browser tab.
+  const emulateFocus = command === 'click' && await task.evaluate('document.visibilityState === "hidden"')
+  if (!emulateFocus) return runAttachedTab(task, owner, request)
+  try {
+    await task.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    return await runAttachedTab(task, owner, request)
+  } finally {
+    // The original task may have been canceled or reached its deadline.
+    const cleanup = new BrowserTask(2000)
+    cleanup.tabId = tabId
+    try { await cleanup.send('Emulation.setFocusEmulationEnabled', { enabled: false }) }
+    finally { cleanup.dispose() }
+  }
+}
+
+async function runAttachedTab(task: BrowserTask, owner: string, request: BrowserRequest): Promise<unknown> {
+  const { command, positionals: p, options: o, stdin } = request, tabId = task.tabId!
   if (['goto', 'reload', 'go-back', 'go-forward'].includes(command)) {
     clearSnapshotsForTab(tabId)
     await navigate(task, command, command === 'goto' ? pageUrl(p[0]) : undefined, String(o['wait-until'] ?? 'load'))

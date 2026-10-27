@@ -73,6 +73,21 @@ describe('open bash command registration', () => {
     expect(registry.snapshot().size).toBe(0)
   })
 
+  it('reports expiry separately from replacement without reviving disposed handles', async () => {
+    const registry = new BashCommandRegistry()
+    const old = registry.registerCommand({ ...command(), isAlive: async () => false })
+    expect(old.getStatus()).toBe('current')
+    await registry.refresh()
+    expect(old.getStatus()).toBe('missing')
+    const replacement = registry.registerCommand(command())
+    expect(old.getStatus()).toBe('replaced')
+    old()
+    expect(replacement.getStatus()).toBe('current')
+    replacement()
+    expect(old.getStatus()).toBe('replaced')
+    expect(replacement.getStatus()).toBe('replaced')
+  })
+
   it('preserves the invoke receiver and copies the manifest', async () => {
     const registry = new BashCommandRegistry()
     const original = command()
