@@ -186,6 +186,12 @@ describe('FolderPermissionBanner (issue #83)', () => {
     render(<FolderPermissionBanner />)
     await user.click(screen.getByRole('button', { name: 'projectRoots.bannerReauthorize' }))
     await waitFor(() => expect(mocks.requestPermission).toHaveBeenCalled())
+    // The denial path ends with the `permissionDenied` error toast; waiting
+    // for it proves the whole restore flow (including its post-await state
+    // work) has settled before we assert the banner stayed put — otherwise a
+    // handler that hides the banner after the awaited denial would still
+    // pass this test (Sourcery round 2 finding).
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('projectRoots.permissionDenied'))
     expect(screen.getByTestId('folder-permission-banner')).toBeTruthy()
   })
 
