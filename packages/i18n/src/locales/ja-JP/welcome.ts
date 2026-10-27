@@ -35,12 +35,9 @@ export const welcome = {
     welcomeSubtitle: "ローカル AI ワークスペース、ファイルとコードはブラウザ内に",
     continueButton: "続ける",
     skipButton: "今はスキップ",
-    mountFolderTitle: "ローカルフォルダをマウント",
-    mountFolderDesc: "AI がファイルを直接読み書きできます。ファイルはブラウザから出ません。",
-    mountFolderButton: "フォルダを選択",
-    mountFolderBack: "戻る",
     readyHint: "メッセージを入力、またはファイルをドロップしてください",
-    sendBlockedNotReady: "先に上のセットアップを完了してください——入力内容は保存されており、準備ができたら送信できます。",
+    // Remaining gate only (mount-folder step removed, #82): api-key / select-model
+    sendBlockedNotReady: "先にモデル設定を完了してください——入力内容は保存されており、設定ができたら送信できます。",
     gateway: {
         title: "堅果雲 AI にログイン",
         close: "閉じる",

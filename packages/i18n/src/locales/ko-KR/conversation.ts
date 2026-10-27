@@ -50,6 +50,7 @@ export const conversation = {
     input: {
       placeholder: "메시지 입력... (Shift+Enter 줄바꿈)",
       placeholderNoKey: "먼저 설정에서 API Key를 구성하세요",
+            placeholderNoModel: "먼저 아래 모델 선택기에서 사용 가능한 모델을 선택하세요",
       placeholderQueuing: "메시지 대기열에 추가... (Shift+Enter 줄바꿈)",
       ariaLabel: "메시지 입력",
       hints: {

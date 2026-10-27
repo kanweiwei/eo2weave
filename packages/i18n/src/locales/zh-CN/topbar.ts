@@ -14,6 +14,7 @@ export const topbar = {
       loading: "正在加载模型…",
       noModels: "暂无可用模型",
       credentialExpired: "请重新登录",
+            noUsableModelWarning: "尚未选择可用模型，点击选择模型",
       temporarilyUnavailable: "暂时无法验证",
       noPinnedModels: "暂无常用模型，请在设置中添加",
       searchPlaceholder: "搜索模型…",

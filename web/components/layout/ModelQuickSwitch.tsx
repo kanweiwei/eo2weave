@@ -204,6 +204,14 @@ export function ModelQuickSwitch({
     return model?.name || modelName
   }, [hasApiKey, loading, modelCredentialStatus, providerType, providers, modelName, t])
 
+  // No usable model (#82): nothing selectable — the composer's input is
+  // disabled and this chip carries the amber warning state pointing at
+  // model selection. Expired credentials keep the selection (label above
+  // already appends the re-login hint) and get the warning too.
+  const noUsableModel = !loading && (
+    (!hasApiKey || !providerType || !modelName) || modelCredentialStatus === 'expired'
+  )
+
   const thinkingLevels: { value: ExtendedThinkingLevel; label: string }[] = [
     { value: 'minimal', label: t('conversation.thinkingLevels.minimal') },
     { value: 'low', label: t('conversation.thinkingLevels.low') },
@@ -277,10 +285,16 @@ export function ModelQuickSwitch({
       <PopoverTrigger asChild>
         <BrandButton
           variant="ghost"
-          className="h-7 w-fit max-w-full min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs"
+          className={`h-7 w-fit max-w-full min-w-0 justify-between gap-1.5 border-0 bg-transparent px-2.5 text-xs ${
+            noUsableModel ? 'text-amber-600 dark:text-amber-400' : ''
+          }`}
+          aria-label={noUsableModel ? t('topbar.modelSwitcher.noUsableModelWarning') : undefined}
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 truncate text-secondary" title={currentModelLabel}>
+            <span
+              className={`min-w-0 truncate ${noUsableModel ? 'text-amber-600 dark:text-amber-400' : 'text-secondary'}`}
+              title={currentModelLabel}
+            >
               {currentModelLabel}
             </span>
             {enableThinking && compact && (
@@ -302,6 +316,12 @@ export function ModelQuickSwitch({
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
               </span>
+            ) : null}
+            {noUsableModel ? (
+              <AlertTriangle
+                className="h-3 w-3 shrink-0 text-amber-500"
+                aria-label={t('topbar.modelSwitcher.noUsableModelWarning')}
+              />
             ) : null}
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-tertiary" />

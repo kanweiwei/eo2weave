@@ -50,6 +50,7 @@ export const conversation = {
     input: {
       placeholder: "メッセージを入力... (Shift+Enter で改行)",
       placeholderNoKey: "まず設定で API Key を設定してください",
+            placeholderNoModel: "先に下のモデルセレクターで利用可能なモデルを選んでください",
       placeholderQueuing: "メッセージをキューに追加... (Shift+Enter で改行)",
       ariaLabel: "メッセージを入力",
       hints: {
