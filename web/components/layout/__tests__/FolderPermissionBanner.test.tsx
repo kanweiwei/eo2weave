@@ -57,6 +57,12 @@ vi.mock('@/store/folder-access.store', () => {
   }
   const useFolderAccessStore = (selector?: (s: Record<string, unknown>) => unknown) =>
     selector ? selector(state) : state
+  useFolderAccessStore.getState = () => state
+  useFolderAccessStore.setState = (
+    partial: Partial<Record<string, unknown>> | ((s: Record<string, unknown>) => Partial<Record<string, unknown>>)
+  ) => {
+    state = { ...state, ...(typeof partial === 'function' ? partial(state) : partial) }
+  }
   return {
     useFolderAccessStore,
     __setMockState: (s: Record<string, unknown>) => {
@@ -66,7 +72,7 @@ vi.mock('@/store/folder-access.store', () => {
 })
 
 // @ts-expect-error — test-only export from the vi.mock factory (real module has no __setMockState)
-import { __setMockState } from '@/store/folder-access.store'
+import { __setMockState, useFolderAccessStore } from '@/store/folder-access.store'
 
 function setRoots(roots: unknown[], hydrated = true) {
   __setMockState({
@@ -178,6 +184,15 @@ describe('FolderPermissionBanner (issue #83)', () => {
     expect(useAgentStore.setState).toHaveBeenCalledWith(
       expect.objectContaining({ directoryName: 'photos' })
     )
+    // Even with the reload failing, the granted root must be marked ready
+    // optimistically (Sourcery round 3): the success toast must never sit
+    // next to a banner still showing that folder as expired.
+    await waitFor(() =>
+      expect(
+        (useFolderAccessStore.getState() as { roots: Array<{ id: string; status: string }> })
+          .roots.find((r) => r.id === 'root-photos')?.status
+      ).toBe('ready')
+    )
   })
 
   it('keeps the banner visible after a denied permission request', async () => {
@@ -210,6 +225,19 @@ describe('FolderPermissionBanner (issue #83)', () => {
     })
     render(<FolderPermissionBanner />)
     expect(screen.queryByTestId('folder-permission-banner')).toBeNull()
+
+    // Inverse contract (Sourcery round 3): the banner must COME BACK when
+    // the session flag is absent — without this assertion, removing the
+    // mount-time sessionStorage read would still pass (dismissed state
+    // defaults hidden), silently turning a session dismissal into a
+    // permanent one. Clear the flag, remount, expect the banner again.
+    first.unmount()
+    window.sessionStorage.removeItem('folder-permission-banner-dismissed')
+    act(() => {
+      setRoots([expiredRoot])
+    })
+    render(<FolderPermissionBanner />)
+    expect(screen.getByTestId('folder-permission-banner')).toBeTruthy()
   })
 
   it('hands off to /folder-pick in side-panel mode instead of prompting', async () => {

@@ -60,9 +60,29 @@ export async function restoreRootPermission({
         directoryName: root.name,
       })
 
+      // Optimistically mark the granted root ready in folder-access.store
+      // (Sourcery round 3): the permission IS granted, so any snapshot still
+      // showing needs_user_activation is stale by definition. Updating it
+      // here means the banner clears immediately even when the best-effort
+      // reload below fails — the user must never see a success toast next
+      // to a re-authorization warning for the folder they just re-granted.
+      try {
+        const { useFolderAccessStore } = await import('@/store/folder-access.store')
+        useFolderAccessStore.setState((state) => ({
+          roots: state.roots.map((r) =>
+            r.id === root.id
+              ? { ...r, status: 'ready' as const, handle: root.persistedHandle }
+              : r
+          ),
+        }))
+      } catch (error) {
+        console.error('[folder-permission] Failed to mark granted root ready:', error)
+      }
+
       // The root reload is best-effort: a failure here must not make the
-      // granted permission look like a failed restore (status is refreshed
-      // by the next hydrate/loadRoots cycle).
+      // granted permission look like a failed restore (the optimistic
+      // update above already reflects the grant; the reload only
+      // reconciles the remaining roots and re-binds runtime handles).
       try {
         await loadRoots()
       } catch (error) {
