@@ -31,6 +31,13 @@ describe('checkHasApiKey deduplication', () => {
           resolveLoad = resolve
         })
     )
+    // Clear the CALL RECORD (not the implementations): call counts leak
+    // across tests, so the second test's `toHaveBeenCalledTimes(1)` waitFor
+    // would pass instantly on the first test's stale count — before its own
+    // lookup even starts — and its resolveLoad() would fire on nothing
+    // (Sourcery round 4). Combined with the per-provider cache isolation in
+    // the cache-hit test, each test's waitFor sees only its own lookup.
+    loadApiKeyMock.mockClear()
     useSettingsStore.setState({
       providerType: 'openai',
       modelName: 'gpt-test',
@@ -64,6 +71,13 @@ describe('checkHasApiKey deduplication', () => {
   })
 
   it('still resolves correctly for a cache-hit caller after the write', async () => {
+    // Distinct provider (Sourcery round 4): the module-level key cache
+    // outlives a single test, so reusing 'openai' here would hit the
+    // previous test's cached entry, never call loadApiKeyMock, and hang
+    // the waitFor below. 'anthropic' is a built-in static provider with
+    // its own cache key, so this test exercises its own uncached lookup.
+    useSettingsStore.setState({ providerType: 'anthropic' })
+
     const store = useSettingsStore.getState()
 
     const first = store.checkHasApiKey()

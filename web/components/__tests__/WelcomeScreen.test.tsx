@@ -578,18 +578,31 @@ describe('WelcomeScreen', () => {
     expect(onStart).not.toHaveBeenCalled()
   })
 
-  it('keeps expired-credential selection editable but sends disabled (per #82 design)', () => {
+  it('keeps an expired-credential selection on the ready step and defers blocking to the send path', () => {
     const onStart = vi.fn()
     const onOpenSettings = vi.fn()
     // Expired gateway credential WITH a real selection (provider + model
-    // both present): the selection is preserved and the input stays
-    // editable (the user may want to copy the error), but sending is
-    // disabled — recovery goes through the re-login card, not a retry.
-    settingsState.hasApiKey = false
+    // both present). Fixture is expired-SPECIFIC (Sourcery round 4): the
+    // key is VALID and a non-gateway provider (anthropic) is selected, so
+    // neither the api-key step nor the select-model step can account for
+    // the outcome — this test pins WHERE the expired state is handled.
+    //
+    // Division of responsibility: WelcomeScreen keeps an expired selection
+    // on the READY step (the selection exists — the user must be able to
+    // compose/copy the error, and blocking them here would strand the
+    // draft). The actual send rejection lives in
+    // useConversationLogic.sendMessage, which toasts
+    // conversation.toast.gatewayReauthRequired — a downstream contract,
+    // covered by the conversation-logic layer, not by this component.
+    settingsState.hasApiKey = true
+    settingsState.providerType = 'anthropic'
+    settingsState.modelName = 'claude-test'
     settingsState.modelCredentialStatus = 'expired'
     render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={onOpenSettings} />)
 
-    expect(screen.getByRole('button', { name: 'Skip for now' })).toBeInTheDocument()
+    // Expired selection still counts as usable → the ready step (no
+    // 'Skip for now' escape hatch — that only renders on setup cards).
+    expect(screen.queryByRole('button', { name: 'Skip for now' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByTestId('mock-input-type'))
     // The mock now ENFORCES `disabled` (#84 review round 2): the keystroke
     // landing in the draft proves the editor truly accepted typing.
@@ -598,9 +611,10 @@ describe('WelcomeScreen', () => {
     const send = screen.getByTestId('mock-send')
     fireEvent.click(send)
 
-    expect(onStart).not.toHaveBeenCalled()
-    // Draft is preserved — nothing the user typed is lost.
-    expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+    // WelcomeScreen does NOT gate on the expired credential — the send
+    // reaches onStartConversation, and the gateway re-auth toast fires
+    // downstream in sendMessage (see useConversationLogic).
+    expect(onStart).toHaveBeenCalledWith('typed text')
   })
 
   it('does NOT treat an expired credential as a selection when provider/model are empty', () => {
@@ -743,11 +757,20 @@ describe('WelcomeScreen', () => {
     const { rerender } = render(<WelcomeScreen onStartConversation={onStart} />)
     expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
 
+    // Enter the payload WHILE the model is still configured (Sourcery
+    // round 4): once the model is cleared the composer disables itself, so
+    // typing afterwards would be swallowed by the editor and handleSubmit
+    // would bail on the empty-text guard before ever reaching the
+    // readiness gate — the test would pass even with the gate removed.
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+
     settingsState.providerType = ''
     settingsState.modelName = ''
     rerender(<WelcomeScreen onStartConversation={onStart} />)
 
-    fireEvent.click(screen.getByTestId('mock-input-type'))
+    // The send is blocked by the model-readiness gate with a real payload
+    // staged (input is non-empty; the readiness gate is the only blocker).
     fireEvent.click(screen.getByTestId('mock-send'))
     expect(onStart).not.toHaveBeenCalled()
   })

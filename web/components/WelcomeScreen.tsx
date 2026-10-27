@@ -227,32 +227,24 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const rootsHydrated = useFolderAccessStore((s) => s.rootsHydrated)
 
   // "Usable model" for the input gate (#82): a provider is configured AND a
-  // model selected. An expired gateway credential keeps the selection (the
-  // user may want to copy the error message / re-login), so it still counts
-  // as usable here — the send path shows the re-auth toast, not a dead
-  // input. Same rule useConversationLogic applies at send time.
-  // No API key at all: the composer stays EDITABLE when a model is selected
-  // or the credential is expired (#84 review round 2) — the user may need
-  // to type/copy while recovering credentials; the send path still blocks
-  // (toast). The input only renders after `isLoading` (which includes
-  // `hasApiKeyLoaded`), so the hydration flash guard is already satisfied
-  // by the render gate here.
+  // model selected. No API key at all: the composer stays EDITABLE when a
+  // model is selected (#84 review round 2) — the user may need to type/copy
+  // while recovering credentials; the send path still blocks (toast). The
+  // input only renders after `isLoading` (which includes `hasApiKeyLoaded`),
+  // so the hydration flash guard is already satisfied by the render gate.
+  //
+  // An EXPIRED gateway credential is a send-path concern, not a selection
+  // or editability concern (Sourcery round 4): with a selection present
+  // `hasUsableModel` is already true, so no expired-specific term is needed
+  // here — the composer stays ready/editable and the re-auth toast comes
+  // from sendMessage. (The old `|| (expired && selection)` term was a
+  // definitional no-op: `expired && selection` is a subset of `selection`.)
   const hasUsableModel = !!providerType && !!modelName
-  // The expired-credential grace only applies when a REAL selection exists
-  // to preserve (#84 review round 3): providerType AND modelName must both
-  // be present. With one of them empty there is nothing to keep — treating
-  // the selection as usable would let `providerStep` report `ready` and
-  // enable the composer, and `handleSubmit` would start a conversation with
-  // no model instead of blocking the send.
-  const hasExpiredCredential = modelCredentialStatus === 'expired'
-  const hasSelectableModel = hasUsableModel || (hasExpiredCredential && !!providerType && !!modelName)
+  const hasSelectableModel = hasUsableModel
 
   const readiness: ProviderReadiness = {
     hasApiKey,
-    // An expired gateway credential preserves an EXISTING model selection;
-    // it should not send the user back through model selection. Same
-    // both-fields-present guard as `hasSelectableModel` above.
-    hasUsableModel: hasUsableModel || (hasExpiredCredential && !!providerType && !!modelName),
+    hasUsableModel,
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>
