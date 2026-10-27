@@ -119,7 +119,12 @@ describe('WebMCP invocation boundary', () => {
     expect(executeTool).toHaveBeenCalledWith(objectSchemaNativeTool, JSON.stringify('raw-string'))
   })
 
-  it('propagates without ever executing the tool when the serialized retry of malformed args also rejects', async () => {
+  it('propagates the serialized retry rejection and never sends the malformed payload', async () => {
+    // What this test proves: the original malformed object/number never
+    // reaches executeTool (local pre-dispatch validation rewrote it to the
+    // serialized form) and the rejection propagates. Whether the tool's
+    // handler ran behind the boundary before rejecting is a page-side
+    // detail a mock cannot prove, so the claim stops at dispatch shape.
     const objectSchemaNativeTool = {
       name: 'example', description: 'Example',
       inputSchema: { type: 'object' },
@@ -130,10 +135,13 @@ describe('WebMCP invocation boundary', () => {
     await expect(
       resolveAgentApi()!.executeToolByName('example', 42 as unknown as Record<string, unknown>)
     ).rejects.toThrow('inputObject must be an object: number')
-    // The malformed payload never reached the boundary; the tool ran at most
-    // once (the serialized form), and the rejection propagates.
+    // Exactly ONE dispatch happened and it carried the SERIALIZED form —
+    // the malformed payload itself was never passed to executeTool.
     expect(executeTool).toHaveBeenCalledTimes(1)
     expect(executeTool).toHaveBeenCalledWith(objectSchemaNativeTool, JSON.stringify(42))
+    for (const call of executeTool.mock.calls) {
+      expect(typeof call[1]).toBe('string')
+    }
   })
 
   it('never retries a page-thrown format rejection on the serialized path (tool may have run)', async () => {
