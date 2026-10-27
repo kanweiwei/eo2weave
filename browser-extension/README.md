@@ -151,7 +151,7 @@ const resp = await window.__agentWeb.webMCPInvoke({
 // → { ok, result, tabId, hostname, errorCode?, error? }
 ```
 
-Under the hood: `webMCPInvoke` checks site authorization and verifies that the exact `targetTabId` still has the requested origin and raw tool name, then relays into that same tab. It never falls back to another tab, even when that tab has the same origin and exposes the same tool. The page agent uses the v6 `executeTool(descriptor, args)` API; only legacy v4 polyfills receive serialized arguments.
+Under the hood: `webMCPInvoke` checks site authorization and verifies that the exact `targetTabId` still has the requested origin and raw tool name, then relays into that same tab. It never falls back to another tab, even when that tab has the same origin and exposes the same tool. The page agent uses the v6 `executeTool(descriptor, args)` API; serialized arguments are used for legacy v4 polyfills (marker) and for contexts exposing string input schemas (legacy native Chromium), with a one-shot format-switch retry for read-only tools.
 
 **Error codes worth handling:**
 

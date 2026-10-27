@@ -194,7 +194,10 @@ async function invoke(page: Page, name: string, args: Record<string, unknown> = 
       const tools = await context.getTools()
       const tool = tools.find((candidate: any) => candidate?.name === name)
       if (!tool) throw new Error(`Registered tool disappeared: ${name}`)
-      const usesSerializedInput = context?.__isWebMCPPolyfill === true
+      // Mirrors browser-extension call-format.ts shouldSerializeToolArgs:
+      // legacy v4 polyfill marker OR legacy-native string schema ⇒ JSON input.
+      const usesSerializedInput =
+        context?.__isWebMCPPolyfill === true || typeof tool?.inputSchema === 'string'
       const result = await context.executeTool(tool, usesSerializedInput ? JSON.stringify(args) : args)
       if (typeof result === 'string') return JSON.parse(result)
       try {

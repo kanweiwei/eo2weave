@@ -18,6 +18,11 @@
 
 import type { WebMCPApiMode } from './types'
 import type { WebMCPAgentToolMeta } from './relay-protocol'
+import {
+  WEBMCP_POLYFILL_MARKER,
+  isArgumentFormatRejection,
+  shouldSerializeToolArgs,
+} from './call-format'
 
 export interface ResolvedAgentApi {
   mode: WebMCPApiMode
@@ -63,19 +68,46 @@ export function normalizeAgentTools(tools: unknown): WebMCPAgentToolMeta[] {
 }
 
 /**
- * Invoke without retrying: current/native contexts accept objects, while
- * legacy v4 polyfills identify themselves and require serialized input.
+ * Invoke without retrying: pick the argument contract before the call so a
+ * side-effecting tool is never executed twice. Serialized JSON input is used
+ * for the marked legacy v4 polyfill AND for any context whose getTools()
+ * hands out string schemas (legacy native Chromium); everything else (v6
+ * polyfill, current native Chromium) receives objects.
  */
 function callExecuteTool(
   modelContext: any,
   targetTool: any,
   args: Record<string, unknown>,
+  serialize: boolean,
 ): Promise<unknown> {
-  const input =
-    modelContext?.__isWebMCPPolyfill === true
-      ? JSON.stringify(args || {})
-      : args || {}
+  const input = serialize ? JSON.stringify(args || {}) : args || {}
   return modelContext.executeTool(targetTool, input)
+}
+
+/**
+ * Call a tool with the predicted argument format. Read-only tools get ONE
+ * format-switch retry when the first attempt fails with a wrong-format
+ * rejection: the heuristic can only predict, never know, a native context's
+ * boundary, and a read-only hint makes the double execution harmless. Tools
+ * without readOnlyHint stay single-shot (a retried write would double-apply).
+ */
+async function invokeToolWithFormat(
+  modelContext: any,
+  targetTool: any,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  let serialize = shouldSerializeToolArgs(
+    targetTool?.inputSchema,
+    modelContext?.[WEBMCP_POLYFILL_MARKER],
+  )
+  try {
+    return await callExecuteTool(modelContext, targetTool, args, serialize)
+  } catch (error) {
+    const readOnly = targetTool?.annotations?.readOnlyHint === true
+    if (!readOnly || !isArgumentFormatRejection(error)) throw error
+    serialize = !serialize
+    return callExecuteTool(modelContext, targetTool, args, serialize)
+  }
 }
 
 /** Resolve the current document.modelContext WebMCP API. */
@@ -118,7 +150,7 @@ export function resolveAgentApi(): ResolvedAgentApi | null {
         if (!targetTool) {
           throw new Error(`Tool not found in tab: ${toolName}`)
         }
-        return callExecuteTool(modelContext, targetTool, args || {})
+        return invokeToolWithFormat(modelContext, targetTool, args || {})
       },
     }
   }
