@@ -155,10 +155,21 @@ for (const theme of ['light', 'dark'] as const) {
       // text to assistive technology.
       const axExposed = await page.evaluate(() => {
         const isExposed = (el: Element): boolean => {
-          for (let n: Element | null = el; n; n = n.parentElement) {
-            if (n.getAttribute('aria-hidden') === 'true') return false
+          const nodeHidden = (n: Element): boolean => {
+            if (n.getAttribute('aria-hidden') === 'true') return true
             const s = getComputedStyle(n)
-            if (s.display === 'none' || s.visibility === 'hidden') return false
+            return s.display === 'none' || s.visibility === 'hidden'
+          }
+          // Walk ancestors AND descendants: an ancestor-chain break hides the
+          // whole fragment, while a hidden DESCENDANT silently removes part of
+          // the changed text from the accessibility tree even though the
+          // wrapper <del>/<ins> itself stays exposed and its DOM textContent
+          // (and toHaveText) still contains the full text.
+          for (let n: Element | null = el; n; n = n.parentElement) {
+            if (nodeHidden(n)) return false
+          }
+          for (const d of el.querySelectorAll('*')) {
+            if (nodeHidden(d)) return false
           }
           return true
         }
