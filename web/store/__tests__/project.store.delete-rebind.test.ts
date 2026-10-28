@@ -195,4 +195,74 @@ describe('project.store deleteProject host rebind', () => {
     expect(host2Rebind[0].projectId).toBe('')
     void host1Rebind
   })
+
+  it('queued deletion repairs a stale active pointer: an earlier chained deletion rebound active to THIS deletion target', async () => {
+    // The old code snapshotted activeProjectId BEFORE waiting on the deletion
+    // chain: p-a is active when deleteProject('p-b') is invoked, so the check
+    // `activeProjectId === 'p-b'` was false and never re-ran — even though
+    // p-a's deletion (running first on the chain) rebound the active pointer
+    // to p-b, leaving the store pointing at the project p-b's deletion is
+    // about to remove. The repair must re-read the LIVE pointer inside the
+    // serialized section instead.
+    const agentSetActiveProjectMock = vi.fn(async () => {})
+    const refreshWorkspacesMock = vi.fn(async () => {})
+    vi.doMock('@/store/agent.store', () => ({
+      useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
+    }))
+    vi.doMock('@/store/conversation-context.store', () => ({
+      useConversationContextStore: { getState: () => ({ refreshWorkspaces: refreshWorkspacesMock }) },
+    }))
+
+    useProjectStore.setState({ activeProjectId: 'p-a', projects: [project('p-a'), project('p-b')] } as never)
+    let alive = new Set(['p-a', 'p-b'])
+    findAllProjectsMock.mockImplementation(async () =>
+      [...alive].map((id) => ({ id, name: id, status: 'active', createdAt: 1, updatedAt: 1 }))
+    )
+    deleteProjectMock.mockImplementation((async (id: string) => {
+      alive.delete(id)
+    }) as never)
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
+
+    // Both callers in flight: p-b snapshots nothing (the old code snapshotted
+    // 'p-a' here) and queues behind p-a on the deletion chain.
+    const deleteA = useProjectStore.getState().deleteProject('p-a')
+    const deleteB = useProjectStore.getState().deleteProject('p-b')
+    const [okA, okB] = await Promise.all([deleteA, deleteB])
+    expect(okA).toBe(true)
+    expect(okB).toBe(true)
+
+    // p-a's section ran first and rebound the active pointer to the only
+    // survivor, p-b. p-b's section then observed the LIVE pointer (p-b —
+    // matching its own deletion target), NOT p-a: with the stale snapshot the
+    // guard would have skipped the repair entirely, stranding the pointer on
+    // a project whose row p-b's deletion just removed.
+    expect(useProjectStore.getState().activeProjectId).toBe('')
+    expect(projectRepoMock.clearActiveProject).toHaveBeenCalled()
+    expect(agentSetActiveProjectMock).toHaveBeenCalledWith('')
+    expect(refreshWorkspacesMock).toHaveBeenCalled()
+  })
+
+  it('survivor deletion selects a remaining project as the new active, ignoring its invocation-time snapshot', async () => {
+    const agentSetActiveProjectMock = vi.fn(async () => {})
+    vi.doMock('@/store/agent.store', () => ({
+      useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
+    }))
+    vi.doMock('@/store/conversation-context.store', () => ({
+      useConversationContextStore: { getState: () => ({ refreshWorkspaces: vi.fn(async () => {}) }) },
+    }))
+
+    // Active pointer is p-x at INVOCATION time — neither the deleted project
+    // nor the eventual successor. The repair must run on the live pointer:
+    // here it already points at the deleted project (the common case), so a
+    // surviving project is selected.
+    useProjectStore.setState({ activeProjectId: 'p-x', projects: [project('p-x'), project('p-a'), project('p-b')] } as never)
+    findAllProjectsMock.mockResolvedValue([project('p-a'), project('p-b')])
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
+
+    await useProjectStore.getState().deleteProject('p-x')
+
+    expect(projectRepoMock.setActiveProject).toHaveBeenCalledWith('p-a')
+    expect(useProjectStore.getState().activeProjectId).toBe('p-a')
+    expect(agentSetActiveProjectMock).toHaveBeenCalledWith('p-a')
+  })
 })

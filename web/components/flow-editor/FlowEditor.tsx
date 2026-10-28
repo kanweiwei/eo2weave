@@ -236,9 +236,15 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
   })
 
   const toolContext: ToolContext | null = useMemo(() => {
-    if (!directoryHandle) return null
+    // Standalone chats (directMode) run with NO folder: ToolContext carries a
+    // null directoryHandle — same shape the agent loop uses for kind='direct'
+    // conversations. Folder-dependent tools are still blocked twice: the
+    // definition filter hides them from LLM nodes, and ToolRegistry.execute
+    // rejects name-based calls from visual-flow tool nodes. Project flows
+    // unchanged: without a mounted folder there is nothing to run against.
+    if (!flowDirectMode && !directoryHandle) return null
     return {
-      directoryHandle,
+      directoryHandle: directoryHandle ?? null,
       workspaceId: activeInstance?.conversationId ?? null,
       projectId: null,
       agentMode: 'act',

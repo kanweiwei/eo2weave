@@ -491,7 +491,6 @@ export const useProjectStore = create<ProjectState>()(
       set({ isLoading: true, error: null })
       try {
         const repo = getProjectRepository()
-        const activeProjectId = get().activeProjectId
 
         // Standalone chats keep a hidden host workspace row pointing at the
         // deleted project. Rebind ALL host rows (including the direct-chat
@@ -537,6 +536,39 @@ export const useProjectStore = create<ProjectState>()(
               console.warn('[ProjectStore] Failed to delete OPFS project directory:', err)
             }
             await repo.deleteProject(projectId)
+
+            // ── Active-pointer repair — INSIDE the serialized section ──
+            // The check must run AFTER this deletion committed, and inside
+            // the chain: reading `get().activeProjectId` before the chain
+            // takes a stale snapshot (an earlier chained deletion may have
+            // rebound the active pointer to THIS project after this caller
+            // was invoked), and running the repair outside the chain lets two
+            // concurrent repairs interleave with each other's row deletion.
+            // `!activeId` covers the last-project case: the previous deletion
+            // cleared the pointer, and this deletion must not leave hosts
+            // pointing at empty while survivors exist (or vice versa).
+            const activeId = get().activeProjectId
+            if (!activeId || activeId === projectId) {
+              const { useAgentStore } = await import('./agent.store')
+              const { useConversationContextStore } = await import('./conversation-context.store')
+
+              // Re-read survivors AFTER the deletion committed: the host
+              // rebind's value described pre-deletion state, and a concurrent
+              // deletion may have removed that project in the meantime.
+              const remaining = await repo.findAllProjects()
+              const successorId = remaining.find((p) => p.id !== projectId)?.id || ''
+              if (successorId) {
+                await repo.setActiveProject(successorId)
+                set({ activeProjectId: successorId })
+                await useAgentStore.getState().setActiveProject(successorId)
+              } else {
+                await repo.clearActiveProject()
+                set({ activeProjectId: '' })
+                await useAgentStore.getState().setActiveProject('')
+              }
+
+              await useConversationContextStore.getState().refreshWorkspaces()
+            }
           })
           .catch((e: unknown) => {
             // The chain itself must stay resolved so later deletions are not
@@ -547,28 +579,6 @@ export const useProjectStore = create<ProjectState>()(
           }))
 
         await get().refreshProjects()
-
-        if (activeProjectId === projectId) {
-          const { useAgentStore } = await import('./agent.store')
-          const { useConversationContextStore } = await import('./conversation-context.store')
-
-          // Re-resolve the successor AFTER the deletion committed: the rebind
-          // section's value described host rows, and a concurrent deletion may
-          // have removed that project in the meantime.
-          const remainingAfter = await repo.findAllProjects()
-          const successorId = remainingAfter.find((p) => p.id !== projectId)?.id || ''
-          if (successorId) {
-            await repo.setActiveProject(successorId)
-            set({ activeProjectId: successorId })
-            await useAgentStore.getState().setActiveProject(successorId)
-          } else {
-            await repo.clearActiveProject()
-            set({ activeProjectId: '' })
-            await useAgentStore.getState().setActiveProject('')
-          }
-
-          await useConversationContextStore.getState().refreshWorkspaces()
-        }
 
         set({ isLoading: false })
         broadcastProjectChange({ type: 'deleted', projectId })

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
@@ -32,10 +32,19 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
   // /chats/:id can land before loadFromDB resolves, and without this
   // dependency the sync never retries (leaving the chat inactive).
   const conversationsLoaded = useConversationStore((s) => s.loaded)
+  // Newest route target the effect has started a sync for. A stale
+  // continuation's generation check can only discard the OLD run — it cannot
+  // undo the store write that the discarded run's in-flight `setActive` may
+  // still commit internally (the store's own setActive commits before the
+  // hook regains control). When a stale completion fires, the repair below
+  // re-asserts the newest route's choice so the store cannot end on a
+  // superseded chat.
+  const newestChatIdRef = useRef<string>(chatId)
 
   useEffect(() => {
     if (!chatId) return
     if (!initialized || projectLoading) return
+    newestChatIdRef.current = chatId
 
     // Generation token: only the newest sync run may touch the stores. A
     // slow switch to chat A must never land after a newer switch to chat B.
@@ -112,7 +121,19 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
       const activeConversationId = useConversationStore.getState().activeConversationId
       if (activeConversationId !== chatId) {
         await useConversationStore.getState().setActive(chatId)
-        if (cancelled()) return
+        if (!cancelled()) return
+        // Stale completion — but discarding the run is not enough: this
+        // run's `setActive` may have already committed chat-a INSIDE the
+        // store (the store commits before the hook regains control). Re-run
+        // the activation for the newest route so the store ends on the chat
+        // the user last navigated to, never the stale one. The re-run goes
+        // through the same generation-guarded path and is a no-op when the
+        // newest sync already landed.
+        const newest = newestChatIdRef.current
+        if (newest && newest !== useConversationStore.getState().activeConversationId) {
+          await useConversationStore.getState().setActive(newest)
+        }
+        return
       }
     }
 

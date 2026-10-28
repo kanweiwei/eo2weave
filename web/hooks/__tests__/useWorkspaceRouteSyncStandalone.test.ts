@@ -23,7 +23,7 @@ vi.mock('@/i18n', () => ({
   useT: () => (key: string) => key,
 }))
 
-import { useWorkspaceRouteSyncStandalone } from '../useWorkspaceRouteSyncStandalone'
+import { useWorkspaceRouteSyncStandalone } from '@/hooks/useWorkspaceRouteSyncStandalone'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useConversationStore } from '@/store/conversation.store'
@@ -108,10 +108,24 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     setupStores({
       conversations: [{ id: 'chat-1', kind: 'direct' }],
     })
+    // Interleaving log: switchWorkspace records on COMPLETION (it is
+    // awaited by the hook), setActive records on CALL. Ordering must be
+    // [switchWorkspace:done, setActive:call] — if the hook ever fired
+    // setActive before the switch finished, the log would invert and this
+    // test would fail.
+    const eventLog: string[] = []
+    switchWorkspaceSpy.mockImplementation(async (id: string) => {
+      await Promise.resolve()
+      eventLog.push(`switchWorkspace:done:${id}`)
+    })
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      eventLog.push(`setActive:call:${id}`)
+    })
+
     renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
 
     await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1'))
-    expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-1')
+    expect(eventLog).toEqual(['switchWorkspace:done:chat-1', 'setActive:call:chat-1'])
     expect(routerReplaceMock).not.toHaveBeenCalled()
   })
 
@@ -178,10 +192,12 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     })
     setActiveConversationSpy.mockImplementation(async (id: string) => {
       if (id === 'chat-a') await setActiveAGate
-      // Commit ONLY after the gate for chat-a: the suspended run must not
-      // write the store on resume — otherwise the assertion below cannot
-      // distinguish "guard dropped it" from "B overwrote it later".
-      if (id !== 'chat-a') useConversationStore.setState({ activeConversationId: id })
+      // Mirror the real setActive: commit synchronously when called —
+      // INCLUDING chat-a after its gate resumes. If the guard under test is
+      // removed, the stale continuation would commit chat-a here and the
+      // final assertion would catch it; a mock that never commits chat-a
+      // would pass vacuously.
+      useConversationStore.setState({ activeConversationId: id })
     })
 
     const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
