@@ -486,6 +486,24 @@ export const useProjectStore = create<ProjectState>()(
         const repo = getProjectRepository()
         const activeProjectId = get().activeProjectId
 
+        // Standalone chats keep a hidden host workspace row pointing at the
+        // deleted project. Rebind ALL host rows (including the direct-chat
+        // ones, which project-scoped listings filter out) BEFORE the project
+        // row is deleted: if a rebind fails here the deletion aborts with a
+        // visible error and stays retryable — already-rebound rows no longer
+        // match the findAll query, so the loop is idempotent on retry. When
+        // the deleted project is the LAST project, hosts are rebound to empty
+        // string, which every consumer treats as "no project" (falsy
+        // projectId checks, e.g. resolvedProjectId in conversation-agent-run).
+        const remainingBefore = get().projects.filter((p) => p.id !== projectId)
+        const nextProjectId = remainingBefore[0]?.id || ''
+        const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+        const workspaceRepo = getWorkspaceRepository()
+        const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
+        for (const ws of orphaned) {
+          await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
+        }
+
         // Delete OPFS project directory (workspaces, agents, etc.)
         try {
           const pm = await ProjectManager.create()
@@ -496,29 +514,6 @@ export const useProjectStore = create<ProjectState>()(
 
         await repo.deleteProject(projectId)
         await get().refreshProjects()
-
-        const remainingProjects = get().projects
-        const nextProjectId = remainingProjects[0]?.id || ''
-
-        // Standalone chats keep a hidden host workspace row pointing at the
-        // deleted project. Rebind ALL host rows (including the direct-chat
-        // ones, which project-scoped listings filter out) to the next
-        // remaining project so the workspace records stay consistent — the
-        // chats space never shows project semantics, so the host choice is
-        // invisible either way. Runs whether or not the deleted project was
-        // active: an inactive host's rows would otherwise go stale too.
-        try {
-          const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
-          const workspaceRepo = getWorkspaceRepository()
-          const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
-          if (nextProjectId) {
-            for (const ws of orphaned) {
-              await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
-            }
-          }
-        } catch (rebindError) {
-          console.warn('[ProjectStore] Failed to rebind standalone chat hosts:', rebindError)
-        }
 
         if (activeProjectId === projectId) {
           const { useAgentStore } = await import('./agent.store')
