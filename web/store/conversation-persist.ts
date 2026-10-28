@@ -272,6 +272,21 @@ export async function persistConversationMeta(conversation: Conversation): Promi
   })
 }
 
+/**
+ * Persist ONLY the conversation kind via the repository's dedicated
+ * kind-transition write. Generic meta saves (persistConversationMeta) snapshot
+ * `kind` when the call starts, so a meta save racing a kind change could write
+ * the stale kind back after the transition commits — the repository layer now
+ * guards against that, and kind changes go exclusively through this path.
+ */
+export async function persistConversationKind(convId: string, kind: 'project' | 'direct'): Promise<void> {
+  // Ensure the row exists (createNew's meta INSERT may still be in flight);
+  // an UPDATE against a missing row would silently match nothing.
+  await waitForConversationMetaPersist(convId)
+  const repo = getConversationRepository()
+  await repo.updateKind(convId, kind)
+}
+
 /** Load all conversation metadata from SQLite (without messages) */
 export async function loadConversationsMeta(): Promise<Conversation[]> {
   const repo = getConversationRepository()

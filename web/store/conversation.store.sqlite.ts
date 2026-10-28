@@ -113,7 +113,7 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 
 //=============================================================================
-import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
+import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
 import {
   runAgentImpl,
   type ConversationAgentRunInternals,
@@ -183,9 +183,11 @@ interface ConversationState {
   /**
    * One-way kind upgrade: 'direct' → 'project' after folder authorization.
    * No downgrade path by design (a mounted folder has no unmount→direct
-   * semantic). Persisted immediately via the same saveMeta path as updateTitle.
+   * semantic). Persisted via a dedicated kind write (NOT the generic
+   * saveMeta path, whose snapshot of `kind` can race a concurrent transition);
+   * resolves only after the write settles so callers can detect failure.
    */
-  setConversationKind: (id: string, kind: 'project' | 'direct') => void
+  setConversationKind: (id: string, kind: 'project' | 'direct') => Promise<void>
   /**
    * User-facing conversion of a standalone chat into a project conversation.
    * Launches the folder-authorization flow (folder picker for the active
@@ -1503,7 +1505,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         })
     },
 
-    setConversationKind: (id, kind) => {
+    setConversationKind: async (id, kind) => {
       const previousKind = get().conversations.find((c) => c.id === id)?.kind
       set((state) => {
         const conv = state.conversations.find((c) => c.id === id)
@@ -1512,22 +1514,26 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         }
       })
       const conv = get().conversations.find((c) => c.id === id)
-      if (conv)
-        persistConversationMeta(conv).catch((error) => {
-          console.error(
-            '[conversation.store] Failed to persist conversation kind on setConversationKind:',
-            error
-          )
-          // Roll the in-memory kind back so the session state matches what a
-          // reload will show (the persisted row kept the previous kind).
-          set((state) => {
-            const stale = state.conversations.find((c) => c.id === id)
-            if (stale) {
-              stale.kind = previousKind
-            }
-          })
-          toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
+      if (!conv) return
+      try {
+        // Kind changes go through the dedicated transition write so a generic
+        // meta save racing this change cannot carry a stale kind into SQLite.
+        await persistConversationKind(id, kind)
+      } catch (error) {
+        console.error(
+          '[conversation.store] Failed to persist conversation kind on setConversationKind:',
+          error
+        )
+        // Roll the in-memory kind back so the session state matches what a
+        // reload will show (the persisted row kept the previous kind).
+        set((state) => {
+          const stale = state.conversations.find((c) => c.id === id)
+          if (stale) {
+            stale.kind = previousKind
+          }
         })
+        toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
+      }
     },
 
     convertDirectToProject: async (id) => {
@@ -1556,7 +1562,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const authorized = await folderState.pickDirectory(projectId)
       if (!authorized) return false
 
-      get().setConversationKind(id, 'project')
+      await get().setConversationKind(id, 'project')
+      // Await the persistence above: if the kind write failed, the in-memory
+      // kind rolled back to 'direct' and the conversion must report failure
+      // instead of a success toast that a reload would disprove.
+      if (get().conversations.find((c) => c.id === id)?.kind !== 'project') {
+        return false
+      }
       toast.success(i18nText('conversation.toast.convertedToProject', '已转换为项目对话'))
       return true
     },

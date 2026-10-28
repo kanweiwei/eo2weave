@@ -5,6 +5,7 @@ import { useConversationRuntimeStore } from '../conversation-runtime.store'
 const deleteWorkspaceMock = vi.fn(() => Promise.resolve())
 const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
 const conversationRepoSaveMetaMock = vi.fn((..._: [Record<string, unknown>]) => Promise.resolve())
+const conversationRepoUpdateKindMock = vi.fn((_id: string, _kind: 'project' | 'direct') => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
 const toastErrorMock = vi.fn()
@@ -65,6 +66,7 @@ const conversationRepoMock = {
   findAllMeta: vi.fn(() => Promise.resolve([])),
   save: vi.fn(() => Promise.resolve()),
   saveMeta: conversationRepoSaveMetaMock,
+  updateKind: conversationRepoUpdateKindMock,
   touch: vi.fn(() => Promise.resolve()),
   delete: conversationRepoDeleteMock,
 }
@@ -217,6 +219,8 @@ describe('conversation.store.sqlite tool-call routing', () => {
     conversationRepoDeleteMock.mockClear()
     conversationRepoSaveMetaMock.mockReset()
     conversationRepoSaveMetaMock.mockResolvedValue(undefined)
+    conversationRepoUpdateKindMock.mockReset()
+    conversationRepoUpdateKindMock.mockResolvedValue(undefined)
     messageRepoInsertMock.mockReset()
     messageRepoInsertMock.mockResolvedValue(undefined)
     messageRepoReplaceAllMock.mockReset()
@@ -1192,31 +1196,26 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('upgrade-me', { kind: 'direct' })
 
-      useConversationStore.getState().setConversationKind(conv.id, 'project')
-      await vi.waitFor(() => {
-        expect(conversationRepoSaveMetaMock).toHaveBeenCalled()
-      })
+      await useConversationStore.getState().setConversationKind(conv.id, 'project')
 
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
-      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
-      expect(metaCall?.id).toBe(conv.id)
-      expect(metaCall?.kind).toBe('project')
+      // The kind change goes through the dedicated updateKind write (not the
+      // generic saveMeta path, whose kind snapshot can race a transition).
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
     })
 
     it('setConversationKind restores the previous kind when persistence fails', async () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('rollback-me', { kind: 'direct' })
 
-      conversationRepoSaveMetaMock.mockRejectedValueOnce(new Error('persist failed'))
+      conversationRepoUpdateKindMock.mockRejectedValueOnce(new Error('persist failed'))
 
-      useConversationStore.getState().setConversationKind(conv.id, 'project')
-      await vi.waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalled()
-      })
+      await useConversationStore.getState().setConversationKind(conv.id, 'project')
 
       // The in-memory kind rolled back to 'direct' so the session matches
       // what a reload will show (the persisted row kept the old kind).
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+      expect(toastErrorMock).toHaveBeenCalled()
     })
 
     it('convertDirectToProject runs folder authorization then upgrades the kind', async () => {
@@ -1238,9 +1237,30 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(ok).toBe(true)
       expect(pickDirectoryMock).toHaveBeenCalledWith('proj-1')
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
-      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
-      expect(metaCall?.id).toBe(conv.id)
-      expect(metaCall?.kind).toBe('project')
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
+
+      vi.doUnmock('../folder-access.store')
+    })
+
+    it('convertDirectToProject returns false and keeps the kind when persistence fails', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('convert-persist-fail', { kind: 'direct' })
+
+      const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
+      vi.doMock('../folder-access.store', () => ({
+        useFolderAccessStore: {
+          getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
+        },
+      }))
+      conversationRepoUpdateKindMock.mockRejectedValueOnce(new Error('persist failed'))
+
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+
+      // The caller must never see a false success: the kind write failed, so
+      // the conversion reports false and the kind stays 'direct'.
+      expect(ok).toBe(false)
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+      expect(toastErrorMock).toHaveBeenCalled()
 
       vi.doUnmock('../folder-access.store')
     })
@@ -1261,8 +1281,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(ok).toBe(false)
       expect(pickDirectoryMock).toHaveBeenCalledWith('proj-1')
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
-      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
-      expect(metaCall?.kind).not.toBe('project')
+      expect(conversationRepoUpdateKindMock).not.toHaveBeenCalled()
 
       vi.doUnmock('../folder-access.store')
     })

@@ -348,10 +348,15 @@ export class ConversationRepository {
     const db = getSQLiteDB()
     const useExtended = await this.hasCompressionColumns()
     const useKind = await this.hasKindColumn()
-    // kind persists ONLY when the column exists; otherwise the DB default
-    // ('project') applies. Writing an explicit 'project' over a row whose
-    // kind is 'direct' would silently downgrade it, so the non-kind branch
-    // never touches the column at all.
+    // kind is written on INSERT (creating a 'direct' conversation row must
+    // persist its kind) but NEVER on CONFLICT UPDATE: persistConversationMeta()
+    // snapshots `kind` from in-memory state when the save STARTS; if that write
+    // lands after a concurrent direct→project transition has committed, an
+    // `kind = excluded.kind` clause would silently revert the conversion (the
+    // in-memory conversation stays 'project' while the row reloads as 'direct'
+    // after a refresh). Kind changes go through the dedicated updateKind()
+    // transition path instead. (The non-kind branches always behaved this way:
+    // the DB default 'project' applies on INSERT.)
     const normalizedKind = meta.kind === 'direct' ? 'direct' : 'project'
 
     if (useExtended && useKind) {
@@ -364,7 +369,6 @@ export class ConversationRepository {
            context_usage_json = excluded.context_usage_json,
            compressed_context_summary = excluded.compressed_context_summary,
            compressed_context_cutoff_ts = excluded.compressed_context_cutoff_ts,
-           kind = excluded.kind,
            updated_at = excluded.updated_at`,
         [
           meta.id,
@@ -415,6 +419,22 @@ export class ConversationRepository {
         ]
       )
     }
+  }
+
+  /**
+   * Dedicated kind-transition write (direct ↔ project).
+   *
+   * This is the ONLY path allowed to change an existing row's kind: generic
+   * meta saves (saveMeta) deliberately leave the kind column untouched on
+   * conflict so a stale 'direct' snapshot cannot revert a committed
+   * conversion that raced ahead of them.
+   */
+  async updateKind(id: string, kind: 'project' | 'direct'): Promise<void> {
+    if (!await this.hasKindColumn()) return
+    await getSQLiteDB().execute(
+      'UPDATE conversations SET kind = ?, updated_at = ? WHERE id = ?',
+      [kind, Date.now(), id]
+    )
   }
 
   private baseRowToMeta(row: BaseMetaColumns): ConversationMeta {
