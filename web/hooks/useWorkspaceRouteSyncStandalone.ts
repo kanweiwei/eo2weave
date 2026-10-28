@@ -105,10 +105,14 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
         if (cancelled()) return
       }
 
-      // Step 3: activate the conversation (loads messages).
+      // Step 3: activate the conversation (loads messages). The generation
+      // check after the await drops stale completions: a slow setActive(chatId)
+      // for chat A must never overwrite the active conversation chosen by a
+      // newer route sync to chat B.
       const activeConversationId = useConversationStore.getState().activeConversationId
       if (activeConversationId !== chatId) {
         await useConversationStore.getState().setActive(chatId)
+        if (cancelled()) return
       }
     }
 
