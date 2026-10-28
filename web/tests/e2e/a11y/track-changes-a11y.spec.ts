@@ -147,29 +147,65 @@ for (const theme of ['light', 'dark'] as const) {
 
       // Verify the fragments' text is EXPOSED to the accessibility tree:
       // for every <del>/<ins>, walk from the element to the document root
-      // and fail if any ancestor (or the element itself) is aria-hidden or
-      // display:none/visibility:hidden — the conditions under which AT
-      // would omit the text while the DOM-based toHaveText above still
-      // passes. The exposed text IS the accessible name for plain
-      // <del>/<ins> content, so an exposed element here carries its full
-      // text to assistive technology.
+      // AND every descendant, failing if any node is aria-hidden, hidden,
+      // inert, display:none, visibility:hidden/collapse — or sits behind
+      // an atomic role / aria-atomic boundary that replaces per-text
+      // exposure with a single opaque accessible object. These are the
+      // conditions under which AT would omit (part of) the text while the
+      // DOM-based toHaveText above still passes. The exposed text IS the
+      // accessible name for plain <del>/<ins> content, so an exposed
+      // element here carries its full text to assistive technology.
       const axExposed = await page.evaluate(() => {
-        const isExposed = (el: Element): boolean => {
-          const nodeHidden = (n: Element): boolean => {
-            if (n.getAttribute('aria-hidden') === 'true') return true
-            const s = getComputedStyle(n)
-            return s.display === 'none' || s.visibility === 'hidden'
+        // Roles whose subtree is presented to assistive technology as a
+        // single opaque accessible object (or that fire as one atomic
+        // unit): text nodes inside them are not individually addressable,
+        // so their per-text exposure cannot be asserted — treat the
+        // fragment as not verifiably exposed when one wraps changed text.
+        const ATOMIC_ROLES = new Set([
+          'alert', 'blockquote', 'button', 'checkbox', 'combobox', 'link',
+          'listbox', 'marquee', 'menu', 'menuitem', 'menuitemcheckbox',
+          'menuitemradio', 'meter', 'option', 'progressbar', 'radio',
+          'scrollbar', 'searchbox', 'slider', 'spinbutton', 'status',
+          'switch', 'tab', 'tablist', 'term', 'timer', 'tree', 'treeitem',
+        ])
+        const nodeHidden = (n: Element): boolean => {
+          if (
+            n.getAttribute('aria-hidden') === 'true' ||
+            n.hasAttribute('hidden') ||
+            n.hasAttribute('inert')
+          ) {
+            return true
           }
-          // Walk ancestors AND descendants: an ancestor-chain break hides the
-          // whole fragment, while a hidden DESCENDANT silently removes part of
-          // the changed text from the accessibility tree even though the
-          // wrapper <del>/<ins> itself stays exposed and its DOM textContent
-          // (and toHaveText) still contains the full text.
+          const s = getComputedStyle(n)
+          // `visibility:collapse` removes table rows/columns (and their
+          // text) from the accessibility tree just like `hidden` does.
+          return (
+            s.display === 'none' ||
+            s.visibility === 'hidden' ||
+            s.visibility === 'collapse'
+          )
+        }
+        const isExposed = (el: Element): boolean => {
+          // Ancestor chain: any break (aria-hidden, hidden, inert,
+          // display:none, visibility:hidden/collapse) hides the whole
+          // fragment.
           for (let n: Element | null = el; n; n = n.parentElement) {
             if (nodeHidden(n)) return false
           }
+          // EVERY descendant: a hidden DESCENDANT (or one behind an
+          // atomic role / aria-atomic boundary) silently removes part of
+          // the changed text from the accessibility tree even though the
+          // wrapper <del>/<ins> itself stays exposed and its DOM
+          // textContent (and toHaveText) still contains the full text.
           for (const d of el.querySelectorAll('*')) {
             if (nodeHidden(d)) return false
+            const role = d.getAttribute('role')
+            if (
+              (role !== null && ATOMIC_ROLES.has(role)) ||
+              d.getAttribute('aria-atomic') === 'true'
+            ) {
+              return false
+            }
           }
           return true
         }
