@@ -130,12 +130,17 @@ export const pythonToolExecutor: ToolExecutor = async (args, context) => {
   const code = args.code as string
   const timeout = (args.timeout as number) || 60000
 
+  // Direct conversations have no folder authorization: the (host-inherited)
+  // directoryHandle must never reach the python sandbox path. It is only
+  // used by registerDetectedChanges to read native host files when recording
+  // pending changes — pass null so detection stays OPFS-scoped (same
+  // boundary as bash.tool's VFS handler).
   return pythonMutex.runExclusive(() =>
     executePython(
       code,
       timeout,
       context.workspaceId,
-      context.directoryHandle,
+      context.directMode ? null : context.directoryHandle,
       context.onWorkspacePathsChanged,
       context.directMode === true,
     )

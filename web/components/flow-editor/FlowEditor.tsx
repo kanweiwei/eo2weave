@@ -22,6 +22,7 @@ import { FlowStepBar } from './FlowStepBar'
 import { flowToReactFlow, type FlowFlowNode, type FlowFlowEdge } from './flow-converter'
 import { useFlowStore } from '@/store/flow.store'
 import { useSettingsStore } from '@/store/settings.store'
+import { useConversationStore } from '@/store/conversation.store'
 import { isCustomProviderType } from '@/agent/providers/types'
 import { useAgentStore } from '@/store/agent.store'
 import type { FlowNode, FlowNodeKind } from '@/agent/flow/types'
@@ -221,6 +222,19 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
   const providerType = useSettingsStore((s) => s.providerType)
   const directoryHandle = useAgentStore((s) => s.directoryHandle)
 
+  // Direct conversations (kind='direct') have no folder authorization. The
+  // flow's ToolContext must carry directMode so ToolRegistry.execute's
+  // guard rejects folder-dependent tools — without it, a flow run from a
+  // standalone chat inherits the host directoryHandle and read/write/ls
+  // nodes silently bypass the direct-mode boundary.
+  // Read through the store so a mid-session upgrade (direct → project)
+  // applies from the next run onward.
+  const flowDirectMode = useConversationStore((s) => {
+    const id = s.activeConversationId
+    if (!id) return false
+    return s.conversations.find((c) => c.id === id)?.kind === 'direct'
+  })
+
   const toolContext: ToolContext | null = useMemo(() => {
     if (!directoryHandle) return null
     return {
@@ -228,8 +242,9 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
       workspaceId: activeInstance?.conversationId ?? null,
       projectId: null,
       agentMode: 'act',
+      directMode: flowDirectMode || undefined,
     }
-  }, [directoryHandle, activeInstance?.conversationId])
+  }, [directoryHandle, activeInstance?.conversationId, flowDirectMode])
 
   // llmConfig without apiKey — apiKey resolved at click time
   const llmConfigBase = useMemo(() => {
