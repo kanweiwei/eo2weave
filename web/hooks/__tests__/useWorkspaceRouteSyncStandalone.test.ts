@@ -1,0 +1,205 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+
+// ── Mocks ────────────────────────────────────────────────────────────
+const routerReplaceMock = vi.fn()
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: routerReplaceMock, push: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/',
+  useParams: () => ({}),
+  useSearchParams: () => new URLSearchParams(),
+}))
+
+vi.mock('sonner', () => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+    loading: vi.fn(),
+  },
+}))
+
+vi.mock('@/i18n', () => ({
+  useT: () => (key: string) => key,
+}))
+
+import { useWorkspaceRouteSyncStandalone } from '../useWorkspaceRouteSyncStandalone'
+import { useProjectStore } from '@/store/project.store'
+import { useConversationContextStore } from '@/store/conversation-context.store'
+import { useConversationStore } from '@/store/conversation.store'
+
+// ── Fixtures ─────────────────────────────────────────────────────────
+const PROJECT_A = {
+  id: 'project-a',
+  name: 'Project A',
+  status: 'active' as const,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+}
+
+/** Action spies, re-installed into the real stores before each test. */
+let switchWorkspaceSpy: ReturnType<typeof vi.fn>
+let refreshPendingChangesSpy: ReturnType<typeof vi.fn>
+let setActiveConversationSpy: ReturnType<typeof vi.fn>
+let setActiveProjectSpy: ReturnType<typeof vi.fn>
+
+function setupStores(opts: {
+  activeProjectId?: string
+  activeWorkspaceId?: string | null
+  conversations?: Array<{ id: string; kind?: 'direct' | 'project' }>
+  activeConversationId?: string | null
+}) {
+  switchWorkspaceSpy = vi.fn(async () => {})
+  refreshPendingChangesSpy = vi.fn(async () => {})
+  setActiveConversationSpy = vi.fn(async () => {})
+  setActiveProjectSpy = vi.fn(async () => true)
+
+  useProjectStore.setState({
+    projects: [PROJECT_A],
+    projectStats: {},
+    activeProjectId: opts.activeProjectId ?? PROJECT_A.id,
+    initialized: true,
+    isLoading: false,
+    error: null,
+    // Test-only action spy replacing the real implementation.
+    setActiveProject: setActiveProjectSpy as never,
+  })
+
+  useConversationContextStore.setState({
+    workspaces: [] as never,
+    activeWorkspaceId: opts.activeWorkspaceId ?? null,
+    initialized: true,
+    // Test-only action spies replacing the real implementations.
+    switchWorkspace: switchWorkspaceSpy as never,
+    refreshPendingChanges: refreshPendingChangesSpy as never,
+  })
+
+  useConversationStore.setState({
+    conversations: (opts.conversations ?? []) as never,
+    activeConversationId: opts.activeConversationId ?? null,
+    loaded: true,
+    setActive: setActiveConversationSpy as never,
+  })
+}
+
+describe('useWorkspaceRouteSyncStandalone', () => {
+  beforeEach(() => {
+    routerReplaceMock.mockClear()
+  })
+
+  it('redirects to /chats when the conversation does not exist', async () => {
+    setupStores({ conversations: [{ id: 'chat-1', kind: 'direct' }] })
+    renderHook(() => useWorkspaceRouteSyncStandalone('chat-missing'))
+
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/chats'))
+    expect(switchWorkspaceSpy).not.toHaveBeenCalled()
+    expect(setActiveConversationSpy).not.toHaveBeenCalled()
+  })
+
+  it('redirects to /chats when the conversation is not standalone (kind !== direct)', async () => {
+    setupStores({ conversations: [{ id: 'chat-1', kind: 'project' }] })
+    renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/chats'))
+    expect(switchWorkspaceSpy).not.toHaveBeenCalled()
+  })
+
+  it('activates the URL chat: switches workspace then sets the conversation active', async () => {
+    setupStores({
+      conversations: [{ id: 'chat-1', kind: 'direct' }],
+    })
+    renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1'))
+    expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-1')
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+  })
+
+  it('drops a stale route-sync completion: a slow sync for chat A never activates chat A after a newer sync to chat B', async () => {
+    // Route navigation A → B while A's sync is still inside its switchWorkspace
+    // await: when A's await resolves, its generation check must discard the
+    // run — setActive('chat-a') must NEVER be called, and the active
+    // conversation must remain chat B (the newest sync's choice).
+    let releaseSwitchA: (() => void) | null = null
+    const switchAGate = new Promise<void>((resolve) => {
+      releaseSwitchA = resolve
+    })
+
+    setupStores({
+      conversations: [
+        { id: 'chat-a', kind: 'direct' },
+        { id: 'chat-b', kind: 'direct' },
+      ],
+    })
+    switchWorkspaceSpy.mockImplementation(async (id: string) => {
+      if (id === 'chat-a') await switchAGate
+    })
+    // Mirror the real setActive: commit synchronously when called.
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      useConversationStore.setState({ activeConversationId: id })
+    })
+
+    const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+      initialProps: { chatId: 'chat-a' },
+    })
+    // Let sync A reach its switchWorkspace await (blocked on the gate).
+    await waitFor(() => expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-a'))
+    // Navigate to chat B: effect cleanup bumps A's generation; sync B starts.
+    rerender({ chatId: 'chat-b' })
+    await waitFor(() => expect(useConversationStore.getState().activeConversationId).toBe('chat-b'))
+
+    // NOW A's slow switchWorkspace resolves — the stale completion must be
+    // dropped before it can touch the stores.
+    releaseSwitchA!()
+    // Flush A's continuation past its awaited call.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(setActiveConversationSpy).not.toHaveBeenCalledWith('chat-a')
+    expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
+  })
+
+  it('drops a stale setActive continuation: a newer sync landing while the older setActive is suspended keeps chat B active', async () => {
+    // The inverse interleaving of the test above: sync A has CLEARED its
+    // pre-await cancelled() check and is suspended inside setActive('chat-a')
+    // when sync B (chat-b) runs to completion. When A's setActive resolves,
+    // the post-await generation check must discard the run — the store must
+    // end on chat B, never chat A.
+    let settleSetActiveA: (() => void) | null = null
+    const setActiveAGate = new Promise<void>((resolve) => {
+      settleSetActiveA = resolve
+    })
+
+    setupStores({
+      conversations: [
+        { id: 'chat-a', kind: 'direct' },
+        { id: 'chat-b', kind: 'direct' },
+      ],
+    })
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      if (id === 'chat-a') await setActiveAGate
+      // Commit ONLY after the gate for chat-a: the suspended run must not
+      // write the store on resume — otherwise the assertion below cannot
+      // distinguish "guard dropped it" from "B overwrote it later".
+      if (id !== 'chat-a') useConversationStore.setState({ activeConversationId: id })
+    })
+
+    const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+      initialProps: { chatId: 'chat-a' },
+    })
+    // Let sync A enter setActive('chat-a') and suspend on the gate.
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-a'))
+    // B's sync starts and completes while A is inside setActive.
+    rerender({ chatId: 'chat-b' })
+    await waitFor(() => expect(useConversationStore.getState().activeConversationId).toBe('chat-b'))
+
+    // A's suspended setActive resumes: with the stale-activation guard, the
+    // run must discard itself instead of committing chat A.
+    settleSetActiveA!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
+  })
+})
