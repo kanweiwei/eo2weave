@@ -152,6 +152,7 @@ export const conversation = {
       branchCreated: "Branched conversation created",
       messageQueued: "Message queued (position {position})",
       queueFull: "Queue is full. Please wait for the current task to finish.",
+      kindSaveFailed: "Failed to save the conversation type change.",
     },
     // Error
     error: {

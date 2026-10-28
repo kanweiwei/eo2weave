@@ -124,6 +124,7 @@ export const conversation = {
       branchCreated: "분기 채팅가 생성되었습니다",
       messageQueued: "메시지가 대기열에 추가되었습니다 (위치 {position})",
       queueFull: "대기열이 가득 찼습니다. 현재 작업이 완료될 때까지 기다려주세요.",
+      kindSaveFailed: "대화 유형 변경을 저장하지 못했습니다",
     },
     // 오류
     error: {

@@ -156,6 +156,7 @@ export const conversation = {
       branchCreated: "已创建分叉对话",
       messageQueued: "消息已加入队列 (第 {position} 位)",
       queueFull: "队列已满，请等待当前任务完成后再试",
+      kindSaveFailed: "对话类型修改保存失败",
     },
     // 错误
     error: {

@@ -1509,7 +1509,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation kind on setConversationKind:',
             error
           )
-          toast.error('对话类型修改保存失败')
+          toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
         })
     },
 

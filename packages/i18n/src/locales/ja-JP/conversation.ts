@@ -124,6 +124,7 @@ export const conversation = {
       branchCreated: "分岐チャットを作成しました",
       messageQueued: "メッセージをキューに追加しました (位置 {position})",
       queueFull: "キューが満杯です。現在のタスクが完了するまでお待ちください。",
+      kindSaveFailed: "チャット種別の変更を保存できませんでした",
     },
     // エラー
     error: {

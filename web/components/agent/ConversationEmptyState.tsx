@@ -8,7 +8,7 @@ import { useConversationStore } from '@/store/conversation.store'
 
 export function ConversationEmptyState() {
   const t = useT()
-  // Direct conversations get their own positioning copy ("随便聊聊").
+  // Direct conversations get their own positioning copy (casual-chat framing).
   const isDirect = useConversationStore(
     (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
   )
