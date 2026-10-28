@@ -1,4 +1,4 @@
-// 독립 대화 (/chats)
+// Standalone chats (/chats)
 export const chats = {
     home: {
         title: "독립 대화",

@@ -122,8 +122,12 @@ describe('directMode tool filtering', () => {
     for (const name of FOLDER_DEPENDENT_TOOLS) {
       const raw = await registry.execute(name, {}, context)
       const parsed = JSON.parse(raw) as { error?: string }
-      expect(parsed.error, name).toBeTruthy()
-      expect(raw).not.toContain('Unknown tool')
+      // Assert the SPECIFIC direct-mode authorization error — a generic
+      // executor failure (bad args, missing context) must not pass here,
+      // or a regression that removes the guard would go unnoticed.
+      expect(parsed.error, name).toBe(
+        `Tool "${name}" is not available in a standalone chat (no folder authorized).`
+      )
     }
 
     // Non-folder tools keep executing normally in direct mode.

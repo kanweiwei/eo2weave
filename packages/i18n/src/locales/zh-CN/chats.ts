@@ -1,4 +1,4 @@
-// 独立对话（/chats）
+// Standalone chats (/chats)
 export const chats = {
     home: {
         title: "独立对话",

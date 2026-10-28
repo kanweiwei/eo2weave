@@ -1,4 +1,4 @@
-// スタンドアロンチャット（/chats）
+// Standalone chats (/chats)
 export const chats = {
     home: {
         title: "スタンドアロンチャット",
