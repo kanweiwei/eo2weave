@@ -463,6 +463,14 @@ export class ToolRegistry {
       return JSON.stringify({ error: `Unknown tool: ${name}` })
     }
 
+    // Same direct-mode authorization as execute(): the no-retry path must
+    // not become a bypass around the folder-less guard.
+    if (context.directMode === true && !isToolAllowedInDirectMode(name)) {
+      return JSON.stringify({
+        error: `Tool "${name}" is not available in a standalone chat (no folder authorized).`,
+      })
+    }
+
     try {
       return await entry.executor(args, context)
     } catch (error) {

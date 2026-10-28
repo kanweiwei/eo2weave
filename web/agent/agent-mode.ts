@@ -207,11 +207,33 @@ export const FOLDER_DEPENDENT_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * Tools that can reach the HOST filesystem or processes even without a
+ * folder authorization: native-host shell execution, host process
+ * management, real-disk flushes, conflict detection over pending disk
+ * changes, and the dynamically registered checkpoint tools. A standalone
+ * chat (directMode) must never offer these — "no folder authorized" also
+ * means no host file/process access.
+ *
+ * Checkpoint tools (create_checkpoint / rollback_checkpoint) are registered
+ * dynamically when a native directory handle exists, but registration alone
+ * must not re-introduce them into a folder-less conversation — hence they
+ * are enumerated here rather than relying on registration state.
+ */
+export const HOST_CAPABLE_TOOLS: ReadonlySet<string> = new Set([
+  'exec',
+  'processes',
+  'sync-to-disk',
+  'detect_conflicts',
+  'create_checkpoint',
+  'rollback_checkpoint',
+])
+
+/**
  * Check if a tool should be excluded in direct mode (folder-less conversation).
  * Unknown tools are kept — only the explicit folder-dependent set is removed.
  */
 export function isToolAllowedInDirectMode(toolName: string): boolean {
-  return !FOLDER_DEPENDENT_TOOLS.has(toolName)
+  return !FOLDER_DEPENDENT_TOOLS.has(toolName) && !HOST_CAPABLE_TOOLS.has(toolName)
 }
 
 /**
