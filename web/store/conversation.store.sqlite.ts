@@ -187,6 +187,14 @@ interface ConversationState {
    */
   setConversationKind: (id: string, kind: 'project' | 'direct') => void
   /**
+   * User-facing conversion of a standalone chat into a project conversation.
+   * Launches the folder-authorization flow (folder picker for the active
+   * project, mirroring the workspace-mount entry); only on a successful
+   * authorization is the conversation's kind upgraded via setConversationKind.
+   * Resolves true when the conversion completed.
+   */
+  convertDirectToProject: (id: string) => Promise<boolean>
+  /**
    * Generate a title for a conversation using the current model.
    *
    * @param id - conversation id
@@ -1496,6 +1504,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     setConversationKind: (id, kind) => {
+      const previousKind = get().conversations.find((c) => c.id === id)?.kind
       set((state) => {
         const conv = state.conversations.find((c) => c.id === id)
         if (conv) {
@@ -1509,8 +1518,47 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation kind on setConversationKind:',
             error
           )
+          // Roll the in-memory kind back so the session state matches what a
+          // reload will show (the persisted row kept the previous kind).
+          set((state) => {
+            const stale = state.conversations.find((c) => c.id === id)
+            if (stale) {
+              stale.kind = previousKind
+            }
+          })
           toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
         })
+    },
+
+    convertDirectToProject: async (id) => {
+      const conv = get().conversations.find((c) => c.id === id)
+      if (!conv) {
+        toast.error(i18nText('conversation.toast.conversationMissing', '对话不存在'))
+        return false
+      }
+      // One-way upgrade: a project conversation needs no conversion.
+      if (conv.kind !== 'direct') return true
+
+      // Folder-authorization flow: the conversation becomes a project
+      // conversation, so its host project must have an authorized folder —
+      // the same picker the workspace-mount entry uses. Dynamic import keeps
+      // the folder-access store out of this module's initial graph.
+      const { useFolderAccessStore } = await import('./folder-access.store')
+      const folderState = useFolderAccessStore.getState()
+      const projectId = folderState.activeProjectId
+      if (!projectId) {
+        toast.error(i18nText('conversation.toast.convertNoProject', '没有可用的项目来承载此对话'))
+        return false
+      }
+
+      // pickDirectory launches the native folder picker and persists the
+      // granted handle; it resolves false on cancel / failure.
+      const authorized = await folderState.pickDirectory(projectId)
+      if (!authorized) return false
+
+      get().setConversationKind(id, 'project')
+      toast.success(i18nText('conversation.toast.convertedToProject', '已转换为项目对话'))
+      return true
     },
 
     generateTitle: async (id, manual) => {

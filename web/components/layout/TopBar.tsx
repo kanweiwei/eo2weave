@@ -41,6 +41,7 @@ import {
 } from '@creatorweave/ui'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useFlowStore } from '@/store/flow.store'
+import { useConversationStore } from '@/store/conversation.store'
 
 /** Stable tooltip wrapper — defined at module level to avoid recreating on every render. */
 const ActionTooltip = ({
@@ -249,12 +250,20 @@ export function TopBar({
                         </span>
                       </ActionTooltip>
                       {activeConversationIsDirect && (
-                        <span
-                          data-testid="direct-chat-badge"
-                          className="shrink-0 rounded-full border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300"
-                        >
-                          {t('conversation.directChat.badge')}
-                        </span>
+                        <ActionTooltip label={t('topbar.directChat.convertTooltip')}>
+                          <button
+                            type="button"
+                            data-testid="direct-chat-convert"
+                            className="shrink-0 rounded-full border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300"
+                            onClick={async () => {
+                              const id = useConversationStore.getState().activeConversationId
+                              if (!id) return
+                              await useConversationStore.getState().convertDirectToProject(id)
+                            }}
+                          >
+                            {t('conversation.directChat.badge')}
+                          </button>
+                        </ActionTooltip>
                       )}
                     </>
                   )}

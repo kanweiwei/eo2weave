@@ -3,6 +3,9 @@ export const topbar = {
         spaceName: "Standalone chats",
         tooltip: "Standalone chats",
     },
+    directChat: {
+        convertTooltip: "Standalone chat — click to convert to a project conversation (authorizes a folder)",
+    },
     productName: "EO2Weave",
     openFolder: "Open Folder",
     switchFolder: "Switch Project Folder",

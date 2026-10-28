@@ -125,6 +125,9 @@ export const conversation = {
       messageQueued: "メッセージをキューに追加しました (位置 {position})",
       queueFull: "キューが満杯です。現在のタスクが完了するまでお待ちください。",
       kindSaveFailed: "チャット種別の変更を保存できませんでした",
+      conversationMissing: "チャットが見つかりません",
+      convertNoProject: "このチャットを配置できるプロジェクトがありません",
+      convertedToProject: "プロジェクトチャットに変換しました",
     },
     // エラー
     error: {

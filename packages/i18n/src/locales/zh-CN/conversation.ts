@@ -157,6 +157,9 @@ export const conversation = {
       messageQueued: "消息已加入队列 (第 {position} 位)",
       queueFull: "队列已满，请等待当前任务完成后再试",
       kindSaveFailed: "对话类型修改保存失败",
+      conversationMissing: "对话不存在",
+      convertNoProject: "没有可用的项目来承载此对话",
+      convertedToProject: "已转换为项目对话",
     },
     // 错误
     error: {

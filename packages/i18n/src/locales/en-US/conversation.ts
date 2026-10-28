@@ -153,6 +153,9 @@ export const conversation = {
       messageQueued: "Message queued (position {position})",
       queueFull: "Queue is full. Please wait for the current task to finish.",
       kindSaveFailed: "Failed to save the conversation type change.",
+      conversationMissing: "Conversation not found.",
+      convertNoProject: "No project is available to host this conversation.",
+      convertedToProject: "Converted to a project conversation.",
     },
     // Error
     error: {
