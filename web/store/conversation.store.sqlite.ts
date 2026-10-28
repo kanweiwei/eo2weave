@@ -1524,11 +1524,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           '[conversation.store] Failed to persist conversation kind on setConversationKind:',
           error
         )
-        // Roll the in-memory kind back so the session state matches what a
-        // reload will show (the persisted row kept the previous kind).
+        // Roll the in-memory kind back ONLY if it still reflects THIS call's
+        // optimistic update: a concurrent transition of the same conversation
+        // may have committed a different kind after ours, and blindly
+        // restoring previousKind would clobber the newer committed value.
         set((state) => {
           const stale = state.conversations.find((c) => c.id === id)
-          if (stale) {
+          if (stale && stale.kind === kind) {
             stale.kind = previousKind
           }
         })
@@ -1545,28 +1547,40 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       // One-way upgrade: a project conversation needs no conversion.
       if (conv.kind !== 'direct') return true
 
-      // Folder-authorization flow: the conversation becomes a project
-      // conversation, so its host project must have an authorized folder —
-      // the same picker the workspace-mount entry uses. Dynamic import keeps
-      // the folder-access store out of this module's initial graph.
-      const { useFolderAccessStore } = await import('@/store/folder-access.store')
-      const folderState = useFolderAccessStore.getState()
-      const projectId = folderState.activeProjectId
-      if (!projectId) {
-        toast.error(i18nText('conversation.toast.convertNoProject', '没有可用的项目来承载此对话'))
-        return false
-      }
+      // Failures anywhere in the flow (dynamic-import chunk unavailable,
+      // picker crash, persistence error) must surface to the user instead of
+      // rejecting into a click handler that does not catch.
+      try {
+        // Folder-authorization flow: the conversation becomes a project
+        // conversation, so its host project must have an authorized folder —
+        // the same picker the workspace-mount entry uses. Dynamic import keeps
+        // the folder-access store out of this module's initial graph.
+        const { useFolderAccessStore } = await import('@/store/folder-access.store')
+        const folderState = useFolderAccessStore.getState()
+        const projectId = folderState.activeProjectId
+        if (!projectId) {
+          toast.error(i18nText('conversation.toast.convertNoProject', '没有可用的项目来承载此对话'))
+          return false
+        }
 
-      // pickDirectory launches the native folder picker and persists the
-      // granted handle; it resolves false on cancel / failure.
-      const authorized = await folderState.pickDirectory(projectId)
-      if (!authorized) return false
+        // pickDirectory launches the native folder picker and persists the
+        // granted handle; it resolves false on cancel / failure.
+        const authorized = await folderState.pickDirectory(projectId)
+        if (!authorized) return false
 
-      await get().setConversationKind(id, 'project')
-      // Await the persistence above: if the kind write failed, the in-memory
-      // kind rolled back to 'direct' and the conversion must report failure
-      // instead of a success toast that a reload would disprove.
-      if (get().conversations.find((c) => c.id === id)?.kind !== 'project') {
+        await get().setConversationKind(id, 'project')
+        // Await the persistence above: if the kind write failed, the in-memory
+        // kind rolled back to 'direct' and the conversion must report failure
+        // instead of a success toast that a reload would disprove.
+        if (get().conversations.find((c) => c.id === id)?.kind !== 'project') {
+          return false
+        }
+      } catch (error) {
+        console.error(
+          '[conversation.store] convertDirectToProject failed:',
+          error
+        )
+        toast.error(i18nText('conversation.toast.convertFailed', '转换失败，请重试'))
         return false
       }
       toast.success(i18nText('conversation.toast.convertedToProject', '已转换为项目对话'))

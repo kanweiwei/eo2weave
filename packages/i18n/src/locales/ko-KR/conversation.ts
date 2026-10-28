@@ -128,6 +128,7 @@ export const conversation = {
       conversationMissing: "대화를 찾을 수 없습니다",
       convertNoProject: "이 대화를 저장할 프로젝트가 없습니다",
       convertedToProject: "프로젝트 대화로 전환되었습니다",
+      convertFailed: "변환에 실패했습니다. 다시 시도해 주세요",
     },
     // 오류
     error: {

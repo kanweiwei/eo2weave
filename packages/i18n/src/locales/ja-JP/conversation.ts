@@ -128,6 +128,7 @@ export const conversation = {
       conversationMissing: "チャットが見つかりません",
       convertNoProject: "このチャットを配置できるプロジェクトがありません",
       convertedToProject: "プロジェクトチャットに変換しました",
+      convertFailed: "変換に失敗しました。再試行してください",
     },
     // エラー
     error: {

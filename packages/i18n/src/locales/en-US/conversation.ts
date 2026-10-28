@@ -156,6 +156,7 @@ export const conversation = {
       conversationMissing: "Conversation not found.",
       convertNoProject: "No project is available to host this conversation.",
       convertedToProject: "Converted to a project conversation.",
+      convertFailed: "Conversion failed. Please try again.",
     },
     // Error
     error: {

@@ -160,6 +160,7 @@ export const conversation = {
       conversationMissing: "对话不存在",
       convertNoProject: "没有可用的项目来承载此对话",
       convertedToProject: "已转换为项目对话",
+      convertFailed: "转换失败，请重试",
     },
     // 错误
     error: {
