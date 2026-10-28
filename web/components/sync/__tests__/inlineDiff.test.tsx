@@ -566,11 +566,89 @@ describe('LazyDiffViewer content-type split', () => {
     // queries double as the visibility guard against that regression.
     expect(screen.getAllByRole('deletion')).toEqual(removed)
     expect(screen.getAllByRole('insertion')).toEqual(added)
+
+    // The expected fragment stream comes from `computeInlineFragments`,
+    // independent of the rendered DOM, so the assertions below compare the
+    // DOM-exposed text against an oracle rather than the fragment's own
+    // textContent (which a hidden descendant would trivially satisfy).
+    // `brown fox`/`red fox` is a modified pair (inline fragments); the
+    // `removed`/`added entirely` lines fall back to whole-line styling.
+    const pairFragments = computeInlineFragments(
+      'The quick brown fox',
+      'The quick red fox',
+    )
+    const expectedRemoved = pairFragments
+      .filter((f) => f.type === 'removed')
+      .map((f) => f.value)
+      .join('')
+    const expectedAdded = pairFragments
+      .filter((f) => f.type === 'added')
+      .map((f) => f.value)
+      .join('')
+    // The whole-line removal/addition rows render exactly one <del>/<ins>
+    // carrying the full line text — include them in the oracle.
+    expect([...removed.map((n) => n.textContent)]).toEqual([
+      expectedRemoved,
+      'removed',
+    ])
+    expect([...added.map((n) => n.textContent)]).toEqual([
+      expectedAdded,
+      'added',
+    ])
+
     for (const fragment of [...removed, ...added]) {
-      expect(fragment.getAttribute('aria-hidden')).toBeNull()
       expect(fragment.hasAttribute('hidden')).toBe(false)
       expect(fragment.style.display).not.toBe('none')
       expect(fragment.style.visibility).not.toBe('hidden')
+      // The fragment's TEXT must be exposed too — hiding the text in a
+      // descendant (`hidden`, `inert` or aria-hidden attributes, inline
+      // style, or a computed display/visibility) would leave the wrapper
+      // visible to the a11y tree while assistive technology still gets
+      // none of the content. Every node below — the fragment itself
+      // included — must be free of ANY hiding mechanism, and the text
+      // must be non-empty, so the whole visible text lives in
+      // a11y-visible nodes.
+      expect(fragment.textContent!.length).toBeGreaterThan(0)
+      for (const node of [fragment, ...fragment.querySelectorAll<HTMLElement>('*')]) {
+        // `aria-hidden="false"` is valid and keeps content exposed; only
+        // the literal "true" hides a node. Match case-insensitively so
+        // `aria-hidden="TRUE"` cannot slip through.
+        expect((node.getAttribute('aria-hidden') ?? '').toLowerCase()).not.toBe('true')
+        // `hidden` and `inert` both remove a subtree from the a11y tree.
+        expect(node.hasAttribute('hidden')).toBe(false)
+        expect(node.hasAttribute('inert')).toBe(false)
+        // `role` + `aria-label` makes a node an atomic replacement: AT
+        // announces the label instead of the subtree text, so a diff
+        // fragment must not be wrapped in one.
+        expect(node.getAttribute('role')).toBeNull()
+        expect(node.getAttribute('aria-label')).toBeNull()
+        expect(node.style.display).not.toBe('none')
+        expect(node.style.visibility).not.toBe('hidden')
+        expect(node.style.visibility).not.toBe('collapse')
+        // Computed-style guard: the inline `style` checks above only see
+        // inline declarations, so also read each node's computed display
+        // and visibility to catch hiding applied via the CSSOM (e.g.
+        // programmatic style or class changes). happy-dom (this suite's
+        // test environment) resolves class-based rules from stylesheets
+        // in the document, but it is NOT a full CSS engine —
+        // media-query-scoped, pseudo-class or externally-hosted rules can
+        // still be missed, so this check complements rather than replaces
+        // the markup assertions above. `opacity: 0` is deliberately not
+        // checked: it does not remove content from the accessibility
+        // tree. `visibility: collapse` is treated like `hidden`: AT
+        // removes collapsed content that is not table rows/columns.
+        // NOTE on effective vs. per-node visibility: `visibility` is
+        // inheritable-with-override (`hidden` wrapper + `visible` child
+        // exposes the child). This loop asserts per-node values, so a
+        // nested `visibility: visible` under a `hidden` ancestor is
+        // rejected even though a browser would expose it — the diff
+        // renderer never emits such nesting, and rejecting it is the
+        // conservative direction for a regression test (false alarms on
+        // exotic markup, never a missed hiding).
+        const computed = window.getComputedStyle(node)
+        expect(computed.display).not.toBe('none')
+        expect(computed.visibility === 'hidden' || computed.visibility === 'collapse').toBe(false)
+      }
     }
   })
 
