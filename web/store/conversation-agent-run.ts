@@ -25,7 +25,7 @@ import { deleteAgentLoop, setAgentLoop } from './agent-loop-registry'
 import { deleteStreamingQueues, getStreamingQueues, setStreamingQueues } from './streaming-queue-registry'
 import { applyDraftAssistantEvent } from './draft-assistant'
 import { getElicitationHandler } from '@/mcp/elicitation-handler.tsx'
-import { ensureRuntime, attachReasoningDurations, commitDraftToMessages, findSpawnStepInDraft, summarizeForNotification, reconcileMessageSnapshot, deriveContextUsageFromAssistantUsage } from './conversation-message-ops'
+import { ensureRuntime, attachReasoningDurations, commitDraftToMessages, findSpawnStepInDraft, summarizeForNotification, reconcileMessageSnapshot, deriveContextUsageFromAssistantUsage, i18nText } from './conversation-message-ops'
 import { StreamingQueue } from '../utils/streaming-queue'
 import { AgentLoop } from '@/agent/agent-loop'
 import { createToolPolicyHooks } from '@/agent/tool-policy'
@@ -34,7 +34,7 @@ import { ContextManager } from '@/agent/context-manager'
 import { getToolRegistry } from '@/agent/tool-registry'
 import { getOrCreateSubagentRuntime } from '@/agent/subagent/runtime'
 import { getApiKeyRepository } from '@/sqlite'
-import { LLM_PROVIDER_CONFIGS, isCustomProviderType } from '@/agent/providers/types'
+import { LLM_PROVIDER_CONFIGS, isCustomProviderType, isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { generateFollowUp } from '@/agent/follow-up-generator'
 import { useSettingsStore } from './settings.store'
 import { getCurrentWorkspaceAgentMode } from './workspace-preferences.store'
@@ -130,6 +130,65 @@ export async function runAgentImpl(
 
       if (state.isConversationRunning(conversationId)) {
         console.warn('[conversation.store] Conversation is already running:', conversationId)
+        return
+      }
+
+      // ── Unregistered dynamic provider guard (#87, Sourcery rounds 2+3) ──
+      // runAgent is the shared dispatch boundary for every AI action —
+      // sendMessage, QuickActionsPanel, FilePreview, SyncPreviewPanel and
+      // the sync review-request all end here. The send-path guards in the
+      // UI only check at click time; between that check and this call the
+      // provider can unregister (extension disconnect, auth revocation), so
+      // recheck the LIVE registry at dispatch. Blocking here guarantees no
+      // direct caller can push a run through a dead route.
+      //
+      // Round 3: the guard surfaces a FAILURE instead of silently returning.
+      // Direct callers that already persisted a user message (or a queued
+      // message that reached its guard) get a visible run error they can
+      // recover from, instead of an unanswered message hanging in the
+      // conversation with no result to roll back.
+      const providerMissing = (type: LLMProviderType | string): boolean =>
+        !!type && isPotentiallyDynamicProviderType(type) && !getProviderConfig(type as LLMProviderType)
+      if (providerMissing(providerType)) {
+        const unavailableMessage = i18nText(
+          'conversation.toast.providerReauthRequired',
+          'The selected provider is unavailable — sign in again to use it.'
+        )
+        toast.error(unavailableMessage)
+        // Round 4: the guard must do everything failRunEarly does for the
+        // dispatch-time recheck — mirror the failure into the runtime store
+        // (otherwise no error banner/retry state is rendered) and persist
+        // the messages (otherwise the user message that triggered this run
+        // disappears after a page reload). No run lock has been acquired
+        // yet at this point, so the isCurrentRun gating inside failRunEarly
+        // would no-op — hence the inline mirror here.
+        set((state) => {
+          const c = state.conversations.find((c) => c.id === conversationId)
+          if (c) {
+            c.status = 'error'
+            c.error = unavailableMessage
+            c.activeRunId = null
+          }
+        })
+        useConversationRuntimeStore.setState((state) => {
+          const r = ensureRuntime(state, conversationId)
+          r.status = 'error'
+          r.error = unavailableMessage
+          r.activeRunId = null
+          r.draftAssistant = null
+          r.currentToolCall = null
+          r.activeToolCalls = []
+          r.streamingToolArgs = ''
+          r.streamingToolArgsByCallId = {}
+          r.streamingContent = ''
+          r.streamingReasoning = ''
+        })
+        const errorConv = get().conversations.find((c) => c.id === conversationId)
+        if (errorConv) {
+          persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
+            console.error('[conversation.store] Failed to persist provider-missing failure:', err)
+          })
+        }
         return
       }
 
@@ -386,6 +445,22 @@ export async function runAgentImpl(
 
         const lastUserMessage = [...conv.messages].reverse().find((m) => isConversationUserMessage(m))
 
+        // ── Registry recheck immediately before dispatch (#87, Sourcery round 3) ──
+        // The entry guard ran before workspace setup / directory-handle
+        // resolution (both await). A dynamic provider can unregister inside
+        // that window; resolving provider configuration from the stale
+        // selection would start the agent on a dead route instead of
+        // showing the reauthentication guidance.
+        if (providerMissing(providerType)) {
+          failRunEarly(
+            i18nText(
+              'conversation.toast.providerReauthRequired',
+              'The selected provider is unavailable — sign in again to use it.'
+            )
+          )
+          return
+        }
+
         const apiKeyRepo = getApiKeyRepository()
         const settingsState = useSettingsStore.getState()
         const effectiveConfig = settingsState.getEffectiveProviderConfig()
@@ -436,6 +511,24 @@ export async function runAgentImpl(
           // Ignore agents-store read failures and fallback to default.
         }
 
+        // ── Final registry recheck immediately before provider construction
+        // (#87, Sourcery round 4) ── The round-3 recheck above runs BEFORE
+        // the API-key load, workspace repo and agents-store awaits. If the
+        // dynamic provider unregisters inside THAT window, the stale
+        // provider config captured before the awaits would still dispatch
+        // the run onto a dead route. Recheck once more after all awaits
+        // settle; a provider that vanished mid-setup routes through
+        // failRunEarly like every other pre-dispatch failure.
+        if (providerMissing(providerType)) {
+          failRunEarly(
+            i18nText(
+              'conversation.toast.providerReauthRequired',
+              'The selected provider is unavailable — sign in again to use it.'
+            )
+          )
+          return
+        }
+
         const provider = createLLMProvider({
           apiKey: apiKey || '',
           providerType,
@@ -445,7 +538,6 @@ export async function runAgentImpl(
             ? settingsState.customProviders.find((p) => p.id === providerType)?.apiMode || 'chat-completions'
             : undefined,
         })
-
         const contextManager = new ContextManager({
           maxContextTokens: provider.maxContextTokens,
           reserveTokens: maxTokens,

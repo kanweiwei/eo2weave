@@ -25,6 +25,7 @@ import { useAssetStore } from '@/store/asset.store'
 import { removeAssetsFromOPFS, writePendingAssetsToOPFS } from '@/services/asset.service'
 import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
+import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
@@ -332,13 +333,27 @@ export function useConversationLogic() {
         maxTokens: mTokens,
         modelCredentialStatus,
       } = useSettingsStore.getState()
-      if (!hasKey || modelCredentialStatus === 'expired' || !pType || !mName) {
+      // An unregistered dynamic provider (#87 — codex-oauth whose extension
+      // disappeared or whose auth was revoked) leaves the persisted
+      // providerType in place but the registry has no config for it, so
+      // sending would hit a dead route even though the stale virtual key
+      // satisfies the hasKey check. Block it with the re-login toast —
+      // same family as the expired gateway credential, but the registry
+      // (not the credential) is what's missing.
+      const providerUnregistered =
+        !!pType && isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)
+      // Precedence (Sourcery round 5): the unregistered-provider guard wins
+      // over the expired-credential toast — when the provider itself is
+      // gone, the gateway re-login flow is the wrong guidance.
+      if (providerUnregistered || !hasKey || modelCredentialStatus === 'expired' || !pType || !mName) {
         toast.error(
-          modelCredentialStatus === 'expired'
-            ? t('conversation.toast.gatewayReauthRequired')
-            : !pType || !mName
-              ? t('conversation.toast.noModel')
-              : t('conversation.toast.noApiKey'),
+          providerUnregistered
+            ? t('conversation.toast.providerReauthRequired')
+            : modelCredentialStatus === 'expired'
+              ? t('conversation.toast.gatewayReauthRequired')
+              : !pType || !mName
+                ? t('conversation.toast.noModel')
+                : t('conversation.toast.noApiKey'),
         )
         options?.onInputRejected?.(text)
         return
@@ -485,6 +500,25 @@ export function useConversationLogic() {
         }
       }
 
+      // ── Dispatch-time registry recheck (#87, Sourcery round 3) ──
+      // The entry guard ran before several awaits (page-context capture,
+      // asset writes, OCR). A dynamic provider can unregister inside that
+      // window (extension disconnect, auth revocation). This recheck sits
+      // BEFORE every commit — the user message append, the draft clear, the
+      // staged-asset consumption, and queued-message enqueue all happen
+      // below — so a rejected send leaves no half-committed turn for a
+      // retry to duplicate.
+      if (isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)) {
+        toast.error(t('conversation.toast.providerReauthRequired'))
+        // Remove the OPFS copies that were only written in preparation for
+        // this send; rejectSend hands the staged files and typed text back.
+        if (wrotePendingAssets && assets) {
+          void removeAssetsFromOPFS(assets)
+        }
+        rejectSend()
+        return
+      }
+
       if (useConversationRuntimeStore.getState().isConversationRunning(targetConvId)) {
         // Queue the message instead of rejecting it
         const result = useConversationRuntimeStore.getState().enqueueMessage(targetConvId, {
@@ -527,6 +561,11 @@ export function useConversationLogic() {
       isUserAtBottomRef.current = true
       draftConvIdRef.current = null
 
+      // (The dispatch-time registry recheck now runs BEFORE any commit —
+      // message append, draft clear, asset consumption, queue enqueue — see
+      // above. runAgent's own store-level guard is the final backstop for a
+      // provider unregistering inside the remaining synchronous window.)
+
       await runAgent(targetConvId, pType, mName, mTokens, dh, options?.agentOverrideId ?? null)
     },
     [t]
@@ -550,6 +589,18 @@ export function useConversationLogic() {
     const currentConvId = convIdRef.current
     const currentMentionedAgentIds = mentionedAgentIdsRef.current
     const { getSuggestedFollowUp, clearSuggestedFollowUp } = useConversationRuntimeStore.getState()
+
+    // ── Provider pre-gate (Sourcery round 2) ──
+    // Runs BEFORE any slash-command dispatch or optimistic input clear so a
+    // rejected send leaves the typed command (e.g. /compact) and the editor
+    // content intact — the user keeps what they typed while recovering.
+    {
+      const { providerType: pType } = useSettingsStore.getState()
+      if (pType && isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)) {
+        toast.error(t('conversation.toast.providerReauthRequired'))
+        return
+      }
+    }
 
     // P0 builtin light-operation pack (/summary /translate /explain /polish
     // /titles): assemble the prompt from template + page context, then fall
@@ -605,6 +656,10 @@ export function useConversationLogic() {
         : ''
     const isAttachmentOnly = !inputTrimmed && hasStagedAssets
     if (textToSend || isAttachmentOnly) {
+      // (The unregistered-provider pre-gate now runs at the top of handleSend,
+      // before slash-command dispatch and the optimistic clear — Sourcery
+      // round 2.)
+
       // ── Optimistic input clear ──
       // Clear the input BEFORE the async sendMessage pipeline runs. sendMessage
       // awaits page-context capture / asset writes / OCR before it reaches its
@@ -672,13 +727,28 @@ export function useConversationLogic() {
     [deleteAgentLoop, t]
   )
 
+  // ── Unregistered dynamic provider guard (#87, Sourcery round 5) ──
+  // regenerate / edit-and-resend call the conversation-store actions
+  // directly, which run the persisted provider without the checks
+  // sendMessage has — a rejected provider would hit a dead route instead
+  // of showing the re-login guidance. Returns true when the guard blocked
+  // the attempt (caller must abort).
+  const blockIfProviderUnregistered = useCallback((): boolean => {
+    const { providerType: pType } = useSettingsStore.getState()
+    if (!pType || !isPotentiallyDynamicProviderType(pType)) return false
+    if (getProviderConfig(pType)) return false
+    toast.error(t('conversation.toast.providerReauthRequired'))
+    return true
+  }, [t])
+
   const handleEditAndResend = useCallback(
     (userMessageId: string, newContent: string) => {
+      if (blockIfProviderUnregistered()) return
       const currentConvId = convIdRef.current
       if (!currentConvId) return
       editAndResendUserMessage(currentConvId, userMessageId, newContent)
     },
-    [editAndResendUserMessage]
+    [editAndResendUserMessage, blockIfProviderUnregistered]
   )
 
   // Always call unconditionally (rules-of-hooks); when convId is absent the
@@ -686,11 +756,12 @@ export function useConversationLogic() {
   // (undefined) observed by consumers — they only invoke it with a message id.
   const handleRegenerate = useCallback(
     (id: string) => {
+      if (blockIfProviderUnregistered()) return
       const currentConvId = convId
       if (!currentConvId) return
       regenerateUserMessage(currentConvId, id)
     },
-    [convId, regenerateUserMessage]
+    [convId, regenerateUserMessage, blockIfProviderUnregistered]
   )
 
   return {

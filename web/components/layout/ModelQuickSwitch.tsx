@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Search } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
+import { isPotentiallyDynamicProviderType, getProviderConfig, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -56,8 +57,43 @@ export function ModelQuickSwitch({
   const [searchResultIdx, setSearchResultIdx] = useState(0)
   const [thinkingPopoverOpen, setThinkingPopoverOpen] = useState(false)
 
+  // The dynamic-provider registry mutates asynchronously (extension
+  // detection, gateway login, custom-provider restore). Subscribing to its
+  // version (useSyncExternalStore) makes both the cached provider list
+  // refresh below and the selectedProviderUnregistered memo reactive.
+  const providerRegistryVersion = useSyncExternalStore(
+    subscribeToProviderRegistry,
+    getProviderRegistryVersion,
+    getProviderRegistryVersion
+  )
+
+  // Re-fetch the cached provider list when the dynamic-provider registry
+  // changes (Sourcery round 2): registering/unregistering a provider while
+  // this popover is mounted must refresh the cached list, otherwise the
+  // switcher keeps offering models from a provider that no longer exists.
+  // The initial version is captured once; subsequent registry mutations bump
+  // a generation counter that the load effect below depends on.
+  const [registryLoadGen, setRegistryLoadGen] = useState(0)
+  const initialRegistryVersionRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (initialRegistryVersionRef.current === null) {
+      initialRegistryVersionRef.current = providerRegistryVersion
+      return
+    }
+    if (providerRegistryVersion !== initialRegistryVersionRef.current) {
+      initialRegistryVersionRef.current = providerRegistryVersion
+      setRegistryLoadGen((v) => v + 1)
+    }
+  }, [providerRegistryVersion])
+
   const searchInputRef = useRef<HTMLInputElement>(null)
   const thinkingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // True once the FIRST provider-list load has settled (Sourcery round 3).
+  // `loading` must not gate the unregistered-provider warning after this:
+  // a registry-triggered refresh sets `loading` again and would suppress
+  // the live warning until the refresh resolves.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -73,7 +109,10 @@ export function ModelQuickSwitch({
         console.error('[ModelQuickSwitch] Failed to load providers:', err)
         if (!cancelled) setLoadError(true)
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setHasLoadedOnce(true)
+        }
       }
     }
     void load()
@@ -83,7 +122,7 @@ export function ModelQuickSwitch({
     // NOTE: `open` is intentionally excluded — providers are cached after first load
     // and refreshed only when _providerRefreshVersion changes (pin/unpin/custom provider edits).
     // Including `open` here caused a full reload every time the popover opens.
-  }, [getAvailableProviders, providerRefreshVersion])
+  }, [getAvailableProviders, providerRefreshVersion, registryLoadGen])
 
   // Reset transient search state when the popover closes.
   useEffect(() => {
@@ -189,10 +228,51 @@ export function ModelQuickSwitch({
     return currentProvider?.models.some((model) => model.id === modelName && model.stale) ?? false
   }, [enrichedProviders, providerType, modelName])
 
+  // The dynamic-provider registry mutates asynchronously (extension
+  // detection, gateway login, custom-provider restore). Subscribing to its
+  // version makes the memo below reactive (Sourcery round 5): registering
+  // or unregistering a provider while this component is mounted must
+  // recompute the flag — a stale cached `providers` list alone cannot.
+  // (Declaration moved above the cached-list refresh effect, which also
+  // depends on this version — Sourcery round 2.)
+  // Unregistered dynamic provider (#87): the persisted selection names a
+  // provider (codex-oauth, llm-gateway, custom-*) that has not registered
+  // this session — `getProviderConfig` returns null for it, so
+  // `getAvailableProviders` cannot list it either. Sending would hit a
+  // dead route (the stale virtual key in SQLite even makes the credential
+  // check pass), so this is a THIRD no-usable-model state alongside
+  // gateway-expired. The selection is kept for seamless re-login restore.
+  //
+  // `getProviderConfig` (the LIVE registry) is authoritative (Sourcery
+  // round 5): a provider still present in the cached `providers` list
+  // after unregistering must NOT count as registered — the cached list is
+  // a snapshot, the registry is the truth.
+  const selectedProviderUnregistered = useMemo(() => {
+    void providerRegistryVersion
+    // Suppress the warning only during the INITIAL load (dynamic providers
+    // register asynchronously after mount — warning before that window
+    // closes would flash a false "unavailable"). Registry-triggered
+    // refreshes (Sourcery round 3) must NOT re-arm the suppression: a
+    // provider that unregisters mid-session would otherwise lose its
+    // warning while the provider-list reload is pending.
+    if (!hasLoadedOnce || !providerType || !modelName) return false
+    if (!isPotentiallyDynamicProviderType(providerType)) return false
+    return !getProviderConfig(providerType)
+  }, [hasLoadedOnce, providerType, modelName, providerRegistryVersion])
+
+  // Warning copy must name the provider the user must re-login to
+  // (Sourcery round 5): codex-oauth gets the Codex-specific recovery text;
+  // llm-gateway and custom-* would otherwise see guidance for the wrong
+  // provider. Keys exist in all four locales.
+  const unregisteredWarningKey =
+    providerType === 'codex-oauth'
+      ? 'topbar.modelSwitcher.codexUnavailableWarning'
+      : 'topbar.modelSwitcher.providerUnavailableWarning'
+
   const currentModelLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
     if (loading) return t('topbar.modelSwitcher.loading')
-    if (modelCredentialStatus === 'expired' && modelName) {
+    if (modelCredentialStatus === 'expired' && modelName && !selectedProviderUnregistered) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
     }
     if (!providerType || !modelName) {
@@ -201,10 +281,15 @@ export function ModelQuickSwitch({
     // A selected model with an unresolved/missing key check is a CREDENTIAL
     // state, not "no models" (#84 review round 2) — keep showing the model
     // name so the chip's amber warning reads as re-credentials, not re-pick.
+    // An unregistered dynamic provider (#87) appends the provider-specific
+    // re-login warning instead of the bare model name.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
-    return model?.name || modelName
-  }, [loading, modelCredentialStatus, providerType, providers, modelName, t])
+    const base = model?.name || modelName
+    return selectedProviderUnregistered
+      ? `${base} · ${t(unregisteredWarningKey)}`
+      : base
+  }, [loading, selectedProviderUnregistered, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
@@ -218,9 +303,12 @@ export function ModelQuickSwitch({
   // unresolved key check must not count as a confirmed missing key. The
   // credential branch below wins whenever a provider+model are chosen, so
   // the label points at recovering credentials, not re-picking a model.
+  //
+  // The unregistered-provider term above slots into the same
+  // noUsableModel family (#87).
   const noModelSelected = !loading && (!providerType || !modelName)
   const credentialExpired = !loading && modelCredentialStatus === 'expired'
-  const noUsableModel = noModelSelected || credentialExpired
+  const noUsableModel = noModelSelected || credentialExpired || selectedProviderUnregistered
 
   const thinkingLevels: { value: ExtendedThinkingLevel; label: string }[] = [
     { value: 'minimal', label: t('conversation.thinkingLevels.minimal') },
@@ -301,9 +389,11 @@ export function ModelQuickSwitch({
           aria-label={
             noModelSelected
               ? t('topbar.modelSwitcher.noUsableModelWarning')
-              : credentialExpired
-                ? t('topbar.modelSwitcher.credentialExpiredWarning')
-                : undefined
+              : selectedProviderUnregistered
+                ? t(unregisteredWarningKey)
+                : credentialExpired
+                  ? t('topbar.modelSwitcher.credentialExpiredWarning')
+                  : undefined
           }
         >
           <span className="flex min-w-0 items-center gap-1.5">
@@ -336,7 +426,7 @@ export function ModelQuickSwitch({
             {noUsableModel ? (
               <AlertTriangle
                 className="h-3 w-3 shrink-0 text-amber-500"
-                aria-label={t('topbar.modelSwitcher.noUsableModelWarning')}
+                aria-hidden
               />
             ) : null}
           </span>

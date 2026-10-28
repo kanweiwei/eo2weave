@@ -27,7 +27,7 @@
  * points at the model chip) — the chip itself is the configuration entry.
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { Sparkles, KeyRound, ChevronRight, Shield, Loader2, ArrowRight, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -37,6 +37,7 @@ import { useAssetStore } from '@/store/asset.store'
 import { useProjectStore } from '@/store/project.store'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { useT } from '@/i18n'
+import { isPotentiallyDynamicProviderType, getProviderConfig, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
@@ -241,6 +242,24 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // definitional no-op: `expired && selection` is a subset of `selection`.)
   const hasUsableModel = !!providerType && !!modelName
   const hasSelectableModel = hasUsableModel
+  // An unregistered dynamic provider (#87 — codex-oauth whose extension
+  // disappeared or whose auth was revoked) leaves the persisted selection
+  // in place. Same division of responsibility as the expired credential:
+  // the input stays editable, but handleSubmit blocks the send below.
+  // The registry version is a reactive dependency (Sourcery round 5): a
+  // dynamic provider registering/unregistering while this screen stays
+  // mounted must recompute the memo — otherwise a restored provider stays
+  // blocked forever (or a revoked one stays allowed).
+  const providerRegistryVersion = useSyncExternalStore(
+    subscribeToProviderRegistry,
+    getProviderRegistryVersion,
+    getProviderRegistryVersion
+  )
+  const selectedProviderUnregistered = useMemo(() => {
+    void providerRegistryVersion
+    if (!hasUsableModel || !isPotentiallyDynamicProviderType(providerType)) return false
+    return !getProviderConfig(providerType)
+  }, [hasUsableModel, providerType, providerRegistryVersion])
 
   const readiness: ProviderReadiness = {
     hasApiKey,
@@ -330,17 +349,30 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     // every turn. Point the user at the setup card instead; the draft store
     // keeps what they typed so nothing is lost. (Only the provider steps
     // gate — folder mounting is optional and never blocks, #82.)
+    // EXCEPTION (Sourcery round 5): when the SELECTED dynamic provider is
+    // unregistered, its re-login toast must win even on a setup step —
+    // the generic not-ready guidance would send the user to gateway
+    // re-login / generic setup instead of the provider's own sign-in.
+    if (selectedProviderUnregistered) {
+      toast.error(t('conversation.toast.providerReauthRequired'))
+      return
+    }
     if (step !== 'ready') {
       toast.warning(t('welcome.sendBlockedNotReady'))
       if (step === 'api-key' || step === 'select-model') onOpenSettings?.('llm')
       return
     }
+    // An unregistered dynamic provider (#87 — e.g. codex-oauth whose
+    // extension was removed or whose auth was revoked) leaves a persisted
+    // selection that would hit a dead route. The input stays editable (the
+    // draft is kept) but the send is blocked with the re-login toast.
+    // Checked ABOVE the step gate (see the comment there).
     onStartConversation(text)
     setInputValue('')
     // Sent — the draft is consumed. Clear it so it won't be re-injected
     // if the input remounts later in this session.
     useInputDraftStore.getState().clearDraft(draftKey)
-  }, [inputValue, pendingAssetCount, onStartConversation, draftKey, step, t, onOpenSettings])
+  }, [inputValue, pendingAssetCount, onStartConversation, draftKey, step, t, onOpenSettings, selectedProviderUnregistered])
 
   // Pull the persisted draft into the editor on remount. initialText is
   // only consumed when the editor is EMPTY (AgentRichInput's draft effect),
