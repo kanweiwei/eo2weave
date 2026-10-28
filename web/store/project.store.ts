@@ -115,6 +115,13 @@ interface ProjectState {
   deleteProject: (projectId: string) => Promise<boolean>
 }
 
+// Module-level serialization for deleteProject's host-rebind critical
+// section: overlapping deletions chain onto this promise so the second one
+// re-reads project state only after the first has finished rebinding (see
+// deleteProject for why concurrent selection would strand host rows on
+// projects that are themselves being deleted).
+let projectDeletionRebindChain: Promise<void> = Promise.resolve()
+
 /**
  * localStorage key for tracking whether we've already auto-created a default
  * project for this browser.
@@ -495,34 +502,65 @@ export const useProjectStore = create<ProjectState>()(
         // the deleted project is the LAST project, hosts are rebound to empty
         // string, which every consumer treats as "no project" (falsy
         // projectId checks, e.g. resolvedProjectId in conversation-agent-run).
-        const remainingBefore = get().projects.filter((p) => p.id !== projectId)
-        const nextProjectId = remainingBefore[0]?.id || ''
-        const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
-        const workspaceRepo = getWorkspaceRepository()
-        const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
-        for (const ws of orphaned) {
-          await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
-        }
+        //
+        // Overlapping deletions are SERIALIZED on a module-level promise
+        // chain around the rebind+delete critical section: two concurrent
+        // deletions computing their replacement host from the same
+        // not-yet-updated project table would each rebind the other's
+        // standalone-chat hosts to a project that is about to be deleted.
+        // Inside the section the successor is re-read from the repository
+        // (fresh state — the in-memory `projects` snapshot predates any
+        // awaits), the host rows are re-bound, AND the project row is
+        // deleted — all before the next chained deletion's selection runs,
+        // so it can never pick a project whose row is already gone.
+        // Failures propagate to the caller's catch (the chain always resets
+        // to resolved, never wedges).
+        await (projectDeletionRebindChain = projectDeletionRebindChain
+          .then(async () => {
+            const remaining = await repo.findAllProjects()
+            const nextProjectId = remaining.find((p) => p.id !== projectId)?.id || ''
+            const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+            const workspaceRepo = getWorkspaceRepository()
+            const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
+            for (const ws of orphaned) {
+              // eslint-disable-next-line no-await-in-loop -- sequential rebinds: a later row's successor selection must observe earlier rebinds
+              await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
+            }
+            // The project row is removed inside the same section: a queued
+            // overlapping deletion re-reads the table only after this row is
+            // gone, so it can never select THIS project as its successor.
+            // Delete OPFS project directory (workspaces, agents, etc.)
+            try {
+              const pm = await ProjectManager.create()
+              await pm.deleteProject(projectId)
+            } catch (err) {
+              console.warn('[ProjectStore] Failed to delete OPFS project directory:', err)
+            }
+            await repo.deleteProject(projectId)
+          })
+          .catch((e: unknown) => {
+            // The chain itself must stay resolved so later deletions are not
+            // wedged behind a failed one; the error still propagates to THIS
+            // caller, whose catch aborts the deletion (retryable).
+            projectDeletionRebindChain = Promise.resolve()
+            throw e
+          }))
 
-        // Delete OPFS project directory (workspaces, agents, etc.)
-        try {
-          const pm = await ProjectManager.create()
-          await pm.deleteProject(projectId)
-        } catch (err) {
-          console.warn('[ProjectStore] Failed to delete OPFS project directory:', err)
-        }
-
-        await repo.deleteProject(projectId)
         await get().refreshProjects()
 
         if (activeProjectId === projectId) {
           const { useAgentStore } = await import('./agent.store')
           const { useConversationContextStore } = await import('./conversation-context.store')
 
-          if (nextProjectId) {
-            await repo.setActiveProject(nextProjectId)
-            set({ activeProjectId: nextProjectId })
-            await useAgentStore.getState().setActiveProject(nextProjectId)
+          // Re-resolve the successor AFTER the deletion committed: the rebind
+          // section's value described host rows, and a concurrent deletion may
+          // have removed that project in the meantime.
+          const remainingAfter = await repo.findAllProjects()
+          const successorId = remainingAfter.find((p) => p.id !== projectId)?.id || ''
+          if (successorId) {
+            await repo.setActiveProject(successorId)
+            set({ activeProjectId: successorId })
+            await useAgentStore.getState().setActiveProject(successorId)
           } else {
             await repo.clearActiveProject()
             set({ activeProjectId: '' })

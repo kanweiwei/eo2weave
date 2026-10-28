@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // committed for deletion: a rebind failure has to abort the deletion
 // (observable + retryable), and the last-project case must rebind hosts to
 // empty string (falsy everywhere projectId is consumed) instead of leaving
-// the deleted id stranded on hidden host rows.
+// the deleted id stranded on hidden host rows. Overlapping deletions are
+// serialized on a module-level promise chain, so the second deletion's
+// successor selection re-reads the project table only after the first
+// deletion's rebind — and its project row deletion — has completed.
 
 const findAllProjectsMock = vi.hoisted(() => vi.fn())
 const findProjectStatsMock = vi.hoisted(() => vi.fn(async () => []))
@@ -126,5 +129,70 @@ describe('project.store deleteProject host rebind', () => {
     expect(ok).toBe(true)
     expect(deleteProjectMock).toHaveBeenCalledWith('p-a')
     expect(updateWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1', projectId: 'p-b' }))
+  })
+
+  it('overlapping deletions are serialized: the second rebind re-reads projects the first already deleted', async () => {
+    // Two deletions fired concurrently (e.g. double-click on two sidebar
+    // delete buttons). Without serialization both would compute their
+    // successor from the same not-yet-updated project table and rebind the
+    // OTHER's standalone-chat hosts to a project that is itself being
+    // deleted — leaving those host rows pointing at a dead project id. The
+    // module-level promise chain forces p-a's rebind AND row deletion to
+    // finish before p-b's rebind reads the project table.
+    let alive = new Set(['p-a', 'p-b'])
+    findAllProjectsMock.mockImplementation(async () =>
+      [...alive].map((id) => ({ id, name: id, status: 'active', createdAt: 1, updatedAt: 1 }))
+    )
+    deleteProjectMock.mockImplementation((async (id: string) => {
+      // Reproduce the interleaving hazard: p-b's rebind section starts while
+      // p-a's deletion row is NOT yet committed — if the rebind sections
+      // overlapped, p-a's hosts would pick p-b as successor here.
+      alive.delete(id)
+    }) as never)
+    // Gate the rebind section so both deleteProject calls are in flight
+    // before either rebind begins: p-a's rebind blocks until p-b has been
+    // INITIATED (both promises created), proving the chain serializes the
+    // critical sections rather than the callers merely sequencing.
+    let releaseARebind: (() => void) | null = null
+    const aRebindGate = new Promise<void>((resolve) => {
+      releaseARebind = resolve
+    })
+    updateWorkspaceMock.mockImplementation((async (ws: { id: string; projectId: string }) => {
+      if (ws.projectId === 'p-a' && ws.id === 'host-1') {
+        await aRebindGate
+      }
+    }) as never)
+    findAllWorkspacesByProjectIncludingDirectMock.mockImplementation((async (projectId: string) =>
+      projectId === 'p-a'
+        ? [{ id: 'host-1', projectId: 'p-a' } as never]
+        : [{ id: 'host-2', projectId: 'p-b' } as never]) as never)
+
+    const deleteA = useProjectStore.getState().deleteProject('p-a')
+    const deleteB = useProjectStore.getState().deleteProject('p-b')
+    // Both callers are in flight; now let p-a's rebind proceed. p-b's rebind
+    // must still run entirely after p-a's FULL deleteProject (rebind + row
+    // deletion) because each deletion enqueues BOTH steps on the shared
+    // chain — so p-b's successor selection observes p-a's row already gone.
+    releaseARebind!()
+    const [okA, okB] = await Promise.all([deleteA, deleteB])
+
+    expect(okA).toBe(true)
+    expect(okB).toBe(true)
+    // host-1 (p-a's orphan) was rebound while p-b's row still existed — but
+    // p-b's own deletion completes afterwards and rebinds nothing else; the
+    // critical hazard the chain eliminates is the SECOND selection reading a
+    // STALE table: p-b's rebind of host-2 must not pick p-a (row already
+    // deleted by the time p-b's section runs).
+    const host1Rebind = updateWorkspaceMock.mock.calls.find(
+      (c) => (c as unknown as [{ id: string }])[0].id === 'host-1'
+    ) as unknown as [{ id: string; projectId: string }]
+    expect(updateWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1', projectId: 'p-b' }))
+    // p-b's rebind (host-2) ran after p-a's row deletion: its successor must
+    // NOT be p-a (already deleted) — it must be '' here.
+    const host2Rebind = updateWorkspaceMock.mock.calls.find(
+      (c) => (c as unknown as [{ id: string }])[0].id === 'host-2'
+    ) as unknown as [{ id: string; projectId: string }]
+    expect(host2Rebind[0].projectId).toBe('')
+    void host1Rebind
   })
 })
