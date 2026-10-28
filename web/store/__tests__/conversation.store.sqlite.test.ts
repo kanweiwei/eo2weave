@@ -1174,18 +1174,18 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const direct = store.createNew('direct-roundtrip', { kind: 'direct' })
       const project = store.createNew('project-roundtrip')
 
-      // Reload from the mocked repo: findAllMeta returns the stored metadata,
-      // mapped through the repository's ACTUAL write semantics — kind is
-      // INSERT-only and normalized, so a row only ever carries kind='direct';
-      // everything else (undefined/'project') roundtrips as 'project'. A
-      // repository that dropped kind on write would now fail this test.
+      // Reload from the mocked repo using LITERAL fixture rows — NOT values
+      // echoed back from the saveMeta calls. If findAllMeta merely mirrored
+      // what saveMeta was handed, a repository that dropped or corrupted
+      // `kind` on write would round-trip undetected. Asserting an expected
+      // literal ('direct') makes the test fail the moment the store stops
+      // persisting or restoring the kind.
       const { getConversationRepository } = await import('@/sqlite')
       const repo = getConversationRepository() as any
-      const savedMetas = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0]).map((meta) => ({
-        ...meta,
-        kind: meta.kind === 'direct' ? 'direct' : 'project',
-      }))
-      repo.findAllMeta.mockResolvedValueOnce(savedMetas)
+      repo.findAllMeta.mockResolvedValueOnce([
+        { id: direct.id, title: 'direct-roundtrip', kind: 'direct', createdAt: 1, updatedAt: 1 },
+        { id: project.id, title: 'project-roundtrip', kind: 'project', createdAt: 2, updatedAt: 2 },
+      ])
 
       // beforeEach seeds loaded:true; reset it so loadFromDB actually runs its
       // load path instead of being skipped (that skip is what this test guards).
@@ -1197,6 +1197,16 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(reloaded.find((c) => c.id === direct.id)?.kind).toBe('direct')
       // project row roundtrips as undefined ≡ 'project'
       expect(reloaded.find((c) => c.id === project.id)?.kind).toBeUndefined()
+      // The creation path must actually have persisted the direct kind —
+      // this is the write the literal fixture above stands in for. A legacy
+      // (pre-kind) conversation persists kind: undefined, which the
+      // repository normalizes to a 'project' row on INSERT.
+      expect(conversationRepoSaveMetaMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: direct.id, kind: 'direct' })
+      )
+      expect(conversationRepoSaveMetaMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: project.id, kind: undefined })
+      )
     })
 
     it('setConversationKind flips direct → project and persists', async () => {
