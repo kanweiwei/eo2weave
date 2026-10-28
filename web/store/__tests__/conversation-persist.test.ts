@@ -381,6 +381,13 @@ describe('conversation persistence: metadata routing', () => {
 
     // The transition went through the dedicated updateKind write...
     expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
+    // Non-vacuous guard: the pre-transition generic meta save (its snapshot
+    // carrying the stale kind='direct') MUST actually have fired — otherwise
+    // the 'never reverts' assertion below would pass on an empty call list.
+    const staleMetaCall = conversationRepoSaveMetaMock.mock.calls.find(
+      (call) => call[0]?.id === conv.id && call[0]?.kind === 'direct',
+    )
+    expect(staleMetaCall).toBeDefined()
     // ...and NO kind='project' value ever travelled through the generic
     // saveMeta path (the stale 'direct' snapshot is ignored by the repository
     // UPSERT guard, so the committed conversion cannot be reverted).

@@ -113,7 +113,7 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 
 //=============================================================================
-import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
+import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
 import {
   runAgentImpl,
   type ConversationAgentRunInternals,
@@ -1549,7 +1549,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       // conversation, so its host project must have an authorized folder —
       // the same picker the workspace-mount entry uses. Dynamic import keeps
       // the folder-access store out of this module's initial graph.
-      const { useFolderAccessStore } = await import('./folder-access.store')
+      const { useFolderAccessStore } = await import('@/store/folder-access.store')
       const folderState = useFolderAccessStore.getState()
       const projectId = folderState.activeProjectId
       if (!projectId) {

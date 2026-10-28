@@ -8,7 +8,7 @@ import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 
 import type { ToolDefinition, ToolExecutor, ToolEntry, ToolContext, ToolPromptDoc } from './tools/tool-types'
 import { formatErrorForUser, withAutoRetry } from './error-handling'
-import { isToolAllowedInMode, isToolAllowedInDirectMode, type AgentMode } from './agent-mode'
+import { isToolAllowedInMode, isToolAllowedInDirectMode, type AgentMode } from '@/agent/agent-mode'
 import { getToolPolicy, type ToolPolicy } from './policy-engine'
 import { useSettingsStore } from '@/store/settings.store'
 

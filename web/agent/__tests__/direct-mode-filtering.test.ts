@@ -201,10 +201,29 @@ describe('directMode tool filtering', () => {
     expect(parsed.ok).toBe(true)
     expect(parsed.data?.answer).toBe('yes')
 
-    // Omitting directMode preserves full project behavior (zero drift).
+    // Omitting directMode preserves full project behavior (zero drift):
+    // project tools must NOT hit the direct-mode guard AND must actually
+    // reach their executor. Assert 'ls' exact deterministic envelope — in a
+    // project context with no directoryHandle the executor (not the guard)
+    // answers with the specific no_directory error; and assert a positive
+    // success via ask_user_question (documented fallback, proven above).
     const projectContext = { directoryHandle: null } as unknown as Parameters<typeof registry.execute>[2]
     const projectRaw = await registry.execute('ls', {}, projectContext)
-    expect(JSON.parse(projectRaw) as { error?: string }).not.toHaveProperty('error', expect.stringContaining('standalone chat'))
+    expect(JSON.parse(projectRaw)).toEqual({
+      ok: false,
+      tool: 'ls',
+      version: 2,
+      error: { code: 'no_directory', message: 'No directory selected.', retryable: false },
+    })
+
+    const projectAskRaw = await registry.execute(
+      'ask_user_question',
+      { question: 'ping', type: 'single_choice', options: [{ label: 'a' }, { label: 'b' }] },
+      projectContext
+    )
+    const projectAsk = JSON.parse(projectAskRaw) as { error?: unknown; ok?: boolean }
+    expect(projectAsk).not.toHaveProperty('error')
+    expect(projectAsk.ok).toBe(true)
   })
 
   it('executeNoRetry() applies the same direct-mode authorization as execute()', async () => {

@@ -1174,10 +1174,17 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const direct = store.createNew('direct-roundtrip', { kind: 'direct' })
       const project = store.createNew('project-roundtrip')
 
-      // Reload from the mocked repo: findAllMeta returns the stored metadata.
+      // Reload from the mocked repo: findAllMeta returns the stored metadata,
+      // mapped through the repository's ACTUAL write semantics — kind is
+      // INSERT-only and normalized, so a row only ever carries kind='direct';
+      // everything else (undefined/'project') roundtrips as 'project'. A
+      // repository that dropped kind on write would now fail this test.
       const { getConversationRepository } = await import('@/sqlite')
       const repo = getConversationRepository() as any
-      const savedMetas = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0])
+      const savedMetas = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0]).map((meta) => ({
+        ...meta,
+        kind: meta.kind === 'direct' ? 'direct' : 'project',
+      }))
       repo.findAllMeta.mockResolvedValueOnce(savedMetas)
 
       // beforeEach seeds loaded:true; reset it so loadFromDB actually runs its
@@ -1223,15 +1230,15 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const conv = store.createNew('convert-me', { kind: 'direct' })
 
       const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
-      vi.doMock('../folder-access.store', () => ({
+      vi.doMock('@/store/folder-access.store', () => ({
         useFolderAccessStore: {
           getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
         },
       }))
 
-      // convertDirectToProject dynamically imports './folder-access.store'
-      // (relative to the store module). vi.doMock with that specifier applies
-      // to dynamic imports resolved from the importing module.
+      // convertDirectToProject dynamically imports '@/store/folder-access.store'.
+      // vi.doMock matches by resolved module id, so mocking the SAME
+      // specifier the source uses intercepts the dynamic import.
       const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
 
       expect(ok).toBe(true)
@@ -1239,7 +1246,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
       expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
 
-      vi.doUnmock('../folder-access.store')
+      vi.doUnmock('@/store/folder-access.store')
     })
 
     it('convertDirectToProject returns false and keeps the kind when persistence fails', async () => {
@@ -1247,7 +1254,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const conv = store.createNew('convert-persist-fail', { kind: 'direct' })
 
       const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
-      vi.doMock('../folder-access.store', () => ({
+      vi.doMock('@/store/folder-access.store', () => ({
         useFolderAccessStore: {
           getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
         },
@@ -1262,7 +1269,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
       expect(toastErrorMock).toHaveBeenCalled()
 
-      vi.doUnmock('../folder-access.store')
+      vi.doUnmock('@/store/folder-access.store')
     })
 
     it('convertDirectToProject does not change the kind when folder authorization fails', async () => {
@@ -1270,7 +1277,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const conv = store.createNew('convert-cancelled', { kind: 'direct' })
 
       const pickDirectoryMock = vi.fn(() => Promise.resolve(false))
-      vi.doMock('../folder-access.store', () => ({
+      vi.doMock('@/store/folder-access.store', () => ({
         useFolderAccessStore: {
           getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
         },
@@ -1283,7 +1290,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
       expect(conversationRepoUpdateKindMock).not.toHaveBeenCalled()
 
-      vi.doUnmock('../folder-access.store')
+      vi.doUnmock('@/store/folder-access.store')
     })
 
     it('convertDirectToProject returns true for an already-project conversation (no-op)', async () => {

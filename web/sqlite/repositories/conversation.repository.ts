@@ -445,6 +445,9 @@ export class ConversationRepository {
       lastContextWindowUsage: parseJSON(row.context_usage_json || '', null),
       compressedContextSummary: null,
       compressedContextCutoffTimestamp: null,
+      // BASE_KIND_SELECT already includes kind on the legacy tier; keep it so
+      // standalone chats don't reload as project conversations there either.
+      kind: (row as { kind?: 'project' | 'direct' }).kind === 'direct' ? 'direct' : 'project',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

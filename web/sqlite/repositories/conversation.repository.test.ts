@@ -114,4 +114,42 @@ describe('ConversationRepository', () => {
 
     expect(execute).not.toHaveBeenCalled()
   })
+
+  // Modern schema tier (all column probes succeed → KIND_SELECT), so the read
+  // path actually includes the kind column and the row converters run.
+  it('findAllMeta maps raw kind column values: only \'direct\' survives, absent defaults to \'project\'', async () => {
+    queryAll.mockResolvedValue([
+      { id: 'c-direct', title: 'd', title_mode: 'manual', context_usage_json: null, compressed_context_summary: null, compressed_context_cutoff_ts: null, flow_instance_json: null, kind: 'direct', created_at: 1, updated_at: 1 },
+      { id: 'c-project', title: 'p', title_mode: 'manual', context_usage_json: null, compressed_context_summary: null, compressed_context_cutoff_ts: null, flow_instance_json: null, kind: 'project', created_at: 2, updated_at: 2 },
+      { id: 'c-absent', title: 'a', title_mode: 'manual', context_usage_json: null, compressed_context_summary: null, compressed_context_cutoff_ts: null, flow_instance_json: null, kind: undefined, created_at: 3, updated_at: 3 },
+    ])
+
+    const metas = await new ConversationRepository().findAllMeta()
+
+    expect(queryAll.mock.calls[0][0]).toContain('kind')
+    expect(metas.find((m) => m.id === 'c-direct')?.kind).toBe('direct')
+    expect(metas.find((m) => m.id === 'c-project')?.kind).toBe('project')
+    expect(metas.find((m) => m.id === 'c-absent')?.kind).toBe('project')
+  })
+
+  it('findAllMeta keeps kind through the BASE_KIND_SELECT fallback tier (no flow column)', async () => {
+    // flow_instance_json probe fails; compression probe fails; kind probe OK.
+    queryFirst.mockImplementation((sql: string) => {
+      if (sql.includes('flow_instance_json FROM conversations LIMIT 0')) {
+        return Promise.reject(new Error('no such column'))
+      }
+      if (sql.includes('compressed_context_summary')) {
+        return Promise.reject(new Error('no such column'))
+      }
+      return Promise.resolve(undefined)
+    })
+    queryAll.mockResolvedValue([
+      { id: 'c-legacy', title: 'l', title_mode: 'manual', context_usage_json: null, kind: 'direct', created_at: 1, updated_at: 1 },
+    ])
+
+    const metas = await new ConversationRepository().findAllMeta()
+
+    expect(queryAll.mock.calls[0][0]).toContain('SELECT id, title, title_mode, context_usage_json, kind')
+    expect(metas[0]?.kind).toBe('direct')
+  })
 })
