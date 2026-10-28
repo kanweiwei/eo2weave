@@ -56,6 +56,13 @@ const EXTENDED_SELECT = `SELECT id, title, title_mode, context_usage_json, compr
 const FLOW_INSTANCE_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, flow_instance_json, created_at, updated_at FROM conversations`
 const FLOW_INSTANCE_BASE_SELECT = `SELECT id, title, title_mode, context_usage_json, flow_instance_json, created_at, updated_at FROM conversations`
 const KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, flow_instance_json, kind, created_at, updated_at FROM conversations`
+// Kind-inclusive fallbacks for schemas that have `kind` but not every other
+// extended column — the row converters read kind off the row when present,
+// so these selects keep standalone chats loading as kind='direct' even on
+// legacy tiers (otherwise they reload as project conversations and vanish
+// from /chats).
+const EXTENDED_KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, kind, created_at, updated_at FROM conversations`
+const BASE_KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, kind, created_at, updated_at FROM conversations`
 
 //=============================================================================
 // Conversation Repository
@@ -135,11 +142,25 @@ export class ConversationRepository {
       )
       return rows.map((row) => this.flowInstanceBaseRowToMeta(row))
     }
+    if (hasCompression && hasKind) {
+      // Compression without the flow column, kind present: keep kind so
+      // standalone chats don't reload as project conversations.
+      const rows = await db.queryAll<ExtendedMetaColumns>(
+        `${EXTENDED_KIND_SELECT} ${orderBy}`
+      )
+      return rows.map((row) => this.extendedRowToMeta(row))
+    }
     if (hasCompression) {
       const rows = await db.queryAll<ExtendedMetaColumns>(
         `${EXTENDED_SELECT} ${orderBy}`
       )
       return rows.map((row) => this.extendedRowToMeta(row))
+    }
+    if (hasKind) {
+      // Legacy base schema that already gained the kind column: include kind
+      // independently of the flow-instance column.
+      const rows = await db.queryAll<BaseMetaColumns>(`${BASE_KIND_SELECT} ${orderBy}`)
+      return rows.map((row) => this.baseRowToMeta(row))
     }
     const rows = await db.queryAll<BaseMetaColumns>(`${BASE_SELECT} ${orderBy}`)
     return rows.map((row) => this.baseRowToMeta(row))
@@ -167,11 +188,23 @@ export class ConversationRepository {
       )
       return row ? this.flowInstanceBaseRowToMeta(row) : null
     }
+    if (hasCompression && hasKind) {
+      const row = await db.queryFirst<ExtendedMetaColumns>(
+        `${EXTENDED_KIND_SELECT} ${where}`, params
+      )
+      return row ? this.extendedRowToMeta(row) : null
+    }
     if (hasCompression) {
       const row = await db.queryFirst<ExtendedMetaColumns>(
         `${EXTENDED_SELECT} ${where}`, params
       )
       return row ? this.extendedRowToMeta(row) : null
+    }
+    if (hasKind) {
+      const row = await db.queryFirst<BaseMetaColumns>(
+        `${BASE_KIND_SELECT} ${where}`, params
+      )
+      return row ? this.baseRowToMeta(row) : null
     }
     const row = await db.queryFirst<BaseMetaColumns>(
       `${BASE_SELECT} ${where}`, params
