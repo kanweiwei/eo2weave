@@ -115,6 +115,42 @@ describe('ConversationRepository', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
+  it('a transient probe failure is NOT cached as column-absent (re-probes next call)', async () => {
+    // First KIND probe rejects with a transient error (worker restart / DB
+    // busy); every probe after that sees the real modern schema.
+    let kindProbes = 0
+    queryFirst.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT kind FROM conversations')) {
+        kindProbes += 1
+        if (kindProbes === 1) return Promise.reject(new Error('DB busy'))
+      }
+      return Promise.resolve(undefined)
+    })
+    const repo = new ConversationRepository()
+
+    // First saveMeta call hits the transient failure and must THROW, not
+    // silently cache hasKindColumn=false and fall back to the base tier.
+    await expect(
+      repo.saveMeta({ id: 'c1', title: 't', titleMode: 'auto', kind: 'direct', createdAt: 1, updatedAt: 1 })
+    ).rejects.toThrow('DB busy')
+
+    // Second call must RE-PROBE the kind column (not reuse a cached false):
+    // the transient failure left the flag unset, so the probe runs again —
+    // and now succeeds, so the INSERT lands on the modern kind-carrying tier.
+    await repo.saveMeta({ id: 'c2', title: 't', titleMode: 'auto', kind: 'direct', createdAt: 2, updatedAt: 2 })
+    expect(kindProbes).toBe(2)
+    const [sql] = execute.mock.calls.at(-1) as unknown as [string, unknown[]]
+    expect(sql).toContain('kind')
+  })
+
+  it('updateKind does not silently no-op on a transient probe failure', async () => {
+    queryFirst.mockImplementation(() => Promise.reject(new Error('worker terminated')))
+    const repo = new ConversationRepository()
+
+    await expect(repo.updateKind('conv-1', 'direct')).rejects.toThrow('worker terminated')
+    expect(execute).not.toHaveBeenCalled()
+  })
+
   // Modern schema tier (all column probes succeed → KIND_SELECT), so the read
   // path actually includes the kind column and the row converters run.
   it('findAllMeta maps raw kind column values: only \'direct\' survives, absent defaults to \'project\'', async () => {

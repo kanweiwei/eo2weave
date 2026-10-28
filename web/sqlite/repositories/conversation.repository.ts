@@ -64,6 +64,19 @@ const KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compresse
 const EXTENDED_KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, kind, created_at, updated_at FROM conversations`
 const BASE_KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, kind, created_at, updated_at FROM conversations`
 
+/**
+ * True only for schema-shape errors: a missing column/table is a PERMANENT
+ * property of the database, so the probe may cache it. Anything else (worker
+ * restart, DB busy, transient backend failure) must NOT be cached as "column
+ * absent" — a cached false makes saveMeta() drop `kind` from INSERTs and turns
+ * updateKind() into a permanent no-op, silently reloading standalone chats as
+ * project conversations.
+ */
+function isMissingColumnError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  return msg.includes('no such column') || msg.includes('no such table')
+}
+
 //=============================================================================
 // Conversation Repository
 //=============================================================================
@@ -78,7 +91,11 @@ export class ConversationRepository {
     try {
       await getSQLiteDB().queryFirst('SELECT kind FROM conversations LIMIT 0')
       this._hasKindColumn = true
-    } catch {
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        // Transient failure — leave uncached so the next call re-probes.
+        throw error
+      }
       this._hasKindColumn = false
     }
     return this._hasKindColumn
@@ -89,7 +106,11 @@ export class ConversationRepository {
     try {
       await getSQLiteDB().queryFirst('SELECT flow_instance_json FROM conversations LIMIT 0')
       this._hasFlowInstanceColumn = true
-    } catch {
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        // Transient failure — leave uncached so the next call re-probes.
+        throw error
+      }
       this._hasFlowInstanceColumn = false
     }
     return this._hasFlowInstanceColumn
@@ -107,7 +128,11 @@ export class ConversationRepository {
         'SELECT compressed_context_summary, compressed_context_cutoff_ts FROM conversations LIMIT 0'
       )
       this._hasCompressionColumns = true
-    } catch {
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        // Transient failure — leave uncached so the next call re-probes.
+        throw error
+      }
       this._hasCompressionColumns = false
     }
     return this._hasCompressionColumns
