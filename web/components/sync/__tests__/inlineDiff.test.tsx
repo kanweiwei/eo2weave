@@ -532,6 +532,48 @@ describe('LazyDiffViewer content-type split', () => {
     expect(removed).not.toBe(added)
   })
 
+  it('exposes removed and added fragments to assistive technology', () => {
+    render(
+      <LazyDiffViewer
+        original={original}
+        modified={modified}
+        path="notes.md"
+      />
+    )
+
+    // Removed fragments render as semantic <del> (implicit `deletion` role),
+    // added fragments as semantic <ins> (implicit `insertion` role), so a
+    // screen reader can distinguish deleted from inserted text.
+    const removed = screen.getAllByTestId('track-changes-removed')
+    expect(removed.length).toBeGreaterThan(0)
+    for (const fragment of removed) {
+      expect(fragment.tagName).toBe('DEL')
+      expect(fragment.getAttribute('role')).toBeNull()
+    }
+
+    const added = screen.getAllByTestId('track-changes-added')
+    expect(added.length).toBeGreaterThan(0)
+    for (const fragment of added) {
+      expect(fragment.tagName).toBe('INS')
+      expect(fragment.getAttribute('role')).toBeNull()
+    }
+
+    // The fragments must actually be VISIBLE to the accessibility tree —
+    // tagName/role alone would still pass if the content were hidden with
+    // aria-hidden="true", display:none, visibility:hidden or the hidden
+    // attribute, none of which a screen reader can see. getByRole computes
+    // roles from the accessibility tree and skips hidden elements, so these
+    // queries double as the visibility guard against that regression.
+    expect(screen.getAllByRole('deletion')).toEqual(removed)
+    expect(screen.getAllByRole('insertion')).toEqual(added)
+    for (const fragment of [...removed, ...added]) {
+      expect(fragment.getAttribute('aria-hidden')).toBeNull()
+      expect(fragment.hasAttribute('hidden')).toBe(false)
+      expect(fragment.style.display).not.toBe('none')
+      expect(fragment.style.visibility).not.toBe('hidden')
+    }
+  })
+
   it('gives unchanged fragments an explicit foreground color', () => {
     render(
       <LazyDiffViewer
