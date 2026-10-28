@@ -7,10 +7,12 @@ const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
 const conversationRepoSaveMetaMock = vi.fn((..._: [Record<string, unknown>]) => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
+const toastErrorMock = vi.fn()
 
 vi.mock('sonner', () => ({
   toast: {
-    error: vi.fn(),
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: vi.fn(),
   },
 }))
 
@@ -225,6 +227,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
     conversationRepoMock.findAllMeta.mockResolvedValue([])
     clearAgentLoops()
     clearStreamingQueues()
+    toastErrorMock.mockClear()
     useConversationRuntimeStore.setState({ runtimes: new Map() })
     useConversationStore.setState({
       conversations: [],
@@ -1198,6 +1201,79 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
       expect(metaCall?.id).toBe(conv.id)
       expect(metaCall?.kind).toBe('project')
+    })
+
+    it('setConversationKind restores the previous kind when persistence fails', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('rollback-me', { kind: 'direct' })
+
+      conversationRepoSaveMetaMock.mockRejectedValueOnce(new Error('persist failed'))
+
+      useConversationStore.getState().setConversationKind(conv.id, 'project')
+      await vi.waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalled()
+      })
+
+      // The in-memory kind rolled back to 'direct' so the session matches
+      // what a reload will show (the persisted row kept the old kind).
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+    })
+
+    it('convertDirectToProject runs folder authorization then upgrades the kind', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('convert-me', { kind: 'direct' })
+
+      const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
+      vi.doMock('../folder-access.store', () => ({
+        useFolderAccessStore: {
+          getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
+        },
+      }))
+
+      // convertDirectToProject dynamically imports './folder-access.store'
+      // (relative to the store module). vi.doMock with that specifier applies
+      // to dynamic imports resolved from the importing module.
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+
+      expect(ok).toBe(true)
+      expect(pickDirectoryMock).toHaveBeenCalledWith('proj-1')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.id).toBe(conv.id)
+      expect(metaCall?.kind).toBe('project')
+
+      vi.doUnmock('../folder-access.store')
+    })
+
+    it('convertDirectToProject does not change the kind when folder authorization fails', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('convert-cancelled', { kind: 'direct' })
+
+      const pickDirectoryMock = vi.fn(() => Promise.resolve(false))
+      vi.doMock('../folder-access.store', () => ({
+        useFolderAccessStore: {
+          getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
+        },
+      }))
+
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+
+      expect(ok).toBe(false)
+      expect(pickDirectoryMock).toHaveBeenCalledWith('proj-1')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.kind).not.toBe('project')
+
+      vi.doUnmock('../folder-access.store')
+    })
+
+    it('convertDirectToProject returns true for an already-project conversation (no-op)', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('already-project')
+
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+      expect(ok).toBe(true)
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBeUndefined()
     })
 
     it('runAgent for a direct conversation sets toolContext.directMode; project leaves it unset', async () => {
