@@ -6,7 +6,7 @@ import { useConversationStore } from '@/store/conversation.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
 import { useT } from '@/i18n'
-import { ChatsHome, type StandaloneChatListItem } from './ChatsHome'
+import { ChatsHome, type StandaloneChatListItem } from '@/components/chats/ChatsHome'
 
 /**
  * ChatsHomeView — store-connected ChatsHome for the /chats route.
