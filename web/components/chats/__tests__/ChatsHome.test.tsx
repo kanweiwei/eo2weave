@@ -25,6 +25,7 @@ const t = (key: string, params?: Record<string, string | number>) => {
 
 vi.mock('@/i18n', () => ({
   useT: () => t,
+  useLocale: () => ['zh-CN'],
 }))
 
 // BrandButton comes from the ui package — render children plainly.

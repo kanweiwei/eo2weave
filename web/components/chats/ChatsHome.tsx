@@ -2,8 +2,18 @@
 
 import { memo } from 'react'
 import { MessageCircle, Plus } from 'lucide-react'
-import { useT } from '@/i18n'
+import { formatDistanceToNow } from 'date-fns'
+import { zhCN, enUS, ja, ko } from 'date-fns/locale'
+import type { Locale as DateFnsLocale } from 'date-fns'
+import { useT, useLocale } from '@/i18n'
 import { BrandButton } from '@creatorweave/ui'
+
+const LOCALE_MAP: Record<string, DateFnsLocale> = {
+  'zh-CN': zhCN,
+  'en-US': enUS,
+  'ja-JP': ja,
+  'ko-KR': ko,
+}
 
 /** List-row projection of a standalone chat — fed by ChatsHomeView. */
 export interface StandaloneChatListItem {
@@ -24,19 +34,6 @@ interface ChatsHomeProps {
   onOpenChat: (id: string) => void
 }
 
-function formatRelativeTime(timestamp: number): string {
-  if (!timestamp) return ''
-  const diffSec = Math.round((Date.now() - timestamp) / 1000)
-  if (diffSec < 60) return `${diffSec}s`
-  const diffMin = Math.round(diffSec / 60)
-  if (diffMin < 60) return `${diffMin}m`
-  const diffHr = Math.round(diffMin / 60)
-  if (diffHr < 24) return `${diffHr}h`
-  const diffDay = Math.round(diffHr / 24)
-  if (diffDay < 30) return `${diffDay}d`
-  return new Date(timestamp).toLocaleDateString()
-}
-
 const ChatRow = memo(function ChatRow({
   chat,
   onOpen,
@@ -48,6 +45,13 @@ const ChatRow = memo(function ChatRow({
   title: string
   messagesLabel: string
 }) {
+  const [locale] = useLocale()
+  const activityLabel = chat.lastActivityAt
+    ? formatDistanceToNow(new Date(chat.lastActivityAt), {
+        addSuffix: true,
+        locale: LOCALE_MAP[locale] ?? zhCN,
+      })
+    : ''
   return (
     <button
       type="button"
@@ -63,7 +67,7 @@ const ChatRow = memo(function ChatRow({
           {chat.title}
         </span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          {formatRelativeTime(chat.lastActivityAt)}
+          {activityLabel}
           {chat.messageCount !== null && (
             <> · {messagesLabel}</>
           )}
