@@ -7,7 +7,7 @@
 
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
 import {
   isCustomProviderType,
@@ -15,6 +15,7 @@ import {
   registerDynamicProvider,
   unregisterDynamicProvider,
   getProviderConfig,
+  getDynamicProviderIds,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
@@ -369,8 +370,127 @@ function registerCustomAsDynamic(cp: CustomProviderConfig) {
   )
 }
 
-export const useSettingsStore = create<SettingsState>()(
-  persist(
+// ── Cross-tab settings sync — module state ──────────────────────────────────
+// These MUST be declared BEFORE the persisted store below. Zustand rehydrates
+// synchronously from localStorage during create(), so the rehydrate callback
+// (setupCrossTabSettingsSync) and the migration write-back (the storage
+// wrapper's suppression check) run while this module is still initializing.
+// Declared after the store, both hit a TDZ ReferenceError that zustand's
+// hydration .catch() swallows silently — the storage listener never registers
+// and migrated v<4 state is never written back.
+let crossTabSyncInstalled = false
+let suppressPersistWrites = 0
+// ── Lamport write-order stamp ───────────────────────────────────────────────
+// Every persisted snapshot embeds a (revision, writerId) pair. The revision
+// is a LAMPORT CLOCK, not a per-tab counter: a tab merges any revision it
+// sees (own write or applied peer snapshot) into its clock before bumping,
+// so concurrent writers no longer produce incomparable equal counters that
+// each tab rejects as "stale" — the classic divergence bug a plain local
+// counter has. The writer id breaks the tie two tabs can still hit at the
+// same clock value (both bumped from the same merged revision around the
+// same time): the HIGHER id owns the slot in EVERY tab, giving a total
+// order without any shared coordinator. Unlike StorageEvent.timeStamp —
+// which measures when the RECEIVING tab dispatched the event and says
+// nothing about which peer wrote first — this pair travels inside the
+// payload, so ordering decisions are made from the writers' own stamps.
+const TAB_WRITER_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? `tab-${crypto.randomUUID()}`
+    : `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`
+let lastSeenRevision = 0
+let lastSeenWriterId = TAB_WRITER_ID
+
+/** Stamp a LOCAL write: merge the clock, then bump under our writer id. */
+function recordLocalWrite(): { revision: number; writerId: string } {
+  lastSeenRevision += 1
+  lastSeenWriterId = TAB_WRITER_ID
+  return { revision: lastSeenRevision, writerId: TAB_WRITER_ID }
+}
+
+/** True when an incoming snapshot must NOT be applied over what we have. */
+function isStaleIncomingSnapshot(incomingRevision: number, incomingWriterId: string | null): boolean {
+  if (incomingRevision !== lastSeenRevision) return incomingRevision < lastSeenRevision
+  // Clock tie: the higher writer id wins. A legacy peer (older deploy)
+  // carries no id — the tiebreak is impossible, so treat it as stale
+  // instead of guessing; its next legitimate write re-orders the clock.
+  if (incomingWriterId == null) return true
+  return incomingWriterId <= lastSeenWriterId
+}
+
+/** Merge an APPLIED snapshot into the clock (Lamport receive rule). */
+function recordAppliedSnapshot(revision: number, writerId: string | null): void {
+  lastSeenRevision = Math.max(lastSeenRevision, revision)
+  if (writerId != null) lastSeenWriterId = writerId
+}
+
+// ── Three-way merge base (per peer writer, in-memory only) ──────────────────
+// Whole-snapshot LWW loses non-conflicting work: two tabs that start from the
+// same snapshot and edit DIFFERENT settings concurrently produce snapshots
+// where each writer changed only its own field, yet the higher-ordered
+// snapshot replaces the entire state and reverts the other tab's edit. For
+// every peer writer we remember the last snapshot PROCESSED from it (the
+// base) — purely in memory, nothing extra persisted. A newer snapshot from a
+// writer we hold a base for is merged field-wise:
+//   base     = last processed snapshot from that writer
+//   current  = this tab's in-memory state
+//   incoming = the arriving snapshot
+// A field is taken from incoming only when the PEER changed it relative to
+// base; fields the peer did not touch keep the current (possibly locally
+// edited) value. A field both sides changed (conflict) resolves to incoming —
+// the writer that ordered later wins, the same outcome whole-snapshot LWW
+// would give the conflicting field. No base (first snapshot from a writer, or
+// a legacy revisionless peer carrying no id) falls back to the previous
+// whole-snapshot apply.
+const peerBaseSnapshots = new Map<string, Record<string, unknown>>()
+
+/**
+ * Merge `incoming` over `current` using `base` (the last snapshot processed
+ * from this writer). Returns the merged record; write-order metadata always
+ * rides with the incoming snapshot.
+ */
+function mergeSnapshotOverCurrent(
+  base: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+  current: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...current }
+  // A field present in the base but gone from the incoming snapshot was
+  // removed by the peer (the persisted projection is fixed, so this is
+  // defensive — it does not occur with today's partialize shape).
+  for (const key of Object.keys(base)) {
+    if (!isSyncMetadataKey(key)) continue
+    if (!(key in incoming)) delete merged[key]
+  }
+  for (const [key, incomingValue] of Object.entries(incoming)) {
+    if (!isSyncMetadataKey(key)) {
+      merged[key] = incomingValue
+      continue
+    }
+    // Peer did not touch this field relative to base — keep the current
+    // (possibly locally edited) value instead of the peer's stale copy.
+    if (base[key] === incomingValue) continue
+    // Peer changed it, or both sides did (conflict): incoming wins.
+    merged[key] = incomingValue
+  }
+  return merged
+}
+
+// StorageEvent.timeStamp watermark for revisionless snapshots only (peers on
+// an older deploy). Receiving-tab timing cannot order writes across tabs,
+// so this is a weak fallback — but two revisionless snapshots delivered out
+// of order must still not let the older one revert the newer.
+let lastRevisionlessEventTimestamp = 0
+
+/** Persist schema version — must match the persist config's `version` below. */
+const SETTINGS_PERSIST_VERSION = 4
+
+/** True when persist middleware writes to storage are currently suppressed. */
+function persistWritesSuppressed(): boolean {
+  return suppressPersistWrites > 0
+}
+
+export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
+  persist<SettingsState, [], [], PersistedSettingsState>(
     (set, get) => ({
       providerType: '' as LLMProviderType,
       modelName: '',
@@ -379,7 +499,10 @@ export const useSettingsStore = create<SettingsState>()(
       temperature: 0.7,
       maxTokens: 4096,
       maxIterations: 20,
-      enableThinking: false,
+      // First-run defaults (v4): thinking ON at 'high'. Existing installs keep
+      // their persisted values — the persist migrate (version < 4) restores
+      // whatever was stored, so these defaults only apply to fresh installs.
+      enableThinking: true,
       thinkingLevel: 'medium' as ExtendedThinkingLevel,
       enableBatchSpawn: false,
       enableWebMCP: true,
@@ -653,14 +776,18 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       checkHasApiKey: async (options?: { flush?: boolean }) => {
-        // No epoch guard here anymore. The old up-front `++apiKeyCheckEpoch`
-        // let a deduplicated same-provider caller (one that reused the
-        // in-flight promise cache) bump the epoch, stale-out the in-flight
-        // lookup's write guard, and leave `hasApiKey` unwritten after the
-        // promise resolved (#84 review round 3). Every lookup now writes
-        // its result unconditionally; a mid-flight provider switch stays
-        // correct because the switch path re-runs checkHasApiKey() and its
-        // fresh write lands after the stale one.
+        // The up-front `++apiKeyCheckEpoch` epoch guard is gone: it let a
+        // deduplicated same-provider caller (one that reused the in-flight
+        // promise cache) bump the epoch, stale-out the in-flight lookup's
+        // write guard, and leave `hasApiKey` unwritten after the promise
+        // resolved (#84 review round 3). Every lookup now writes its result
+        // when it resolves — but the write is GUARDED by the provider it
+        // was started for: a cross-provider switch can leave the previous
+        // provider's lookup in flight, and its late result must not
+        // overwrite the active provider's status (see the guard inside the
+        // promise below). Same-provider deduplicated callers still get
+        // their write because the effective key is unchanged when the
+        // shared promise resolves.
         const state = get()
         const effective = state.getEffectiveProviderConfig()
         if (!effective) {
@@ -725,20 +852,31 @@ export const useSettingsStore = create<SettingsState>()(
             const hasKey = !!key
             apiKeyCache.set(providerKey, hasKey)
 
-            // Update the reactive state. Mark loaded in the same set() so
-            // subscribers see a consistent (hasApiKey, hasApiKeyLoaded) pair.
-            // Written UNCONDITIONALLY (#84 review round 3): see the note at
-            // the top of checkHasApiKey for why the old epoch guard here
-            // dropped deduplicated lookups' write.
-            set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
+            // Update the reactive state — but ONLY if the provider this
+            // lookup was started for is still active. A cross-provider
+            // switch can leave this lookup in flight; its late result must
+            // not clobber the new provider's status (unlike the removed
+            // epoch guard, this never drops a CURRENT provider's write, so
+            // deduplicated same-provider lookups still land their result).
+            const after = get()
+            const afterKey = after.getEffectiveProviderConfig()?.apiKeyProviderKey
+            if (afterKey === providerKey) {
+              // Mark loaded in the same set() so subscribers see a
+              // consistent (hasApiKey, hasApiKeyLoaded) pair.
+              set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
+            }
 
             return hasKey
           } catch (error) {
             console.error('[SettingsStore] Failed to check API key:', error)
             // Even on error, mark as loaded — otherwise the UI would stay
-            // in the "loading" state forever. Unconditional write, same
-            // rationale as the success path above (#84 review round 3).
-            set({ hasApiKey: false, hasApiKeyLoaded: true })
+            // in the "loading" state forever. Same provider guard as the
+            // success path above.
+            const after = get()
+            const afterKey = after.getEffectiveProviderConfig()?.apiKeyProviderKey
+            if (afterKey === providerKey) {
+              set({ hasApiKey: false, hasApiKeyLoaded: true })
+            }
 
             // Schedule a delayed retry — the SQLite worker init race
             // (OPFS lock release, cold-start handshake) often self-resolves
@@ -1185,13 +1323,74 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'bfosa-settings',
-      version: 3,
+      version: SETTINGS_PERSIST_VERSION,
+      // The cross-tab storage handler applies incoming snapshots with
+      // setState while persist writes are suppressed: the snapshot is
+      // already IN storage (the storage event just delivered it), so the
+      // middleware write would only echo it back — and in a two-writer race
+      // that echo can land an older queued snapshot over a newer one.
+      // While suppression is active, setItem is a no-op; read paths and the
+      // in-memory state are untouched.
+      storage: (() => {
+        // Server-side import safety: without `window` the getter would return
+        // undefined and createJSONStorage would wrap it anyway (it only
+        // returns undefined if the getter THROWS). persist would then call
+        // getItem on undefined during hydration and crash module init.
+        // Returning an empty in-memory Storage keeps the import harmless in
+        // non-browser environments; the app itself is client-only.
+        if (typeof window === 'undefined') {
+          const emptyStorage: Storage = {
+            length: 0,
+            clear: () => undefined,
+            getItem: () => null,
+            key: () => null,
+            removeItem: () => undefined,
+            setItem: () => undefined,
+          }
+          return createJSONStorage<PersistedSettingsState>(() => emptyStorage)
+        }
+        const base = createJSONStorage<PersistedSettingsState>(() => window.localStorage)
+        if (!base) return base
+        return {
+          ...base,
+          setItem: (name, value) => {
+            if (persistWritesSuppressed()) return
+            // Embed the Lamport write-order stamp IN the payload before
+            // the write lands. Peers (and this tab's own storage handler)
+            // order snapshots by this (revision, writerId) pair instead of
+            // StorageEvent.timeStamp, which reflects receiving-tab timing
+            // and cannot order writes from two different tabs.
+            try {
+              const raw = typeof value === 'string' ? value : JSON.stringify(value)
+              const parsed = JSON.parse(raw) as { state?: Record<string, unknown> } | null
+              if (parsed && typeof parsed === 'object' && parsed.state && typeof parsed.state === 'object') {
+                const stamp = recordLocalWrite()
+                parsed.state.__settingsWriteRevision = stamp.revision
+                parsed.state.__settingsWriterId = stamp.writerId
+                window.localStorage.setItem(name, JSON.stringify(parsed))
+                return
+              }
+            } catch {
+              // Never block a persist write because the envelope shape was
+              // unexpected — the cross-tab handler tolerates missing revisions.
+            }
+            return base.setItem(name, value)
+          },
+        }
+      })(),
       // Migrate older persisted states forward. v1 state doesn't have
       // agentLoopNotifications — backfill defaults on load.
       // v3 drops enableSchedules: schedules became a first-class feature
       // (always on), so the legacy opt-out flag is stripped from storage.
-      migrate: (persistedState: unknown, version: number) => {
-        if (!persistedState || typeof persistedState !== 'object') return persistedState
+      // v4 flips the first-run default of enableThinking/thinkingLevel to
+      // true/'high'. Any state that reached the migrate path already existed
+      // in storage, so the persisted enableThinking (even explicit false) is
+      // kept verbatim — only fresh installs (no stored state) get the new
+      // defaults.
+      migrate: (persistedState: unknown, version: number): PersistedSettingsState => {
+        if (!persistedState || typeof persistedState !== 'object') {
+          return {} as PersistedSettingsState
+        }
         let next = persistedState as Record<string, unknown>
         if (version < 2) {
           next = {
@@ -1205,10 +1404,10 @@ export const useSettingsStore = create<SettingsState>()(
         if (version < 3) {
           delete next.enableSchedules
         }
-        return next
+        return next as unknown as PersistedSettingsState
       },
       // Don't persist hasApiKey - it's derived from SQLite
-      partialize: (state) => ({
+      partialize: (state): PersistedSettingsState => ({
         providerType: state.providerType,
         modelName: state.modelName,
         customBaseUrl: state.customBaseUrl,
@@ -1259,11 +1458,340 @@ export const useSettingsStore = create<SettingsState>()(
           for (const cp of state.customProviders) {
             registerCustomAsDynamic(cp)
           }
+          setupCrossTabSettingsSync()
         }
       },
     }
   )
 )
+
+// ── Cross-tab settings sync ─────────────────────────────────────────────────
+// Without this, a STALE tab persists its full settings snapshot over another
+// tab's newer write: two tabs open, tab A turns thinking off, tab B (still
+// holding enableThinking:true in memory) later changes any other setting —
+// its persist write silently reverts A's enableThinking:false. The storage
+// event (fires in every tab EXCEPT the writer) rehydrates the changed keys
+// from the freshly-written snapshot before this tab's own next write, so
+// each tab's subsequent persist carries the other tab's newer values.
+//
+// Two hazards this handler must avoid:
+//
+// 1. Re-persisting the incoming snapshot. useSettingsStore.setState() is
+//    wrapped by the persist middleware — every call re-writes the whole
+//    snapshot to localStorage. Applying an incoming snapshot through it
+//    would echo it back to storage, and when two tabs write in quick
+//    succession the receiving tab can re-persist an OLDER queued snapshot
+//    over a newer one, reverting the newer write. Incoming snapshots are
+//    therefore applied with persist writes suppressed (the store's storage
+//    wrapper is a no-op while suppressed) — the state lands in memory only;
+//    storage already holds exactly what we just read.
+//
+// 2. Out-of-order application. Two writers can fire two storage events in
+//    this tab in an order where we must never let the older snapshot
+//    replace the newer one; every persisted write embeds a Lamport
+//    (revision, writerId) stamp IN the payload and a snapshot that is not
+//    newer under that total order is dropped (StorageEvent.timeStamp
+//    reflects receiving-tab timing and cannot order peer writes; a plain
+//    per-tab counter cannot order CONCURRENT writers — the clock merge +
+//    id tiebreak can). A snapshot whose values already match the in-memory
+//    state is skipped entirely — that also keeps identical re-broadcasts
+//    from churning the provider registry.
+//
+// If the incoming snapshot changes customProviders, the dynamic provider
+// registry is re-synced here (register new/updated entries, unregister
+// removed ones) — the same registerCustomAsDynamic path the local edit
+// actions use — otherwise a provider added in another tab stays unusable
+// in this one.
+
+/**
+ * Shape written to localStorage: the partialize() projection of
+ * SettingsState (hasApiKey & other runtime-only fields are excluded).
+ * Kept in sync with the partialize() body below.
+ */
+interface PersistedSettingsState {
+  providerType: LLMProviderType
+  modelName: string
+  customBaseUrl: string
+  customProviders: CustomProviderConfig[]
+  temperature: number
+  maxTokens: number
+  maxIterations: number
+  enableThinking: boolean
+  thinkingLevel: ExtendedThinkingLevel
+  enableBatchSpawn: boolean
+  enableWebMCP: boolean
+  snapshotHighWatermark: number
+  snapshotLowWatermark: number
+  modelOverridesByWorkspace: Record<string, WorkspaceModelOverride>
+  lastUsedModelByProvider: Partial<Record<LLMProviderType, string>>
+  imageGenModel: string
+  imageGenAspectRatio: string
+  pinnedModelsByProvider: Record<string, string[]>
+  pinnedSeenByProvider: Record<string, string[]>
+  agentLoopNotifications: { enabled: boolean; onlyWhenHidden: boolean }
+}
+
+function shallowEqualRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  if (a === b) return true
+  const aKeys = Object.keys(a).filter(isSyncMetadataKey)
+  const bKeys = Object.keys(b).filter(isSyncMetadataKey)
+  if (aKeys.length !== bKeys.length) return false
+  for (const k of aKeys) {
+    if (a[k] !== b[k]) return false
+  }
+  return true
+}
+
+/** Internal write-order metadata — never user settings, never compared as such. */
+function isSyncMetadataKey(key: string): boolean {
+  return key !== '__settingsWriteRevision' && key !== '__settingsWriterId'
+}
+
+/**
+ * Sync the dynamic provider registry with an incoming customProviders list:
+ * register (or re-register) every provider present in the snapshot and
+ * unregister ones that disappeared. Uses the same registration path as the
+ * local add/update/remove actions.
+ */
+function syncDynamicRegistryWithSnapshot(incoming: CustomProviderConfig[]): void {
+  const incomingIds = new Set(incoming.map((cp) => cp.id))
+  for (const cp of incoming) {
+    registerCustomAsDynamic(cp)
+  }
+  for (const id of getDynamicProviderIds()) {
+    if (!incomingIds.has(id)) {
+      unregisterDynamicProvider(id)
+    }
+  }
+}
+
+/**
+ * Re-serialize the current in-memory state over whatever is in shared
+ * localStorage. Used when an incoming storage event must NOT be applied
+ * (old-schema peer write) but has already REPLACED the shared snapshot with
+ * stale values: without the repair, a reload rehydrates the stale snapshot
+ * and older settings silently come back ("newer settings disappear after
+ * reload"). The write goes through the persist wrapper's revision stamping
+ * so the repaired snapshot wins the write-order race against the stale
+ * peer tab's next queued write too.
+ */
+function restoreCurrentSnapshotToStorage(): void {
+  try {
+    const current = useSettingsStore.getState() as unknown as Record<string, unknown>
+    const snapshot: Record<string, unknown> = {}
+    const persistedShape: PersistedSettingsState = {
+      providerType: current.providerType as PersistedSettingsState['providerType'],
+      modelName: current.modelName as string,
+      customBaseUrl: current.customBaseUrl as string,
+      customProviders: current.customProviders as CustomProviderConfig[],
+      temperature: current.temperature as number,
+      maxTokens: current.maxTokens as number,
+      maxIterations: current.maxIterations as number,
+      enableThinking: current.enableThinking as boolean,
+      thinkingLevel: current.thinkingLevel as PersistedSettingsState['thinkingLevel'],
+      enableBatchSpawn: current.enableBatchSpawn as boolean,
+      enableWebMCP: current.enableWebMCP as boolean,
+      snapshotHighWatermark: current.snapshotHighWatermark as number,
+      snapshotLowWatermark: current.snapshotLowWatermark as number,
+      modelOverridesByWorkspace: current.modelOverridesByWorkspace as PersistedSettingsState['modelOverridesByWorkspace'],
+      lastUsedModelByProvider: current.lastUsedModelByProvider as PersistedSettingsState['lastUsedModelByProvider'],
+      imageGenModel: current.imageGenModel as string,
+      imageGenAspectRatio: current.imageGenAspectRatio as string,
+      pinnedModelsByProvider: current.pinnedModelsByProvider as PersistedSettingsState['pinnedModelsByProvider'],
+      pinnedSeenByProvider: current.pinnedSeenByProvider as PersistedSettingsState['pinnedSeenByProvider'],
+      agentLoopNotifications: current.agentLoopNotifications as PersistedSettingsState['agentLoopNotifications'],
+    }
+    Object.assign(snapshot, persistedShape)
+    // Route through the same storage wrapper the persist middleware uses so
+    // the write is suppressed during apply windows and stamped with the
+    // Lamport write-order stamp like every other write.
+    if (typeof window !== 'undefined' && !persistWritesSuppressed()) {
+      const stamp = recordLocalWrite()
+      window.localStorage.setItem(
+        'bfosa-settings',
+        JSON.stringify({
+          state: { ...snapshot, __settingsWriteRevision: stamp.revision, __settingsWriterId: stamp.writerId },
+          version: SETTINGS_PERSIST_VERSION,
+        }),
+      )
+    }
+  } catch {
+    // Best-effort repair; the next legitimate write re-persists anyway.
+  }
+}
+
+function setupCrossTabSettingsSync(): void {
+  if (crossTabSyncInstalled || typeof window === 'undefined') return
+  crossTabSyncInstalled = true
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'bfosa-settings' || e.newValue == null) return
+    // Parse ONCE — the schema-version guard, revision guard, and apply path
+    // all read the same envelope.
+    let parsed: { state?: Record<string, unknown>; version?: unknown } | null = null
+    try {
+      parsed = JSON.parse(e.newValue) as { state?: Record<string, unknown>; version?: unknown } | null
+    } catch {
+      // Malformed snapshot from an older version mid-migration — ignore; the
+      // next legitimate write re-triggers this handler.
+      return
+    }
+    if (!parsed || typeof parsed !== 'object') return
+
+    // Schema-version guard: an OLD tab (persist version < ours) holds a
+    // pre-upgrade shape. Letting its snapshot overwrite our v4 state would
+    // revert newer settings (including the thinking choice). Worse, the
+    // v3 write has REPLACED the shared snapshot in localStorage with stale
+    // values — a reload here would migrate those stale values back in and
+    // silently resurrect old settings. So alongside skipping the event we
+    // REPAIR storage: re-serialize our current (newer) state over the stale
+    // snapshot the old tab just wrote.
+    if (
+      typeof parsed.version === 'number' &&
+      parsed.version < SETTINGS_PERSIST_VERSION
+    ) {
+      restoreCurrentSnapshotToStorage()
+      return
+    }
+    if (!parsed.state || typeof parsed.state !== 'object') return
+
+    // Write-order guard: the (revision, writerId) Lamport stamp is embedded
+    // in the payload by the WRITING tab's storage wrapper, so it orders peer
+    // writes correctly even when StorageEvent delivery order/timing differs
+    // per tab. The revision is a merged clock (not a per-tab counter), so
+    // concurrent writers converge on a comparable order; the writer id
+    // breaks clock ties. A snapshot that is not NEWER under that total
+    // order is a queued arrival carrying pre-write state — drop it.
+    const incomingRevision =
+      typeof parsed.state.__settingsWriteRevision === 'number'
+        ? (parsed.state.__settingsWriteRevision as number)
+        : null
+    const incomingWriterId =
+      typeof parsed.state.__settingsWriterId === 'string'
+        ? (parsed.state.__settingsWriterId as string)
+        : null
+    if (incomingRevision != null) {
+      if (isStaleIncomingSnapshot(incomingRevision, incomingWriterId)) return
+    }
+    // Snapshot WITHOUT a revision (peer on an older deploy): fall back to
+    // the legacy event-timeStamp ordering — weak, but better than nothing,
+    // and a revisionless snapshot must not silently bypass the guard. The
+    // watermark only defends against OTHER revisionless events: a revisioned
+    // snapshot always applies (its revision scheme is incomparable with the
+    // timestamp fallback and its embedded ordering is authoritative), while
+    // two revisionless snapshots are ordered against each other so a late
+    // delivery of the older one cannot revert the newer.
+    if (incomingRevision == null) {
+      if (e.timeStamp <= lastRevisionlessEventTimestamp) return
+      lastRevisionlessEventTimestamp = e.timeStamp
+    }
+
+    // Lamport receive rule: merge the applied snapshot into the clock so
+    // our NEXT local write orders after this peer write (the revision is
+    // a merged clock, not a per-tab counter — that merge is what keeps
+    // concurrent writers comparable). The applied writer id rides along
+    // so a clock tie on the next concurrent write still resolves via the
+    // higher-id-wins tiebreak instead of diverging.
+    if (incomingRevision != null) {
+      recordAppliedSnapshot(incomingRevision, incomingWriterId)
+    }
+    try {
+      const incoming = parsed.state
+      const current = useSettingsStore.getState() as unknown as Record<string, unknown>
+      // Three-way merge: when we hold a base (the last snapshot this peer
+      // writer produced), apply only the fields the peer changed relative to
+      // that base — a whole-snapshot replace here would revert this tab's
+      // concurrent edits to fields the peer did not touch. Without a base
+      // (first snapshot from this writer, or a legacy revisionless peer)
+      // fall back to the whole-snapshot apply, zustand persist's standard
+      // semantics.
+      let applied: Record<string, unknown> = incoming
+      if (incomingWriterId != null && incomingWriterId !== TAB_WRITER_ID) {
+        const base = peerBaseSnapshots.get(incomingWriterId)
+        if (base) {
+          applied = mergeSnapshotOverCurrent(base, incoming, current)
+        }
+      }
+      // No-op guard: the (possibly merged) snapshot changes nothing —
+      // skipping avoids a pointless re-render plus provider-registry churn.
+      if (shallowEqualRecord(applied, current)) {
+        return
+      }
+      // Re-read the persisted snapshot into memory. This mirrors zustand's
+      // own rehydrate(): merge the persisted partial over current state.
+      //
+      // setState is wrapped by persist — suppress its storage write so the
+      // snapshot is applied WITHOUT re-persisting it (storage already holds
+      // exactly this snapshot; echoing it back is how an older queued
+      // event could overwrite a newer write).
+      const credentialsBefore = {
+        providerType: useSettingsStore.getState().providerType,
+        modelName: useSettingsStore.getState().modelName,
+      }
+      suppressPersistWrites++
+      try {
+        useSettingsStore.setState(applied as Partial<SettingsState>)
+      } finally {
+        suppressPersistWrites--
+      }
+      // This snapshot is now the merge base for this writer: the next one
+      // diffs against what we processed here (the raw incoming snapshot, NOT
+      // the merged result — this tab's own edits must not be attributed to
+      // the peer).
+      if (incomingWriterId != null && incomingWriterId !== TAB_WRITER_ID) {
+        peerBaseSnapshots.set(incomingWriterId, { ...incoming })
+      }
+      // Keep the dynamic provider registry in step with the incoming
+      // snapshot so cross-tab custom-provider edits are usable here.
+      // Keep the dynamic provider registry in step with the APPLIED snapshot
+      // (a merge may have dropped peer provider fields this writer never
+      // touched) so cross-tab custom-provider edits are usable here.
+      if (Array.isArray(applied.customProviders)) {
+        syncDynamicRegistryWithSnapshot(applied.customProviders as CustomProviderConfig[])
+      }
+      // Runtime-only credential state is NOT part of the persisted snapshot,
+      // so applying a peer's provider/model switch leaves this tab holding
+      // the PREVIOUS provider's hasApiKey and modelCredentialStatus —
+      // sendMessage then rejects sends against the now-active provider
+      // (or sends with a stale key assumption). Re-evaluate when the APPLIED
+      // snapshot switched provider or model (a merge can filter a peer's
+      // untouched provider copy out — only a real switch counts), mirroring
+      // what switchProviderAndModel does for a local switch.
+      if (
+        applied.providerType !== credentialsBefore.providerType ||
+        applied.modelName !== credentialsBefore.modelName
+      ) {
+        const next = useSettingsStore.getState()
+        // Invalidate by the EFFECTIVE credential key, not providerType:
+        // getEffectiveProviderConfig derives `__llm_gateway_token__` for
+        // llm-gateway, so deleting under the providerType would leave the
+        // gateway's cached lookup in place and checkHasApiKey would reuse
+        // the stale result.
+        const effectiveKey = next.getEffectiveProviderConfig()?.apiKeyProviderKey ?? next.providerType
+        apiKeyCache.delete(effectiveKey)
+        apiKeyCachePromise.delete(effectiveKey)
+        // The credential flag describes the PREVIOUS provider's auth; a
+        // cross-provider switch must clear it (same rule as
+        // switchProviderAndModel) or noUsableModel keeps marking the new,
+        // valid selection unusable. This reset must land INSIDE the
+        // suppression window: setState is wrapped by persist, and a write
+        // outside the block would re-persist the whole (just-applied,
+        // possibly already-superseded) snapshot over a newer peer write.
+        suppressPersistWrites++
+        try {
+          if (applied.providerType !== credentialsBefore.providerType) {
+            useSettingsStore.setState({ modelCredentialStatus: 'unknown' })
+          }
+        } finally {
+          suppressPersistWrites--
+        }
+        void next.checkHasApiKey()
+      }
+    } catch {
+      // Malformed state payload — ignore; the next legitimate write
+      // re-triggers this handler.
+    }
+  })
+}
 
 /**
  * Hook to get the real-time API key status

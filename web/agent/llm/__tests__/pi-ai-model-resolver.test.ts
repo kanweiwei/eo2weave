@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { resolvePiAIModel } from '../pi-ai-model-resolver'
+import { RESOLUTION_COUNTS, resetResolutionCounts, resolvePiAIModel } from '@/agent/llm/pi-ai-model-resolver'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
+
+// setCachedModels seeds a module-level memory cache that removeItem alone
+// cannot clear (Sourcery: "Cached fixture leaks between tests") — reset the
+// memory layer through the public API by overwriting it with an empty result.
+async function clearModelCache(providerType: string): Promise<void> {
+  const mod = await import('@/agent/providers/model-store')
+  const clear = (mod as unknown as { __clearMemoryCacheForTests?: (k: string) => void }).__clearMemoryCacheForTests
+  if (clear) clear(providerType)
+}
 
 describe('resolvePiAIModel', () => {
   it('should resolve known native provider/model', () => {
@@ -150,6 +159,176 @@ describe('resolvePiAIModel', () => {
     const model = resolvePiAIModel('glm-coding', 'glm-5.2', 'https://open.bigmodel.cn/api/coding/paas/v4/')
     expect(model.input).toEqual(['text'])
     expect(model.input).not.toContain('image')
+  })
+
+  // ── Reasoning capability gating (issue #88 Sourcery High finding) ────────
+  // A blanket reasoning:true on the fallback made the send path forward
+  // reasoning_effort to endpoints that reject it (400) once thinking became
+  // default-ON for fresh installs. The fallback must gate reasoning on
+  // capability evidence and default to FALSE for unknown model ids.
+
+  it('should mark unknown custom-provider model as NOT reasoning-capable', () => {
+    const model = resolvePiAIModel('custom', 'my-private-model-v1', 'https://my-proxy.example.com/v1')
+    // Finding E guard: assert the FALLBACK path was actually taken — 'custom'
+    // has no PROVIDER_MAP entry so tryGetNativeModel can't shadow this, but
+    // the explicit api check keeps the assertion honest if providers change.
+    expect(model.api).toBe('openai-completions')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should mark unknown dynamic-provider model as NOT reasoning-capable', () => {
+    // llm-gateway user-added id absent from any capability source — the
+    // conservative default must be false, never a blanket true.
+    const model = resolvePiAIModel('llm-gateway', 'brand-new-unknown-id', 'https://gateway.example.com/v1')
+    expect(model.api).toBe('cw-openai-fetch')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should keep reasoning:true for fallback models the static catalog declares reasoning', () => {
+    // glm-5 declares ['code', 'reasoning'] in the static glm-coding catalog,
+    // but has NO entry in pi-ai's native zai catalog (which only knows
+    // glm-4.5-air, glm-4.7, glm-5-turbo, glm-5.1, glm-5v-turbo) — so this
+    // resolves through createOpenAICompatibleFallback and actually exercises
+    // resolveFallbackReasoning (asserting the fallback API first guards the
+    // test against future catalog additions silently re-routing it).
+    const model = resolvePiAIModel('glm-coding', 'glm-5', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(model.api).toBe('openai-completions')
+    expect(model.reasoning).toBe(true)
+  })
+
+  it('should mark native-catalog reasoning models as reasoning-capable via the NATIVE path', () => {
+    // glm-4.7 IS in pi-ai's native zai catalog with reasoning:true, while
+    // the static app catalog also lists it with 'reasoning' — both sources
+    // agree on the flag. Round-3 finding: a reasoning-only assertion is
+    // vacuous, because if native lookup stopped recognizing the id the
+    // fallback would read the same static catalog and report true anyway.
+    // The nativeCatalogHits counter proves resolvePiAIModel answered through
+    // tryGetNativeModel's pi-ai getModel() call, not the fallback.
+    resetResolutionCounts()
+    const model = resolvePiAIModel('glm-coding', 'glm-4.7', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(RESOLUTION_COUNTS.nativeCatalogHits).toBe(1)
+    expect(RESOLUTION_COUNTS.fallbackContextLookups).toBe(0)
+    expect(model.reasoning).toBe(true)
+  })
+
+  it('should keep fast-tier native-catalog models NOT reasoning-capable via the NATIVE path', () => {
+    // glm-4.7 declares ['code', 'writing', 'fast'] — no reasoning tag — in
+    // the static catalog. pi-ai's native zai catalog does NOT know the id,
+    // so this resolves through the fallback and asserts its conservative
+    // false; the native-path counterpart is the glm-4.7 test above.
+    resetResolutionCounts()
+    const model = resolvePiAIModel('glm-coding', 'glm-4.7-flash', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(RESOLUTION_COUNTS.nativeCatalogHits).toBe(0)
+    expect(RESOLUTION_COUNTS.fallbackContextLookups).toBe(1)
+    expect(model.api).toBe('openai-completions')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should keep reasoning disabled for fallback models the static catalog lists without reasoning', async () => {
+    // deepseek-flash declares ['fast'] (no reasoning) in the static catalog.
+    // deepseek has no PROVIDER_MAP entry, so this always takes the fallback
+    // path — asserting the api first proves resolveFallbackReasoning ran.
+    // Seed a CONFLICTING heuristic dynamic-cache entry (guessCapabilities
+    // output with a 'reasoning' tag) for this exact id: a regression that
+    // lets cache tags enable reasoning would flip this to true and fail.
+    const { setCachedModels } = await import('@/agent/providers/model-store')
+    setCachedModels('deepseek', {
+      models: [
+        {
+          id: 'deepseek-flash',
+          name: 'DeepSeek V4.1 Flash',
+          capabilities: ['code', 'reasoning', 'fast'],
+        },
+      ],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    try {
+      const model = resolvePiAIModel('deepseek', 'deepseek-flash', 'https://api.deepseek.com/v1')
+      expect(model.api).toBe('openai-completions')
+      expect(model.reasoning).toBe(false)
+    } finally {
+      // Clear BOTH layers: setCachedModels seeds the module-level memory cache
+      // as well as localStorage, and removeItem alone leaves the memory entry
+      // reachable for findCachedModelInfo in later tests in this module.
+      clearModelCache('deepseek')
+      localStorage.removeItem('cw-models:deepseek')
+      localStorage.removeItem('cw-models:deepseek:undefined')
+    }
+  })
+
+  it('should not let heuristic gateway reasoning tags enable reasoning for unknown models', async () => {
+    // Seed the REGISTRY the way llm-gateway really does: every fetched model
+    // tagged ['code','writing','reasoning'] without real capability data.
+    // Registering the provider is what makes the heuristic tag REACHABLE —
+    // with an empty registry (as before) this assertion passed trivially even
+    // if a regression consulted the registry, because there was nothing to
+    // find. A heuristic tag must be treated as UNKNOWN regardless.
+    const { registerDynamicProvider, unregisterDynamicProvider } = await import(
+      '@/agent/providers/types'
+    )
+    registerDynamicProvider(
+      'llm-gateway',
+      { baseURL: 'https://gateway.example.com/v1', modelName: 'vendor-text-max-turbo', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Nutstore AI',
+        models: [
+          {
+            id: 'vendor-text-max-turbo',
+            name: 'Vendor Text Max Turbo',
+            capabilities: ['code', 'writing', 'reasoning'],
+          },
+        ],
+      },
+    )
+    try {
+      const model = resolvePiAIModel('llm-gateway', 'vendor-text-max-turbo', 'https://gateway.example.com/v1')
+      expect(model.api).toBe('cw-openai-fetch')
+      expect(model.reasoning).toBe(false)
+    } finally {
+      unregisterDynamicProvider('llm-gateway')
+    }
+  })
+
+  it('should enable reasoning for extension-provided codex-oauth models absent from the static catalog', async () => {
+    // Codex thinking is curated, not heuristic: registerCodexOAuthProvider
+    // defaults extension catalog entries to ['code','reasoning']. A model id
+    // the static PROVIDER_META.codex-oauth list doesn't know must still get
+    // reasoning:true via the extension registry, or the send path silently
+    // omits thinking params for it. The id below contains no reasoning-ish
+    // keyword, so guessCapabilities-style heuristics would NOT produce it —
+    // this only passes when the curated registry is consulted.
+    const { registerDynamicProvider, unregisterDynamicProvider } = await import(
+      '@/agent/providers/types'
+    )
+    registerDynamicProvider(
+      'codex-oauth',
+      { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'vendor-pulse-9', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Codex (Browser OAuth)',
+        models: [
+          { id: 'vendor-pulse-9', name: 'Vendor Pulse 9', capabilities: ['code', 'reasoning'] },
+        ],
+      },
+    )
+    try {
+      // Round-3 finding: the fallback's reasoning answer is not
+      // distinguishable from the curated registry's, so asserting only
+      // reasoning:true passes even if the registry lookup is broken (the
+      // fallback reports true unconditionally for anything it considers
+      // evidence). The curatedRegistryReads counter is bumped exactly when
+      // staticCatalogReasoning consults the codex-oauth registry entry —
+      // zero reads means the answer came from somewhere else.
+      resetResolutionCounts()
+      const model = resolvePiAIModel('codex-oauth', 'vendor-pulse-9', 'https://chatgpt.com/backend-api/codex')
+      expect(model.api).toBe('openai-responses')
+      expect(RESOLUTION_COUNTS.curatedRegistryReads).toBe(1)
+      expect(model.reasoning).toBe(true)
+    } finally {
+      unregisterDynamicProvider('codex-oauth')
+    }
   })
 })
 

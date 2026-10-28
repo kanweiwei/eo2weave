@@ -1,7 +1,8 @@
 import { getModel } from '@earendil-works/pi-ai'
 import type { Api, KnownProvider, Model } from '@earendil-works/pi-ai'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { isChineseProviderType, isPotentiallyDynamicProviderType, getModelsForProvider } from '@/agent/providers/types'
+import { isChineseProviderType, isPotentiallyDynamicProviderType, getModelsForProvider, PROVIDER_META } from '@/agent/providers/types'
+import type { ProviderMeta } from '@/agent/providers/types'
 import { getModelContextWindow, findCachedModelInfo } from '@/agent/providers/model-store'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 import { CW_OPENAI_FETCH_API } from './pi-ai-custom-openai-fetch'
@@ -18,6 +19,30 @@ import { normalizeBaseUrl } from './pi-ai-url-utils'
 // models (DeepSeek V4 allows up to 384K) while large enough that truncation
 // from this constant should no longer be the binding constraint.
 const DEFAULT_MAX_TOKENS = 65536
+
+/**
+ * Test-observable counters for resolvePiAIModel's two resolution branches.
+ * Production code never reads them; tests reset both to 0, call the resolver,
+ * and assert the counter that matches the intended path (native pi-ai
+ * catalog lookup vs. createOpenAICompatibleFallback). This makes a
+ * "reasoning came from X" claim falsifiable: a regression that silently
+ * re-routes a model from the native catalog to the fallback (or never
+ * reaches the curated codex-oauth registry read) fails the counter
+ * assertion even when the resulting reasoning flag happens to match.
+ */
+export const RESOLUTION_COUNTS = {
+  nativeCatalogHits: 0,
+  fallbackContextLookups: 0,
+  /** The curated codex-oauth registry fallback inside staticCatalogReasoning(). */
+  curatedRegistryReads: 0,
+}
+
+/** Reset both branch counters (used by tests between scenarios). */
+export function resetResolutionCounts(): void {
+  RESOLUTION_COUNTS.nativeCatalogHits = 0
+  RESOLUTION_COUNTS.fallbackContextLookups = 0
+  RESOLUTION_COUNTS.curatedRegistryReads = 0
+}
 
 const PROVIDER_MAP: Partial<Record<LLMProviderType, KnownProvider>> = {
   openai: 'openai',
@@ -90,7 +115,11 @@ function tryGetNativeModel(
   return null
 }
 
+/**
+ * Resolve a model's context window.
+ */
 function lookupContextWindow(providerType: LLMProviderType, modelName: string): number {
+  RESOLUTION_COUNTS.fallbackContextLookups++
   return getModelContextWindow(providerType, modelName)
 }
 
@@ -130,28 +159,84 @@ function resolveInputModalities(modelName: string, providerType?: LLMProviderTyp
   return ['text']
 }
 
-/**
- * Check whether a model accepts image input, as determined by the OpenRouter
- * snapshot.  Use this from UI contexts (model pickers, capability badges) that
- * need to render vision-capability indicators without constructing a full
- * `Model<Api>` — those callers usually don't have a `baseUrl` / `apiMode` in
- * hand, and `resolvePiAIModel`'s 3rd arg is required.
- *
- * Pass `providerType` when available: for models missing from the OpenRouter
- * snapshot (newly released, e.g. gpt-6-sol/luna), the dynamic provider
- * registry's declared capabilities are consulted as a fallback. Runtime
- * call sites (attach-image gating, OCR skip, page_screenshot registration)
- * MUST pass it — otherwise the UI badge and the actual send path disagree.
- */
 export function supportsImageInput(modelName: string, providerType?: LLMProviderType): boolean {
   return resolveInputModalities(modelName, providerType).includes('image')
 }
+/**
+ * Tri-state reasoning support: true/false only from curated evidence,
+ * 'unknown' when only heuristic data exists.
+ */
+type ReasoningSupport = boolean | 'unknown'
+
+/**
+ * Consult the STATIC provider catalog only — the single curated capability
+ * source for heuristic-tagged providers. getModelsForProvider() is deliberately
+ * NOT used for providers like llm-gateway: it prefers the dynamic registry,
+ * whose capability tags are heuristic — llm-gateway tags EVERY model
+ * ['code','writing','reasoning'] without real capability data
+ * (updateGatewayModels), custom-* registry entries carry guessCapabilities()
+ * keyword guesses, and the dynamic model cache (findCachedModelInfo) stores
+ * parseModelInfo() output whose capabilities ALWAYS come from
+ * guessCapabilities() too (the /models API publishes input_modalities/context,
+ * never reasoning support). Those tags can neither prove support (a false
+ * positive forwards reasoning_effort to endpoints that reject it with 400) nor
+ * disprove it (a heuristic entry missing the tag would strip reasoning the
+ * static catalog grants).
+ *
+ * Exception — codex-oauth: its dynamic registry entry is not heuristic. The
+ * model list comes from the browser extension's live catalog and the
+ * registration defaults capabilities to ['code','reasoning'] (see
+ * registerCodexOAuthProvider), so for models absent from PROVIDER_META the
+ * registry is the only evidence source. Skipping it would silently strip
+ * thinking from extension-provided Codex models on every request.
+ */
+function staticCatalogReasoning(providerType: LLMProviderType, modelName: string): ReasoningSupport {
+  try {
+    const staticModels =
+      (PROVIDER_META as Record<string, ProviderMeta | undefined>)[providerType]?.models ?? []
+    const found = staticModels.find((m) => m.id === modelName)
+    if (found) return found.capabilities.includes('reasoning')
+    // Extension-provided Codex model missing from the static catalog: fall
+    // back to the codex-oauth registry entry (curated by the extension, not
+    // guessed). Any other provider keeps the heuristic-unknown contract.
+    if (providerType === 'codex-oauth') {
+      const registered = getModelsForProvider(providerType).find((m) => m.id === modelName)
+      if (registered) {
+        RESOLUTION_COUNTS.curatedRegistryReads++
+        return registered.capabilities.includes('reasoning')
+      }
+    }
+    return 'unknown'
+  } catch {
+    // Catalog unavailable — treat as unknown rather than guessing.
+    return 'unknown'
+  }
+}
+
+function resolveFallbackReasoning(providerType: LLMProviderType, modelName: string): boolean {
+  // The static catalog is the only trusted evidence: a curated entry
+  // declaring 'reasoning' enables it, and a curated entry WITHOUT the tag
+  // (fast-tier flash models) explicitly disables it. Consulted FIRST so a
+  // heuristic cache/registry entry can never shadow the catalog in either
+  // direction.
+  const fromCatalog = staticCatalogReasoning(providerType, modelName)
+  if (fromCatalog !== 'unknown') return fromCatalog
+  // Unknown model (custom "add model" id, gateway id, uncached future id):
+  // heuristic reasoning tags are UNKNOWN, never proof of support, and a
+  // missing tag is never proof of absence. Unknown resolves to false — the
+  // send path omits reasoning params. Defaulting to true forwards
+  // reasoning_effort to endpoints that reject it (400) and the whole
+  // conversation fails — the conservative default must be false.
+  return false
+}
+
 function createOpenAICompatibleFallback(
   providerType: LLMProviderType,
   modelName: string,
   baseUrl: string,
   apiMode?: 'chat-completions' | 'responses'
 ): Model<Api> {
+  const reasoning = resolveFallbackReasoning(providerType, modelName)
   // Codex OAuth: use openai-responses handler with bridge fetch interception
   if (providerType === 'codex-oauth') {
     const contextWindow = lookupContextWindow(providerType, modelName)
@@ -161,7 +246,7 @@ function createOpenAICompatibleFallback(
       api: 'openai-responses', // Use official handler — fetch is intercepted by streamFn
       provider: providerType,
       baseUrl: normalizeBaseUrl(baseUrl),
-      reasoning: true,
+      reasoning,
       input: resolveInputModalities(modelName, providerType),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
@@ -234,7 +319,12 @@ function createOpenAICompatibleFallback(
     api: fallbackApi,
     provider: providerType,
     baseUrl: normalizeBaseUrl(baseUrl),
-    reasoning: true,
+    // Gate reasoning on actual capability evidence (dynamic model cache →
+    // provider model list), not on a blanket true. The send path forwards
+    // reasoning_effort only for reasoning-capable models; a blanket true
+    // makes fresh-install thinking-defaults break non-reasoning models on
+    // OpenAI-compatible / custom / dynamic providers (issue #88 review).
+    reasoning,
     // Resolve vision capability. Pass providerType so the dynamic model cache
     // (DeepSeek input_modalities etc.) and registry capabilities are consulted,
     // not just the OpenRouter snapshot. Conservative text-only default when
@@ -259,7 +349,10 @@ export function resolvePiAIModel(
   apiMode?: 'chat-completions' | 'responses'
 ): Model<Api> {
   const native = tryGetNativeModel(providerType, modelName, baseUrl)
-  if (native) return native
+  if (native) {
+    RESOLUTION_COUNTS.nativeCatalogHits++
+    return native
+  }
   const resolvedModelName = MODEL_ALIASES[providerType]?.[modelName] || modelName
   return createOpenAICompatibleFallback(providerType, resolvedModelName, baseUrl, apiMode)
 }
