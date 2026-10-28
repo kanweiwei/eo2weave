@@ -61,18 +61,27 @@ for (const theme of ['light', 'dark'] as const) {
       // Inject the axe-core bundle, then run it with wcag2a/wcag2aa tags.
       //
       // Scope: the harness <main> (the whole rendered page is the diff view
-      // — root layout + real component), with two narrowly-scoped,
-      // commented exclusions (an allowlist, not a blanket disable):
+      // — root layout + real component), with narrowly-scoped exclusions
+      // (an allowlist, not a blanket disable). Each exclusion targets ONE
+      // specific static-text element via a dedicated test id — NEVER a
+      // Tailwind color class — so viewer controls (toolbar buttons, load
+      // more, gutter cells) and every changed fragment stay IN the audit:
       //
-      // 1. `.text-neutral-500` toolbar/hunk-header/fallback-line chrome and
-      //    the `@@` hunk-header line (`.text-blue-500` on `bg-blue-50/50`) —
-      //    LOW-IMPACT CONTEXT CHROME of the diff viewer (stats line,
-      //    unchanged context text, hunk headers), measuring just under the
-      //    4.5:1 AA threshold in light mode. Fixing it means re-tuning the
+      // 1. `[data-testid=diff-toolbar-stats]` — the stats line
+      //    ("1 changed block …") measures just under the 4.5:1 AA
+      //    threshold in light mode. Fixing it means re-tuning the
       //    viewer's palette — a visual design change, NOT a track-changes
       //    regression this suite guards. Reported to the user in issue
       //    #109 instead of silently auto-fixing component code.
-      // 2. `meta[name=viewport]` (rule `meta-viewport`) — `user-scalable=no`
+      // 2. `[data-testid=diff-hunk-header]` — the `@@ -a,b +c,d @@` header
+      //    line (blue on `bg-blue-50/50`), same low-impact context chrome.
+      // 3. `[data-testid=diff-context-line]` — unchanged context lines
+      //    ("kept line"): `text-neutral-500` on white is just under 4.5:1
+      //    in light mode. REAL file content, so this is a product a11y
+      //    debt tracked in issue #109 — the exclusion is per-element (only
+      //    the content span, not the row's clickable line-number cells),
+      //    keeping everything else on these rows in the audit.
+      // 4. `meta[name=viewport]` (rule `meta-viewport`) — `user-scalable=no`
       //    is set DELIBERATELY in app/layout.tsx: this is an app-like PWA
       //    where double-tap zoom fights the editor UI (see the comment on
       //    `export const viewport` there). An app-shell decision, out of
@@ -93,7 +102,15 @@ for (const theme of ['light', 'dark'] as const) {
             }>
           }
         }).axe.run(
-          { include: [['main']], exclude: [['.text-neutral-500'], ['.text-blue-500'], ['meta[name=viewport]']] },
+          {
+            include: [['main']],
+            exclude: [
+              ['[data-testid=diff-toolbar-stats]'],
+              ['[data-testid=diff-hunk-header]'],
+              ['[data-testid=diff-context-line]'],
+              ['meta[name=viewport]'],
+            ],
+          },
           { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } },
         )
         return results.violations.map((v) => ({
@@ -118,12 +135,63 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(insertions).toHaveCount(2)
 
       // Inline pair: the word-level diff of the fox sentence.
+      // toHaveText checks DOM text, which a hidden descendant could still
+      // satisfy — the accessibility-exposure assertions below close that
+      // gap (see them for details).
       await expect(deletions.nth(0)).toHaveText(/brown/)
       await expect(insertions.nth(0)).toHaveText(/red/)
       // Second pair: whole-line fallback ("removed entirely" line vs
       // "added entirely" line) — the <del>/<ins> carry the full line text.
       await expect(deletions.nth(1)).toHaveText(/removed/)
       await expect(insertions.nth(1)).toHaveText(/added/)
+
+      // Verify the fragments' text is EXPOSED to the accessibility tree:
+      // for every <del>/<ins>, walk from the element to the document root
+      // and fail if any ancestor (or the element itself) is aria-hidden or
+      // display:none/visibility:hidden — the conditions under which AT
+      // would omit the text while the DOM-based toHaveText above still
+      // passes. The exposed text IS the accessible name for plain
+      // <del>/<ins> content, so an exposed element here carries its full
+      // text to assistive technology.
+      const axExposed = await page.evaluate(() => {
+        const isExposed = (el: Element): boolean => {
+          for (let n: Element | null = el; n; n = n.parentElement) {
+            if (n.getAttribute('aria-hidden') === 'true') return false
+            const s = getComputedStyle(n)
+            if (s.display === 'none' || s.visibility === 'hidden') return false
+          }
+          return true
+        }
+        return [...document.querySelectorAll('del, ins')].map((el) => ({
+          text: (el.textContent ?? '').trim(),
+          exposed: isExposed(el),
+        }))
+      })
+      expect(axExposed.length).toBe(4)
+      for (const frag of axExposed) {
+        expect(
+          frag.exposed,
+          `fragment "${frag.text}" is hidden from the accessibility tree`,
+        ).toBe(true)
+        expect(frag.text.length).toBeGreaterThan(0)
+      }
+
+      // Cross-check via the role-based queries themselves: getByRole
+      // resolves through the accessibility tree, so a toPass retry that
+      // re-queries roles AND asserts the accessible text of each matched
+      // element cannot be satisfied by DOM-only (hidden) content.
+      await expect(async () => {
+        const delTexts = await Promise.all(
+          (await page.getByRole('deletion').all()).map((loc) => loc.textContent()),
+        )
+        const insTexts = await Promise.all(
+          (await page.getByRole('insertion').all()).map((loc) => loc.textContent()),
+        )
+        expect(delTexts.join(' ')).toMatch(/brown/)
+        expect(delTexts.join(' ')).toMatch(/removed/)
+        expect(insTexts.join(' ')).toMatch(/red/)
+        expect(insTexts.join(' ')).toMatch(/added/)
+      }).toPass()
 
       // Fragments live inside a fused row — both sides in ONE row.
       const firstRow = page.getByTestId('track-changes-line').first()
@@ -135,21 +203,7 @@ for (const theme of ['light', 'dark'] as const) {
       // would vanish against surfaces tuned for the other theme). Assert
       // real WCAG contrast against the row's actual computed background in
       // whichever theme is active — the same property axe's color-contrast
-      // rule checks, pinned per-fragment.
-      const { color, rowBg } = await firstRow
-        .getByTestId('track-changes-equal')
-        .first()
-        .evaluate((el) => {
-          const row = el.closest('[data-testid="track-changes-line"]')
-          const parse = (c: string) =>
-            c.match(/\d+/g)?.slice(0, 3).map(Number) ?? []
-          // The row paints an opaque surface; its background is used as-is
-          // (no alpha < 1 in the component's classes).
-          return {
-            color: parse(getComputedStyle(el).color),
-            rowBg: parse(getComputedStyle(row!).backgroundColor),
-          }
-        })
+      // rule checks — for EVERY equal fragment, not just the first one.
       const luminance = ([r, g, b]: number[]) => {
         const lin = (c: number) => {
           const s = c / 255
@@ -157,10 +211,30 @@ for (const theme of ['light', 'dark'] as const) {
         }
         return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
       }
-      const l1 = luminance(color)
-      const l2 = luminance(rowBg)
-      const contrast = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
-      expect(contrast, `equal-fragment contrast ${contrast.toFixed(2)}:1`).toBeGreaterThan(4.5)
+      const contrastOf = (l1: number, l2: number) =>
+        (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+
+      const equalFragments = firstRow.getByTestId('track-changes-equal')
+      const equalCount = await equalFragments.count()
+      expect(equalCount, 'equal fragments in the fused row').toBeGreaterThan(0)
+      for (let i = 0; i < equalCount; i++) {
+        // The row paints an opaque surface; its background is used as-is
+        // (no alpha < 1 in the component's classes).
+        const { color, rowBg } = await equalFragments.nth(i).evaluate((el) => {
+          const row = el.closest('[data-testid="track-changes-line"]')
+          const parse = (c: string) =>
+            c.match(/\d+/g)?.slice(0, 3).map(Number) ?? []
+          return {
+            color: parse(getComputedStyle(el).color),
+            rowBg: parse(getComputedStyle(row!).backgroundColor),
+          }
+        })
+        const contrast = contrastOf(luminance(color), luminance(rowBg))
+        expect(
+          contrast,
+          `equal-fragment #${i} contrast ${contrast.toFixed(2)}:1`,
+        ).toBeGreaterThan(4.5)
+      }
     })
   })
 }

@@ -26,6 +26,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { notFound } from 'next/navigation'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 import { initializeTheme } from '@/store/theme.store'
 
@@ -35,6 +36,12 @@ const ORIGINAL = 'The quick brown fox\nkept line\nremoved entirely'
 const MODIFIED = 'The quick red fox\nkept line\nadded entirely'
 
 export default function TrackChangesA11yHarnessPage() {
+  // Test fixture — never ship to production. The Playwright suite runs
+  // against `next dev`, so this only affects prod builds/deploys.
+  if (process.env.NODE_ENV !== 'development') {
+    notFound()
+  }
+
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
