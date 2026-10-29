@@ -35,6 +35,7 @@ const toolContext = { directoryHandle: null }
 describe('external tool bridge error isolation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.refreshCatalog.mockReset()
     mocks.getWebMCPBridge.mockReturnValue(null)
     mocks.getWebMCPState.mockReturnValue({
       getEnabledTools: () => [],
@@ -325,4 +326,198 @@ it('refreshes navigation tools and returns the exact creator continuation withou
   expect(result.data.page_tools).toHaveLength(1)
   expect(result.data.page_tools[0]).toMatchObject({ full_tool_name: 'creator_publish', tab_id: 7, origin: creator.origin })
   expect(invoke).toHaveBeenCalledTimes(1)
+})
+
+describe('WebMCP legacy extension compatibility', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.refreshCatalog.mockReset()
+  })
+
+  const legacySchema = { type: 'object' as const, properties: { a: { type: 'string' } } }
+
+  const legacyTool = (groupKey: string) => ({
+    name: 'picture',
+    origin: 'https://example.com',
+    fullName: 'example_com__picture',
+    hostname: 'example.com',
+    description: '',
+    inputSchema: legacySchema,
+    apiMode: 'documentModelContext' as const,
+    annotations: { readOnlyHint: true },
+    tabs: [{
+      tabId: 1,
+      title: 'Example',
+      url: 'https://example.com',
+      lastSeenAt: 1,
+      groupKey,
+    }],
+  })
+
+  const setLegacyState = (getTool: () => ReturnType<typeof legacyTool>) => {
+    mocks.getWebMCPState.mockImplementation(() => ({
+      getEnabledTools: () => [getTool()],
+      getToolByCallName: () => getTool(),
+      get discoveredTools() {
+        const tool = getTool()
+        return [{ ...tool, tabId: 1, annotations: tool.annotations }]
+      },
+    }))
+  }
+
+  it('sends route fields for both extension generations', async () => {
+    const tool = legacyTool('example_com_signature')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    const invoke = vi.fn().mockResolvedValue({
+      ok: true,
+      hostname: 'example.com',
+      tabId: 1,
+      result: { ok: true },
+    })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    await callToolExecutor(
+      { full_tool_name: tool.fullName, tab_id: 1, args: { a: 'x' } },
+      toolContext,
+    )
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(invoke.mock.calls[0][0]).toMatchObject({
+      targetTabId: 1,
+      preferredTabId: 1,
+      origin: 'https://example.com',
+      toolName: 'picture',
+      fullToolName: 'example_com__picture',
+      groupKey: 'example_com_signature',
+      args: { a: 'x' },
+    })
+  })
+
+  it('refreshes the route key and retries once when the route lookup misses', async () => {
+    const stale = legacyTool('example_com_stale')
+    const fresh = legacyTool('example_com_fresh')
+    let current = stale
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => current)
+    mocks.refreshCatalog.mockImplementation(async () => {
+      current = fresh
+      return [fresh]
+    })
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'INVALID_TOOL_NAME',
+        error: 'No route cache entry for tool and group — try re-discovering WebMCP tools',
+        hostname: '',
+        toolName: '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        hostname: 'example.com',
+        tabId: 1,
+        result: { ok: true },
+      })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor(
+      { full_tool_name: stale.fullName, tab_id: 1, args: { a: 'x' } },
+      toolContext,
+    ))
+
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(invoke.mock.calls[0][0]).toMatchObject({ groupKey: 'example_com_stale' })
+    expect(invoke.mock.calls[1][0]).toMatchObject({
+      groupKey: 'example_com_fresh',
+      args: { a: 'x' },
+    })
+    expect(result.data.result).toEqual({ ok: true })
+  })
+
+  it('does not retry a route miss after the run is cancelled during discovery', async () => {
+    const stale = legacyTool('stale')
+    const fresh = legacyTool('fresh')
+    let current = stale
+    let finishRefresh!: () => void
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => current)
+    mocks.refreshCatalog.mockImplementation(() => new Promise<void>((resolve) => {
+      finishRefresh = () => { current = fresh; resolve() }
+    }))
+    const invoke = vi.fn().mockResolvedValue({ ok: false, errorCode: 'INVALID_TOOL_NAME', error: 'route miss' })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+    const controller = new AbortController()
+
+    const pending = callToolExecutor(
+      { full_tool_name: stale.fullName, tab_id: 1, args: { a: 'x' } },
+      { ...toolContext, abortSignal: controller.signal },
+    )
+    await vi.waitFor(() => expect(mocks.refreshCatalog).toHaveBeenCalledOnce())
+    controller.abort()
+    finishRefresh()
+    const result = JSON.parse(await pending)
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(result.error.code).toBe('CALL_CANCELLED')
+  })
+
+  it('returns the original route error when discovery exceeds the retry deadline', async () => {
+    const stale = legacyTool('stale')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => stale)
+    mocks.refreshCatalog.mockReturnValue(new Promise(() => {}))
+    const invoke = vi.fn().mockResolvedValue({ ok: false, errorCode: 'INVALID_TOOL_NAME', error: 'route miss' })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    vi.useFakeTimers()
+    try {
+      const pending = callToolExecutor({ full_tool_name: stale.fullName, tab_id: 1 }, toolContext)
+      await vi.advanceTimersByTimeAsync(3100)
+      const result = JSON.parse(await pending)
+      expect(invoke).toHaveBeenCalledTimes(1)
+      expect(result.error.code).toBe('INVALID_TOOL_NAME')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('blocks legacy tools that may write because the old extension can select another tab', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    const invoke = vi.fn()
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(invoke).not.toHaveBeenCalled()
+    expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
+  })
+
+  it('rejects a legacy read result returned from a different tab', async () => {
+    const tool = legacyTool('signature')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({ ok: true, tabId: 2, result: { value: 'other tab' } }),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.code).toBe('TAB_TARGET_MISMATCH')
+  })
+
+  it('uses the selected tab annotation instead of another tab representative', async () => {
+    const tool = legacyTool('signature')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [tool],
+      getToolByCallName: () => tool,
+      discoveredTools: [{ ...tool, tabId: 1, annotations: { readOnlyHint: false } }],
+    })
+    const invoke = vi.fn()
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(invoke).not.toHaveBeenCalled()
+    expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
+  })
 })
