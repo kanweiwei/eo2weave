@@ -32,18 +32,15 @@ const projectManagerDeleteMock = vi.hoisted(() => vi.fn(async () => {}))
 const ProjectManagerMock = vi.hoisted(() => ({
   create: vi.fn(async () => ({ deleteProject: projectManagerDeleteMock })),
 }))
-
 vi.mock('@/sqlite/repositories/project.repository', () => ({
   getProjectRepository: () => projectRepoMock,
   DEFAULT_PROJECT_ID: 'default',
 }))
-
 vi.mock('@/sqlite/repositories/workspace.repository', () => ({
   getWorkspaceRepository: () => ({
     findAllWorkspacesByProjectIncludingDirect: findAllWorkspacesByProjectIncludingDirectMock,
   }),
 }))
-
 vi.mock('@/opfs', () => ({ ProjectManager: ProjectManagerMock }))
 
 // Lazy imports inside deleteProject (only on the active-project branch —
@@ -569,5 +566,56 @@ describe('project.store deleteProject host rebind', () => {
     expect(useProjectStore.getState().activeProjectId).toBe('p-b')
     // Dependent workspace state was refreshed for the fallback pointer.
     expect(refreshWorkspacesMock).toHaveBeenCalled()
+  })
+
+  it('a hung OPFS cleanup does not block the deletion chain (bounded wait)', async () => {
+    // Finding: tryDeleteOpfsProject was awaited unbounded INSIDE the
+    // serialized deletion section — if ProjectManager.create() or
+    // pm.deleteProject() never settled, every later project deletion in the
+    // tab stayed queued forever. The cleanup wait is now raced against a
+    // timeout: on timeout the id is queued for retry and the chain proceeds
+    // (deletion still reports success — the row already committed).
+    useProjectStore.setState({ activeProjectId: '', projects: [project('p-a'), project('p-b')] } as never)
+    findAllProjectsMock.mockResolvedValue([project('p-a'), project('p-b')])
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
+    projectManagerDeleteMock.mockImplementation(
+      () => new Promise<void>(() => {
+        /* never settles — the hang */
+      }) as never
+    )
+
+    // Deletion must NOT hang: it resolves (success) once the bounded cleanup
+    // times out, instead of blocking the chain forever.
+    const ok = await useProjectStore.getState().deleteProject('p-a')
+    expect(ok).toBe(true)
+
+    // The DB row deletion still committed exactly once, and the timeout did
+    // not turn into a failure or an error surface.
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-a', 'p-b', [])
+    expect(useProjectStore.getState().error).toBeNull()
+
+    // A later deletion is NOT stranded behind the hung cleanup: it completes
+    // normally after the first deletion's bounded wait expired.
+    projectManagerDeleteMock.mockResolvedValue(undefined)
+    const okB = await useProjectStore.getState().deleteProject('p-b')
+    expect(okB).toBe(true)
+    // The bounded waits are real-time (10s timeout + a 10s retry flush), so
+    // this test legitimately needs more than the global 10s testTimeout.
+  }, 30_000)
+
+  it('a delayed (slow but settling) OPFS cleanup that finishes within the bound still counts as done', async () => {
+    // Complement to the timeout test: cleanup that settles inside the bound
+    // must still be treated as successful (no pointless retry queueing).
+    useProjectStore.setState({ activeProjectId: '', projects: [project('p-a'), project('p-b')] } as never)
+    findAllProjectsMock.mockResolvedValue([project('p-a'), project('p-b')])
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
+    projectManagerDeleteMock.mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 20)) as never
+    )
+
+    const ok = await useProjectStore.getState().deleteProject('p-a')
+    expect(ok).toBe(true)
+    expect(projectManagerDeleteMock).toHaveBeenCalledWith('p-a')
+    expect(useProjectStore.getState().error).toBeNull()
   })
 })

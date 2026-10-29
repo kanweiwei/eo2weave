@@ -129,6 +129,32 @@ let projectDeletionRebindChain: Promise<void> = Promise.resolve()
 // Dropped on page reload by design.
 const pendingOpfsProjectDeletions = new Set<string>()
 
+// Upper bound for one OPFS cleanup attempt. Cleanup is best-effort (the DB
+// row is already gone, so a skipped cleanup only leaves orphaned files), but
+// it is awaited INSIDE the serialized deletion chain: a cleanup that never
+// settles would hold the chain forever and block every later project
+// deletion in this tab. The race bounds that wait — on timeout the project
+// id stays in (or is added to) the retry list and the chain moves on.
+const OPFS_CLEANUP_TIMEOUT_MS = 10_000
+
+/**
+ * Await `promise` with a hard deadline. Resolves with `false` if the
+ * underlying promise does not settle within `timeoutMs` (the promise keeps
+ * running in the background — its late result is ignored, never a leak of
+ * failure into the caller's error path).
+ */
+async function withTimeout(promise: Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function tryDeleteOpfsProject(projectId: string): Promise<boolean> {
   try {
     const pm = await ProjectManager.create()
@@ -140,11 +166,16 @@ async function tryDeleteOpfsProject(projectId: string): Promise<boolean> {
   }
 }
 
+/** Best-effort bounded OPFS cleanup: false on failure OR on timeout. */
+function tryDeleteOpfsProjectBounded(projectId: string): Promise<boolean> {
+  return withTimeout(tryDeleteOpfsProject(projectId), OPFS_CLEANUP_TIMEOUT_MS)
+}
+
 async function flushPendingOpfsProjectDeletions(): Promise<void> {
   if (pendingOpfsProjectDeletions.size === 0) return
   for (const id of [...pendingOpfsProjectDeletions]) {
     // eslint-disable-next-line no-await-in-loop -- sequential retries keep OPFS contention predictable
-    if (await tryDeleteOpfsProject(id)) {
+    if (await tryDeleteOpfsProjectBounded(id)) {
       pendingOpfsProjectDeletions.delete(id)
     }
   }
@@ -601,7 +632,12 @@ export const useProjectStore = create<ProjectState>()(
               // rollback path could not restore. Failures are logged and
               // queued in an in-memory retry list (not persisted — storage-
               // light rule); the next successful deletion flushes the queue.
-              if (!(await tryDeleteOpfsProject(projectId))) {
+              // The wait is BOUNDED (timeout race): a hung cleanup must not
+              // hold the serialized deletion chain forever and strand every
+              // later deletion — on timeout the id is queued for retry and
+              // the chain proceeds (tradeoff: possible orphaned OPFS files
+              // until a later flush succeeds).
+              if (!(await tryDeleteOpfsProjectBounded(projectId))) {
                 pendingOpfsProjectDeletions.add(projectId)
               }
               await flushPendingOpfsProjectDeletions()
