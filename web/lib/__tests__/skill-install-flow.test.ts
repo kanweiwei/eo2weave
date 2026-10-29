@@ -46,7 +46,7 @@ import {
   mergePrefillText,
   pickConversationTarget,
   waitForCondition,
-} from '../skill-install-flow'
+} from '@/lib/skill-install-flow'
 
 describe('checkAiReadiness (issue #126 login-detection branches)', () => {
   beforeEach(() => {
@@ -225,6 +225,26 @@ describe('mergePrefillText (issue #128 draft preservation)', () => {
   it('is idempotent when the draft already starts with the command', () => {
     expect(mergePrefillText('/my-skill my unsent question', '/my-skill')).toBe(
       '/my-skill my unsent question',
+    )
+  })
+
+  it('stacks the prefill when the draft starts with a LONGER command sharing the prefix', () => {
+    // "/my-skill-extra" starts with "/my-skill" but is a different command —
+    // the requested command must not be treated as already present.
+    expect(mergePrefillText('/my-skill-extra old question', '/my-skill')).toBe(
+      '/my-skill\n/my-skill-extra old question',
+    )
+  })
+
+  it('stacks the prefill when the same command carries a DIFFERENT prompt', () => {
+    expect(mergePrefillText('/my-skill old prompt', '/my-skill new prompt')).toBe(
+      '/my-skill new prompt\n/my-skill old prompt',
+    )
+  })
+
+  it('is idempotent when the draft matches the command AND the requested prompt exactly', () => {
+    expect(mergePrefillText('/my-skill new prompt', '/my-skill new prompt')).toBe(
+      '/my-skill new prompt',
     )
   })
 })

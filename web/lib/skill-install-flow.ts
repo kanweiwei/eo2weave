@@ -116,8 +116,11 @@ export function pickConversationTarget(
 /**
  * Merge the skill prefill into any unsent draft the target conversation
  * already holds: existing text is preserved below the command, and a
- * re-click (draft already starts with the command) is idempotent instead
- * of stacking duplicate commands.
+ * re-click is idempotent — but ONLY when the draft already carries the
+ * exact requested prefill. A draft that merely starts with the command
+ * (e.g. a longer command sharing its prefix, or the same command with a
+ * different prompt) does NOT count as present: the requested prefill is
+ * stacked on top so the visitor's link always lands intact.
  */
 export function mergePrefillText(
   existingText: string | null | undefined,
@@ -126,7 +129,17 @@ export function mergePrefillText(
   const trimmed = (existingText ?? '').trim()
   if (!trimmed) return prefill
   const command = prefill.split(/\s+/)[0] ?? prefill
-  if (trimmed.startsWith(command)) return trimmed
+  // "Already present" requires the draft to start with the EXACT command
+  // token (word boundary — a longer command sharing the prefix does not
+  // count). When the link requests a prompt, that prompt must match the
+  // draft's remainder exactly; a bare command counts as present over any
+  // user-typed continuation (keeps re-clicks idempotent).
+  const rest = trimmed.slice(command.length)
+  const hasCommandToken = trimmed.startsWith(command) && (rest === '' || rest.startsWith(' '))
+  const requestedPrompt = prefill.slice(command.length).trim()
+  if (hasCommandToken && (requestedPrompt === '' || rest.trim() === requestedPrompt)) {
+    return trimmed
+  }
   return `${prefill}\n${trimmed}`
 }
 
