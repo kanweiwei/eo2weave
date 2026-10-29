@@ -1,4 +1,4 @@
-// 推广落地页（/skill-install?skill=<dirName>，issue #126）。
+// Promotion landing page (/skill-install?skill=<dirName>, issue #126).
 export const skillInstall = {
     loading: "正在准备…",
     errorTitle: "无法加载该技能",
@@ -14,6 +14,7 @@ export const skillInstall = {
     installing: "安装中…",
     installDone: "安装完成！",
     installFailed: "安装失败",
+    registerFailed: "技能已安装但注册失败，请重试。",
     aiReady: "AI 模型已就绪",
     aiNotReady: "最后一步：登录坚果云 AI 即可运行该技能",
     aiLater: "暂时跳过",

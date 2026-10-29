@@ -1,4 +1,4 @@
-// プロモーションランディングページ（/skill-install?skill=<dirName>、issue #126）。
+// Promotion landing page (/skill-install?skill=<dirName>, issue #126).
 export const skillInstall = {
     loading: "準備中…",
     errorTitle: "このスキルを読み込めませんでした",
@@ -14,6 +14,7 @@ export const skillInstall = {
     installing: "インストール中…",
     installDone: "インストール完了！",
     installFailed: "インストールに失敗しました",
+    registerFailed: "スキルはインストールされましたが、登録に失敗しました。再試行してください。",
     aiReady: "AI モデルの準備ができています",
     aiNotReady: "最後のステップ：Nutstore AI にログインするとスキルを実行できます",
     aiLater: "今はスキップ",
