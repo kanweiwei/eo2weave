@@ -60,8 +60,10 @@ describe('findPackageOptInCandidate', () => {
     expect(findPackageOptInCandidate([entry()], 'https://example.com/')).toBeNull()
   })
 
-  it('ignores user-mounted packages', () => {
-    expect(findPackageOptInCandidate([entry({ mount: 'webmcp' })], 'https://jmail.world/')).toBeNull()
+  it('offers user-mounted (registry-installed) packages too (issue #117 Tier 1)', () => {
+    const candidate = findPackageOptInCandidate([entry({ mount: 'webmcp', directory: 'world.jmail.archive' })], 'https://jmail.world/')
+    expect(candidate?.id).toBe('world.jmail.archive')
+    expect(candidate?.mount).toBe('webmcp')
   })
 
   it('ignores packages with blocking diagnostics', () => {

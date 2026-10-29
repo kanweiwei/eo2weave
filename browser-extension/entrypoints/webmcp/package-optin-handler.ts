@@ -57,6 +57,8 @@ import {
 } from './package-optin'
 import { readWebMCPCatalog, readWebMCPCatalogDetailed } from './package-repository'
 import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
+import { serializeWebMCPConfig, parseWebMCPConfig } from '@creatorweave/shared/webmcp-config'
+import { getAdapterStorage } from './provider-storage'
 
 export interface PackageOptInStatus {
   ok: boolean
@@ -78,6 +80,39 @@ export interface PackageOptInStatus {
 export interface PackageOptInDependencies {
   /** Resolve the bound tab id for this request (null when unauthorized). */
   resolveBoundTab: () => Promise<number | null>
+}
+
+/**
+ * Read the activation config of a package on EITHER mount. Builtin overrides
+ * live in chrome.storage.local (`setBuiltinConfig`); user-mount packages
+ * (registry installs, issue #117) carry their config.json inside the package
+ * directory itself — the same file the extension's package-management page
+ * writes. The consent-token protocol is identical for both.
+ */
+async function readPackageActivation(
+  mount: string,
+  directory: string,
+): Promise<{ activation?: string } | null> {
+  if (mount === 'builtin-webmcp') return readBuiltinConfig(directory)
+  const provider = await getAdapterStorage()
+  try {
+    const bytes = await provider.readFile(`${directory}/config.json`)
+    return parseWebMCPConfig(JSON.parse(new TextDecoder().decode(bytes)))
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** Enable a package on EITHER mount (see `readPackageActivation` for the split). */
+async function writePackageActivation(mount: string, directory: string): Promise<void> {
+  if (mount === 'builtin-webmcp') {
+    await setBuiltinConfig(directory, { activation: 'enabled' })
+    return
+  }
+  const provider = await getAdapterStorage()
+  const bytes = new TextEncoder().encode(serializeWebMCPConfig({ activation: 'enabled' }))
+  await provider.writeFile(`${directory}/config.json`, bytes)
 }
 
 /**
@@ -486,7 +521,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
-        await setBuiltinConfig(candidate.directory, { activation: 'enabled' })
+        await writePackageActivation(candidate.mount, candidate.directory)
         // Reload FIRST, then verify, then respond (finding: "Disabled package
         // reported enabled"): a disable that commits after our enable write
         // must be OBSERVED before success is reported, and the reload must
@@ -540,7 +575,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           let stored: { activation?: string } | null
           try {
-            stored = await readBuiltinConfig(candidate.directory)
+            stored = await readPackageActivation(candidate.mount, candidate.directory)
           } catch (verifyErr: unknown) {
             // eslint-disable-next-line no-console
             console.warn(

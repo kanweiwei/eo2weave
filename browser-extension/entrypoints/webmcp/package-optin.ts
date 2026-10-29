@@ -1,10 +1,11 @@
 /**
  * Side-panel package opt-in — candidate matching.
  *
- * The opt-in prompt (issue #100) asks: "does the bound tab host a builtin
- * WebMCP package that is still disabled?". The answer comes from the PACKAGE
- * CATALOG (not the removed legacy recipes map): a builtin package matches the
- * tab when at least one of its tools' `urlRegex` matches the tab URL.
+ * The opt-in prompt (issue #100) asks: "does the bound tab host a WebMCP
+ * package that is still disabled?". The answer comes from the PACKAGE
+ * CATALOG (not the removed legacy recipes map): a package (builtin or
+ * registry-installed external) matches the tab when at least one of its
+ * tools' `urlRegex` matches the tab URL.
  *
  * This module is deliberately pure so both the background handler and the
  * unit tests can use it without a browser environment.
@@ -24,6 +25,8 @@ export interface PackageOptInCandidate {
   /** Package id (reverse-domain namespace) — also the manifest directory. */
   id: string
   directory: string
+  /** Which mount hosts the package (`builtin-webmcp` or `webmcp`). */
+  mount: string
   description: string
   hostname: string
   /** Resolved activation: absence of config.json means disabled. */
@@ -32,8 +35,15 @@ export interface PackageOptInCandidate {
   tools: PackageOptInTool[]
 }
 
-/** Only builtin packages can be offered by the opt-in prompt. */
-const BUILTIN_MOUNT = 'builtin-webmcp'
+/**
+ * Mounts eligible for the opt-in prompt. Tier 1 (issue #117) opens the probe
+ * to EXTERNAL packages: a package installed from a registry into the custom
+ * `/external/webmcp/` mount gets the same on-site "enable?" prompt as a
+ * builtin. Both mounts hold declarative workflow packages behind the same
+ * consent-token protocol, so there is no security reason to treat them
+ * differently — the old builtin-only filter just predated the installer.
+ */
+const OPT_IN_MOUNTS = new Set(['builtin-webmcp', 'webmcp'])
 
 /**
  * Browser primitives that change the page (click, typing, key presses, …).
@@ -131,11 +141,12 @@ function hostnameOf(url: string): string {
 }
 
 /**
- * All builtin packages hosting this URL, best first (finding: "Dismissal
+ * All packages hosting this URL, best first (finding: "Dismissal
  * hides other package prompts" — a site can host SEVERAL packages, and a
- * dismissed best match must not shadow its siblings). Order: disabled before
- * enabled (the prompt exists to offer disabled packages), then by matching
- * tool count, then id for stability.
+ * dismissed best match must not shadow its siblings). Both builtin and
+ * external (registry-installed) packages qualify (issue #117 Tier 1).
+ * Order: disabled before enabled (the prompt exists to offer disabled
+ * packages), then by matching tool count, then id for stability.
  */
 export function findPackageOptInCandidates(
   entries: WebMCPPackageEntry[],
@@ -145,7 +156,7 @@ export function findPackageOptInCandidates(
   const hostname = hostnameOf(url)
   const candidates: PackageOptInCandidate[] = []
   for (const entry of entries) {
-    if (entry.mount !== BUILTIN_MOUNT) continue
+    if (!OPT_IN_MOUNTS.has(entry.mount)) continue
     const manifest = entry.package?.manifest
     if (!manifest) continue
     // A package with diagnostics cannot be enabled — never offer it.
@@ -171,6 +182,7 @@ export function findPackageOptInCandidates(
     candidates.push({
       id: manifest.id,
       directory: entry.directory,
+      mount: entry.mount,
       description: manifest.description,
       hostname,
       activation: entry.activation === 'enabled' ? 'enabled' : 'disabled',
