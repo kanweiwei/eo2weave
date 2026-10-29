@@ -48,6 +48,8 @@ vi.mock('@/lib/skill-install-flow', () => ({
   checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
   buildPrefillText: (name: string, prompt?: string | null) =>
     prompt ? `/${name} ${prompt}` : `/${name}`,
+  mergePrefillText: (existing: string | null | undefined, prefill: string) =>
+    (existing ?? '').trim() ? `${prefill}\n${existing!.trim()}` : prefill,
   pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
   waitForCondition: vi.fn(async () => true),
 }))
@@ -66,18 +68,41 @@ vi.mock('@/hooks/useGatewayLogin', () => ({
 }))
 
 const saveDraftMock = vi.fn()
+const inputDraftPeekMock = vi.fn<() => InputDraft | null>(() => null)
+
+const { setActiveProjectMock, useProjectStoreMock, projectState } = vi.hoisted(() => {
+  const projectState = {
+    initialized: true,
+    activeProjectId: 'proj-1',
+    projects: [] as Array<{ id: string }>,
+    setActiveProject: null as unknown as (id: string) => Promise<boolean>,
+  }
+  const useProjectStoreMock = { getState: () => projectState }
+  // Mirrors the real store: switching projects updates activeProjectId.
+  const setActiveProjectMock = vi.fn(async (id: string) => {
+    projectState.activeProjectId = id
+    return true
+  })
+  projectState.setActiveProject = setActiveProjectMock
+  return { setActiveProjectMock, useProjectStoreMock, projectState }
+})
 
 vi.mock('@/store/input-draft.store', () => ({
-  useInputDraftStore: { getState: () => ({ saveDraft: saveDraftMock }) },
+  useInputDraftStore: { getState: () => ({ saveDraft: saveDraftMock, peekDraft: () => inputDraftPeekMock() }) },
 }))
 
+type InputDraft = { text: string; mentionedAgentIds: string[]; selectedFiles: string[] }
+
 vi.mock('@/store/project.store', () => ({
-  useProjectStore: { getState: () => ({ initialized: true, activeProjectId: 'proj-1' }) },
+  useProjectStore: useProjectStoreMock,
 }))
 
 vi.mock('@/store/conversation-context.store', () => ({
   useConversationContextStore: {
-    getState: () => ({ workspaces: [{ id: 'recent-conv', lastAccessedAt: 99 }] }),
+    getState: () => ({
+      initialized: true,
+      workspaces: [{ id: 'recent-conv', lastAccessedAt: 99 }],
+    }),
   },
 }))
 
@@ -109,8 +134,17 @@ const ENTRY = {
 describe('SkillInstallPage (issue #126)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    projectState.initialized = true
+    projectState.activeProjectId = 'proj-1'
+    projectState.projects = []
     fetchSkillStoreManifestMock.mockResolvedValue({ skills: [ENTRY] })
-    scanInstalledDirNamesMock.mockResolvedValue(new Set<string>())
+    // First scan happens at load (not installed yet); the second scan is
+    // runInstall's post-registration verification — the skill is present.
+    let scanCount = 0
+    scanInstalledDirNamesMock.mockImplementation(async () => {
+      scanCount += 1
+      return scanCount >= 2 ? new Set([ENTRY.dirName]) : new Set<string>()
+    })
     installSkillFromUrlMock.mockResolvedValue({ count: 4, manifest: ENTRY })
     checkAiReadinessMock.mockResolvedValue({ ready: true, creditExhausted: false })
     searchParamsMock.mockReturnValue(new URLSearchParams('skill=cw-legal-evidence-chain'))
@@ -160,6 +194,70 @@ describe('SkillInstallPage (issue #126)', () => {
       mentionedAgentIds: [],
       selectedFiles: [],
     })
+    // Ordering: the draft write MUST precede router.replace — otherwise a
+    // visitor can arrive at the conversation without the prefill (the
+    // mocked router does not unmount the page, so "eventually" checks
+    // alone would not catch a reordering).
+    const draftOrder = saveDraftMock.mock.invocationCallOrder[0]
+    const replaceOrder = routerReplaceMock.mock.invocationCallOrder[0]
+    expect(draftOrder).toBeLessThan(replaceOrder)
+  })
+
+  it('install failure surfaces the error message in the details view', async () => {
+    installSkillFromUrlMock.mockRejectedValue(new Error('Download timed out'))
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(screen.getByText('Download timed out')).toBeInTheDocument())
+    // Back on the details view with a retry-able button.
+    expect(screen.getByText('skillInstall.installButton')).toBeInTheDocument()
+  })
+
+  it('zero-credit readiness shows the hint in the details view instead of navigating', async () => {
+    checkAiReadinessMock.mockResolvedValue({ ready: true, creditExhausted: true })
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(screen.getByText('skillInstall.creditExhausted')).toBeInTheDocument())
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    // A follow-up start proceeds to the conversation.
+    fireEvent.click(screen.getByText('skillInstall.starting'))
+    await waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1/workspaces/recent-conv')
+    })
+  })
+
+  it('fresh session with no active project: falls back to the first project and still navigates', async () => {
+    projectState.activeProjectId = ''
+    projectState.projects = [{ id: 'auto-default' }]
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(setActiveProjectMock).toHaveBeenCalledWith('auto-default'))
+    await waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith('/projects/auto-default/workspaces/recent-conv')
+    })
+  })
+
+  it('appends the prefill below an existing unsent draft instead of clobbering it', async () => {
+    saveDraftMock.mockImplementation(() => {})
+    // Pre-seed an existing draft via peekDraft.
+    inputDraftPeekMock.mockReturnValue({
+      text: 'my unsent question',
+      mentionedAgentIds: ['agent-1'],
+      selectedFiles: ['a.md'],
+    })
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => {
+      expect(saveDraftMock).toHaveBeenCalledWith('recent-conv', {
+        text: '/cw-legal-evidence-chain\nmy unsent question',
+        mentionedAgentIds: ['agent-1'],
+        selectedFiles: ['a.md'],
+      })
+    })
+    inputDraftPeekMock.mockReturnValue(null)
   })
 
   it('idempotent for installed skills: no re-install, "already installed" badge', async () => {
