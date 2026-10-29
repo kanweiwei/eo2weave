@@ -5,14 +5,16 @@ const dismissPackagePromptMock = vi.fn()
 const enablePackageAndReloadMock = vi.fn<
   (id: string, token: string, late: unknown) => Promise<unknown>
 >()
-const enableLegacyRecipeAndReloadMock = vi.fn<(id: string) => Promise<unknown>>()
+const enableLegacyRecipeAndReloadMock = vi.fn<
+  (id: string, late?: unknown) => Promise<unknown>
+>()
 
 vi.mock('@/agent/sidepanel-package-prompt', () => ({
   dismissPackagePrompt: (...args: unknown[]) => dismissPackagePromptMock(...args),
   enablePackageAndReload: (...args: unknown[]) =>
     enablePackageAndReloadMock(...(args as [string, string, unknown])),
   enableLegacyRecipeAndReload: (...args: unknown[]) =>
-    enableLegacyRecipeAndReloadMock(...(args as [string])),
+    enableLegacyRecipeAndReloadMock(...(args as [string, unknown])),
 }))
 
 vi.mock('sonner', () => ({
@@ -302,9 +304,12 @@ describe('PackageOptInModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
     await waitFor(() => {
-      // Exactly one arg — the recipe/package id. No token, no late callback.
+      // Exactly one id + the late-outcome callback — no consent token.
       expect(enableLegacyRecipeAndReloadMock).toHaveBeenCalledTimes(1)
-      expect(enableLegacyRecipeAndReloadMock).toHaveBeenCalledWith('world.jmail.archive')
+      expect(enableLegacyRecipeAndReloadMock).toHaveBeenCalledWith(
+        'world.jmail.archive',
+        expect.any(Function),
+      )
       expect(enablePackageAndReloadMock).not.toHaveBeenCalled()
       expect(toast.success).toHaveBeenCalledWith(ENABLED_TOAST)
       expect(onClose).toHaveBeenCalledTimes(1)

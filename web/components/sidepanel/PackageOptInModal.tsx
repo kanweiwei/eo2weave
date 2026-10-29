@@ -130,26 +130,27 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
     // Legacy prompts (pre-#102 extension, issue #113) enable through the old
     // recipe bridge with NO consent token; the same result shape keeps the
     // timeout / reload-failure / failure handling below shared verbatim.
+    const handleLateOutcome = (late: PackageOptInEnableResult) => {
+      if (late.ok) {
+        // Findings "Late success hides reload failure" / "Enabled package
+        // skips page reload": a late ok with reloaded:false means the tools
+        // are NOT active — direct the user to reload manually instead of
+        // claiming plain success.
+        setErrorMessage(null)
+        if (late.reloaded === false) {
+          setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
+        } else {
+          setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+        }
+      }
+      // A late FAILURE stays silent: the modal already showed the failure
+      // path and the user can retry or close; re-toasting an error after the
+      // fact would only nag.
+    }
     const runEnable = (): Promise<PackageOptInEnableResult> =>
       legacy
-        ? enableLegacyRecipeAndReload(packageInfo.id)
-        : enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
-            if (late.ok) {
-              // Findings "Late success hides reload failure" / "Enabled package
-              // skips page reload": a late ok with reloaded:false means the tools
-              // are NOT active — direct the user to reload manually instead of
-              // claiming plain success.
-              setErrorMessage(null)
-              if (late.reloaded === false) {
-                setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
-              } else {
-                setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
-              }
-            }
-            // A late FAILURE stays silent: the modal already showed the failure
-            // path and the user can retry or close; re-toasting an error after the
-            // fact would only nag.
-          })
+        ? enableLegacyRecipeAndReload(packageInfo.id, handleLateOutcome)
+        : enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', handleLateOutcome)
     // The 8s timeout may fire while the bridge call is still in flight; the
     // late-completion callback corrects the picture (success / manual-reload
     // notice) instead of leaving the user with an error while the package

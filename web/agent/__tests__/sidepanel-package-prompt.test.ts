@@ -442,10 +442,23 @@ describe('getPendingPackagePrompt', () => {
     // Legacy probe fails transiently → retryable, verdict NOT committed.
     expect(await getPendingPackagePrompt()).toEqual({ applicable: false, retryable: true })
 
-    // The legacy bridge recovers → the prompt appears.
-    setAgentWeb({ recipeCheckStatus: vi.fn().mockResolvedValue(legacyStatus()) })
+    // The NEW protocol becomes available. If the transient failure had
+    // wrongly cached the 'legacy-only' verdict, the new bridge would never
+    // be probed and the prompt would stay hidden (the assertion below
+    // distinguishes the two cases — the legacy probe would otherwise
+    // answer on its own).
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue(okStatus()),
+      recipeCheckStatus: vi.fn().mockResolvedValue(legacyStatus()),
+    })
     const result = await getPendingPackagePrompt()
     expect(result?.applicable).toBe(true)
+    if (!result?.applicable || !('package' in result) || !result.package) {
+      throw new Error('expected a prompt')
+    }
+    // The NEW protocol won (its package id), not the legacy one.
+    expect(result.package.id).toBe('world.jmail.archive')
+    expect(result.legacy).toBeUndefined()
   })
 })
 
@@ -702,10 +715,58 @@ describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
       // storage write, no second tab reload), and its REAL outcome reaches
       // the retry.
       const retry = enableLegacyRecipeAndReload('world.jmail.messages')
+      await vi.advanceTimersByTimeAsync(0)
       expect(recipeEnable).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(4_000)
       expect(await retry).toMatchObject({ ok: true, reloaded: true })
       expect(recipeEnable).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('forwards the late legacy outcome to onSettledLate after the client timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const recipeEnable = vi.fn(
+        () =>
+          new Promise<{ ok?: boolean; reloaded?: boolean }>(resolve => {
+            setTimeout(() => resolve({ ok: true, reloaded: true }), 12_000)
+          }),
+      )
+      setAgentWeb({ recipeEnable })
+      const onSettledLate = vi.fn()
+      const pending = enableLegacyRecipeAndReload('world.jmail.messages', onSettledLate)
+      await vi.advanceTimersByTimeAsync(8_100)
+      expect(await pending).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
+
+      // The bridge call lands afterwards → its real outcome reaches the
+      // modal through the callback (it must not stay on stale timeout
+      // guidance).
+      await vi.advanceTimersByTimeAsync(4_000)
+      expect(onSettledLate).toHaveBeenCalledTimes(1)
+      expect(onSettledLate).toHaveBeenCalledWith(expect.objectContaining({ ok: true }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not replay a settled outcome to a later attempt (a stale success must not be reported)', async () => {
+    vi.useFakeTimers()
+    try {
+      const recipeEnable = vi.fn().mockResolvedValue({ ok: true, reloaded: true })
+      setAgentWeb({ recipeEnable })
+      expect(await enableLegacyRecipeAndReload('world.jmail.messages')).toMatchObject({ ok: true })
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
+
+      // The user opts in again later (e.g. the package was disabled in
+      // between): the settled outcome must NOT be replayed — the bridge is
+      // called again so the real state is written.
+      await vi.advanceTimersByTimeAsync(0)
+      const again = enableLegacyRecipeAndReload('world.jmail.messages')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(recipeEnable).toHaveBeenCalledTimes(2)
+      expect(await again).toMatchObject({ ok: true })
     } finally {
       vi.useRealTimers()
     }
@@ -765,7 +826,7 @@ describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
     }
   })
 
-  it('lets a retry start a fresh enable when the previous call never settles', async () => {
+  it('never starts a second enable for a hung legacy call (no double commit / double reload)', async () => {
     vi.useFakeTimers()
     try {
       const recipeEnable = vi.fn(
@@ -780,14 +841,16 @@ describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
       expect(await pending).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
       expect(recipeEnable).toHaveBeenCalledTimes(1)
 
-      // The hung entry is dropped after the timeout, so the next attempt
-      // issues a fresh enable instead of awaiting the dead call forever.
+      // The hung call stays tracked: a retry awaits the SAME call (and
+      // times out with it) instead of issuing a second enable that could
+      // commit twice and reload the tab twice.
       await vi.advanceTimersByTimeAsync(8_100)
       const retry = enableLegacyRecipeAndReload('world.jmail.messages')
       await vi.advanceTimersByTimeAsync(0)
-      expect(recipeEnable).toHaveBeenCalledTimes(2)
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(8_100)
       expect(await retry).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
