@@ -33,6 +33,7 @@ import { keyboardShortcuts } from './keyboardShortcuts'
 import { extension } from './extension'
 import { sidePanelRecipe } from './sidePanelRecipe'
 import { sidePanelPackage } from './sidePanelPackage'
+import { webmcpPackages } from './webmcpPackages'
 import { execPolicy } from './execPolicy'
 import { assets } from './assets'
 import { processes } from './processes'
@@ -93,6 +94,7 @@ export const zhCN = {
   extension,
   sidePanelRecipe,
   sidePanelPackage,
+  webmcpPackages,
   execPolicy,
   assets,
   processes,
