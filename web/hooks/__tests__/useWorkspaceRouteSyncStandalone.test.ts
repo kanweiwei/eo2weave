@@ -301,4 +301,107 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     expect(setActiveConversationSpy).toHaveBeenCalledTimes(2)
     expect(setActiveConversationSpy).toHaveBeenNthCalledWith(2, 'chat-b')
   })
+
+  it('stale-completion repair goes through the workspace-switch path (workspace and conversation move together)', async () => {
+    // Finding: the repair called setActive(newest) WITHOUT switching the
+    // workspace, so when navigation reached chat-b while project state was
+    // loading (chat-b's effect early-returned) the conversation store could
+    // point at chat-b while the workspace store still pointed at chat-a.
+    // The repair must run the FULL sync — switchWorkspace included.
+    let settleSetActiveA: (() => void) | null = null
+    const setActiveAGate = new Promise<void>((resolve) => {
+      settleSetActiveA = resolve
+    })
+
+    setupStores({
+      conversations: [
+        { id: 'chat-a', kind: 'direct' },
+        { id: 'chat-b', kind: 'direct' },
+      ],
+      activeWorkspaceId: null,
+    })
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      if (id === 'chat-a') await setActiveAGate
+      useConversationStore.setState({ activeConversationId: id })
+    })
+    // First sync switches to chat-a; the repair must switch to chat-b.
+    switchWorkspaceSpy.mockImplementation(async (id: string) => {
+      useConversationContextStore.setState({ activeWorkspaceId: id })
+    })
+
+    const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+      initialProps: { chatId: 'chat-a' },
+    })
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-a'))
+    expect(useConversationContextStore.getState().activeWorkspaceId).toBe('chat-a')
+
+    // Navigate to chat-b while project state is loading: its effect
+    // early-returns, so without a full-sync repair chat-b would never get
+    // its workspace switch.
+    useProjectStore.setState({ isLoading: true })
+    rerender({ chatId: 'chat-b' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    settleSetActiveA!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The repair switched the workspace to chat-b (not a bare setActive):
+    expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-b')
+    expect(useConversationContextStore.getState().activeWorkspaceId).toBe('chat-b')
+    expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+  })
+
+  it('a navigation that lands DURING the repair is not overwritten: newer route wins', async () => {
+    // Finding: the repair committed setActive(newest) after its await
+    // without re-checking the route target, so a navigation that happened
+    // while the repair was suspended could be overwritten by the older
+    // repair. The repair must re-check the ref after every await.
+    let settleSetActiveB: (() => void) | null = null
+    const setActiveBGate = new Promise<void>((resolve) => {
+      settleSetActiveB = resolve
+    })
+
+    setupStores({
+      conversations: [
+        { id: 'chat-a', kind: 'direct' },
+        { id: 'chat-b', kind: 'direct' },
+        { id: 'chat-c', kind: 'direct' },
+      ],
+    })
+    switchWorkspaceSpy.mockImplementation(async (id: string) => {
+      useConversationContextStore.setState({ activeWorkspaceId: id })
+    })
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      if (id === 'chat-b') await setActiveBGate
+      useConversationStore.setState({ activeConversationId: id })
+    })
+
+    const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+      initialProps: { chatId: 'chat-a' },
+    })
+    await waitFor(() => expect(useConversationStore.getState().activeConversationId).toBe('chat-a'))
+
+    // Navigate to chat-b; its sync suspends inside setActive (gated).
+    rerender({ chatId: 'chat-b' })
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-b'))
+    // While chat-b's setActive is suspended, navigate AGAIN to chat-c. This
+    // bumps chat-b's effect away (the whole hook effect re-runs for chat-c,
+    // whose sync now races the repair).
+    rerender({ chatId: 'chat-c' })
+    await waitFor(() => expect(useConversationStore.getState().activeConversationId).toBe('chat-c'))
+
+    // Chat-b's suspended setActive resumes and commits — that internal
+    // commit cannot be undone — but the repair must follow the NEWEST
+    // target (chat-c), never let chat-b win.
+    settleSetActiveB!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useConversationContextStore.getState().activeWorkspaceId).toBe('chat-c')
+    expect(useConversationStore.getState().activeConversationId).toBe('chat-c')
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+  })
 })

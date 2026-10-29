@@ -512,9 +512,21 @@ export const useProjectStore = create<ProjectState>()(
         // awaits), the host rows are re-bound, AND the project row is
         // deleted — all before the next chained deletion's selection runs,
         // so it can never pick a project whose row is already gone.
-        // Failures propagate to the caller's catch (the chain always resets
-        // to resolved, never wedges).
-        await (projectDeletionRebindChain = projectDeletionRebindChain
+        //
+        // The predecessor's rejection is SWALLOWED before this section is
+        // attached (`.catch(() => {})`): a plain `.then(...)` chain would
+        // skip every queued section after a failure, leaving those projects
+        // undeleted while their callers saw... nothing resolve. With the
+        // swallow, every queued deletion runs regardless — but this caller
+        // still observes its own failure, because the local `section` link
+        // this function awaits carries the section's rejection. Ordering is
+        // preserved: sections execute strictly in queue order whether or not
+        // earlier ones failed.
+        const section = projectDeletionRebindChain
+          .catch(() => {
+            // A failed predecessor must not strand this deletion: its error
+            // was already reported to ITS caller via its own rejected link.
+          })
           .then(async () => {
             const remaining = await repo.findAllProjects()
             const nextProjectId = remaining.find((p) => p.id !== projectId)?.id || ''
@@ -570,13 +582,13 @@ export const useProjectStore = create<ProjectState>()(
               await useConversationContextStore.getState().refreshWorkspaces()
             }
           })
-          .catch((e: unknown) => {
-            // The chain itself must stay resolved so later deletions are not
-            // wedged behind a failed one; the error still propagates to THIS
-            // caller, whose catch aborts the deletion (retryable).
-            projectDeletionRebindChain = Promise.resolve()
-            throw e
-          }))
+        // The module-level chain keeps the section's rejection until the
+        // NEXT caller's `.catch` prefix swallows it, so awaiting the local
+        // link propagates this section's failure to THIS caller's catch
+        // (retryable), while later callers are insulated by their own
+        // prefix and keep draining.
+        projectDeletionRebindChain = section
+        await section
 
         await get().refreshProjects()
 

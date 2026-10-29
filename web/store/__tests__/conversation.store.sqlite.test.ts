@@ -1239,6 +1239,48 @@ describe('conversation.store.sqlite tool-call routing', () => {
       expect(toastErrorMock).toHaveBeenCalled()
     })
 
+    it('overlapping kind transitions of one conversation persist in call order (no stale rollback)', async () => {
+      // Finding: two overlapping transitions persisted out of order — an
+      // earlier write failing AFTER a later one already persisted rolled the
+      // in-memory kind back to a value SQLite never stored, so the UI
+      // disagreed with a reload. Transitions of the same conversation are
+      // serialized on a per-conversation chain.
+      const store = useConversationStore.getState()
+      const conv = store.createNew('race-kind', { kind: 'direct' })
+
+      // First call (direct → project) suspends inside the persist write.
+      let releaseFirst: (() => void) | null = null
+      conversationRepoUpdateKindMock.mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            releaseFirst = () => reject(new Error('first write failed'))
+          })
+      )
+      const first = useConversationStore.getState().setConversationKind(conv.id, 'project')
+
+      // Second call (project → direct) is QUEUED behind the first: it must
+      // not touch updateKind until the first write settled.
+      const second = useConversationStore.getState().setConversationKind(conv.id, 'direct')
+      // Let the first call reach its persist write (async: the meta-persist
+      // await resolves first), then prove the second is still queued.
+      await vi.waitFor(() => expect(conversationRepoUpdateKindMock).toHaveBeenCalledTimes(1))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledTimes(1)
+
+      // First write fails; the second write then runs and succeeds.
+      releaseFirst!()
+      const [firstOk, secondOk] = await Promise.all([first, second])
+
+      expect(firstOk).toBe(false)
+      expect(secondOk).toBe(true)
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledTimes(2)
+      // Call order preserved: project was attempted BEFORE direct.
+      expect(conversationRepoUpdateKindMock.mock.calls.map((c) => c[1])).toEqual(['project', 'direct'])
+      // In-memory kind matches the last PERSISTED value (direct), and the
+      // failed first call could not clobber it back to the pre-race kind.
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+    })
+
     it('convertDirectToProject runs folder authorization then upgrades the kind', async () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('convert-me', { kind: 'direct' })

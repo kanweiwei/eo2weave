@@ -229,11 +229,29 @@ export const HOST_CAPABLE_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * Tools bound to the HOST PROJECT's data even though they need no folder
+ * authorization: `delegate_to` reaches project agents (a direct-mode agent
+ * must not expose or switch into host-project personas), and the dev-only
+ * `db_query` runs SQL over the host project's OPFS SQLite database. A
+ * standalone chat has no project, so both are excluded unconditionally —
+ * dev-mode inclusion of `db_query` changes nothing: "dev only" gates WHO may
+ * register it, not WHAT data it can reach.
+ */
+export const PROJECT_BOUND_TOOLS: ReadonlySet<string> = new Set([
+  'delegate_to',
+  'db_query',
+])
+
+/**
  * Check if a tool should be excluded in direct mode (folder-less conversation).
- * Unknown tools are kept — only the explicit folder-dependent set is removed.
+ * Unknown tools are kept — only the explicit exclusion sets are removed.
  */
 export function isToolAllowedInDirectMode(toolName: string): boolean {
-  return !FOLDER_DEPENDENT_TOOLS.has(toolName) && !HOST_CAPABLE_TOOLS.has(toolName)
+  return (
+    !FOLDER_DEPENDENT_TOOLS.has(toolName) &&
+    !HOST_CAPABLE_TOOLS.has(toolName) &&
+    !PROJECT_BOUND_TOOLS.has(toolName)
+  )
 }
 
 /**

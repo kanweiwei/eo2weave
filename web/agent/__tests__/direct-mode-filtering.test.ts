@@ -258,4 +258,59 @@ describe('directMode tool filtering', () => {
     expect(parsed.ok).toBe(true)
     expect(parsed.data?.answer).toBe('yes')
   })
+
+  // Project-bound tools (delegate_to, dev-only db_query) reach the HOST
+  // PROJECT's data without needing a folder authorization: delegate_to
+  // switches into project-agent personas, db_query runs SQL over the host
+  // project's OPFS SQLite. A standalone chat has no project, so both are
+  // excluded in direct mode — at definition, execution, and no-retry layers.
+  it('project-bound tools (delegate_to, db_query) are excluded from direct mode', () => {
+    expect(isToolAllowedInDirectMode('delegate_to')).toBe(false)
+    expect(isToolAllowedInDirectMode('db_query')).toBe(false)
+
+    const registry = getToolRegistry()
+    const names = (direct: boolean) =>
+      registry.getToolDefinitionsForMode('act', { directMode: direct }).map((d) => d.function.name)
+
+    // delegate_to is registered in project contexts (db_query only in dev
+    // builds, so it may legitimately be absent from the registry here).
+    expect(names(false)).toContain('delegate_to')
+    expect(names(true)).not.toContain('delegate_to')
+    expect(names(true)).not.toContain('db_query')
+  })
+
+  it('project-bound tools are rejected by execute()/executeNoRetry() in direct mode', async () => {
+    const registry = getToolRegistry()
+    const directContext = {
+      directoryHandle: null,
+      directMode: true,
+    } as Parameters<typeof registry.execute>[2]
+
+    for (const name of ['delegate_to', 'db_query'] as const) {
+      const raw = await registry.execute(name, {}, directContext)
+      expect(JSON.parse(raw) as { error?: string }, name).toHaveProperty(
+        'error',
+        `Tool "${name}" is not available in a standalone chat (no folder authorized).`
+      )
+      const noRetryRaw = await registry.executeNoRetry(name, {}, directContext)
+      expect(JSON.parse(noRetryRaw) as { error?: string }, name).toHaveProperty(
+        'error',
+        `Tool "${name}" is not available in a standalone chat (no folder authorized).`
+      )
+    }
+
+    // Zero drift: without directMode the tools still reach their executors
+    // (delegate_to with an unknown target returns its specific INVALID_INPUT /
+    // unknown-target error envelope — NOT the direct-mode guard message).
+    const projectContext = {
+      directoryHandle: null,
+    } as unknown as Parameters<typeof registry.executeNoRetry>[2]
+    const raw = await registry.executeNoRetry(
+      'delegate_to',
+      { target_agent_id: '', task: 'x' },
+      projectContext
+    )
+    const parsed = JSON.parse(raw) as { error?: { code?: string } }
+    expect(parsed.error?.code).not.toBeUndefined()
+  })
 })

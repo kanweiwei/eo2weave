@@ -114,6 +114,59 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 //=============================================================================
 import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
+
+/**
+ * Per-conversation serialization for kind transitions (setConversationKind).
+ * Overlapping transitions of the SAME conversation must persist in call
+ * order: an earlier write failing after a later one already persisted would
+ * otherwise roll the in-memory kind back to a value SQLite never stored —
+ * UI and reload would disagree. Different conversations chain independently.
+ */
+const kindTransitionChains = new Map<string, Promise<boolean>>()
+
+/**
+ * One optimistic-update + persist + rollback-on-failure kind transition.
+ * Runs INSIDE the per-conversation chain, so no two transitions of the same
+ * conversation interleave their bookkeeping.
+ */
+async function applyConversationKind(id: string, kind: 'direct' | 'project'): Promise<boolean> {
+  const store = useConversationStoreSQLite
+  const previousKind = store.getState().conversations.find((c) => c.id === id)?.kind
+  store.setState((state) => {
+    const conv = state.conversations.find((c) => c.id === id)
+    if (conv) {
+      conv.kind = kind
+    }
+  })
+  const conv = store.getState().conversations.find((c) => c.id === id)
+  if (!conv) return false
+  try {
+    // Kind changes go through the dedicated transition write so a generic
+    // meta save racing this change cannot carry a stale kind into SQLite.
+    await persistConversationKind(id, kind)
+  } catch (error) {
+    console.error(
+      '[conversation.store] Failed to persist conversation kind on setConversationKind:',
+      error
+    )
+    // Roll the in-memory kind back ONLY if it still reflects THIS call's
+    // optimistic update: with transitions serialized, the only way the kind
+    // moved on is a generic path outside this chain — blindly restoring
+    // previousKind would clobber that newer committed value.
+    store.setState((state) => {
+      const stale = state.conversations.find((c) => c.id === id)
+      if (stale && stale.kind === kind) {
+        stale.kind = previousKind
+      }
+    })
+    toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
+    // Explicit failure: callers must not treat a rolled-back kind as
+    // persisted (the error is already surfaced here, so callers only
+    // branch on the result — they do not re-toast).
+    return false
+  }
+  return true
+}
 import {
   runAgentImpl,
   type ConversationAgentRunInternals,
@@ -1508,41 +1561,30 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     setConversationKind: async (id, kind) => {
-      const previousKind = get().conversations.find((c) => c.id === id)?.kind
-      set((state) => {
-        const conv = state.conversations.find((c) => c.id === id)
-        if (conv) {
-          conv.kind = kind
-        }
-      })
-      const conv = get().conversations.find((c) => c.id === id)
-      if (!conv) return false
-      try {
-        // Kind changes go through the dedicated transition write so a generic
-        // meta save racing this change cannot carry a stale kind into SQLite.
-        await persistConversationKind(id, kind)
-      } catch (error) {
-        console.error(
-          '[conversation.store] Failed to persist conversation kind on setConversationKind:',
-          error
-        )
-        // Roll the in-memory kind back ONLY if it still reflects THIS call's
-        // optimistic update: a concurrent transition of the same conversation
-        // may have committed a different kind after ours, and blindly
-        // restoring previousKind would clobber the newer committed value.
-        set((state) => {
-          const stale = state.conversations.find((c) => c.id === id)
-          if (stale && stale.kind === kind) {
-            stale.kind = previousKind
-          }
+      // Serialize per-conversation kind transitions: two overlapping
+      // transitions for the same conversation must persist in call order.
+      // Out-of-order writes would interleave the rollback bookkeeping below
+      // with a LATER transition's optimistic update — an earlier write
+      // failing after a later one already persisted could then roll the
+      // in-memory kind back to a value that no longer matches SQLite.
+      // Different conversations remain independent (per-key chains).
+      const predecessor = kindTransitionChains.get(id) ?? Promise.resolve()
+      // Run the transition inside the chain: the map holds the FULL link
+      // (prefix + apply step), so a concurrent caller queues behind the
+      // whole transition — not just the swallowed predecessor prefix. The
+      // entry is cleared once no newer caller has replaced it, so the map
+      // cannot grow unboundedly on long-lived sessions.
+      const section = predecessor
+        .catch(() => {
+          // A failed earlier transition must not skip this one: its failure
+          // was already reported by ITS own call (boolean + toast).
         })
-        toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
-        // Explicit failure: callers must not treat a rolled-back kind as
-        // persisted (the error is already surfaced here, so callers only
-        // branch on the result — they do not re-toast).
-        return false
-      }
-      return true
+        .then(() => applyConversationKind(id, kind))
+        .finally(() => {
+          if (kindTransitionChains.get(id) === section) kindTransitionChains.delete(id)
+        })
+      kindTransitionChains.set(id, section)
+      return section
     },
 
     convertDirectToProject: async (id) => {

@@ -23,6 +23,13 @@ import { chatPath } from '@/lib/route-paths'
  *   chats space shows no project semantics.
  * - A chatId that resolves to a non-direct conversation redirects to /chats
  *   (standalone chats never surface project conversations).
+ *
+ * Liveness model: `newestChatIdRef` tracks the newest route target the hook
+ * has seen, assigned BEFORE the loading guards (so a route whose effect
+ * early-returns still updates it) and blanked on cleanup (so a route left
+ * entirely cannot be repaired toward). Every await inside the sync is
+ * followed by a liveness re-check against that ref — a continuation whose
+ * target was superseded mid-flight discards itself instead of committing.
  */
 export function useWorkspaceRouteSyncStandalone(chatId: string) {
   const router = useRouter()
@@ -32,17 +39,6 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
   // /chats/:id can land before loadFromDB resolves, and without this
   // dependency the sync never retries (leaving the chat inactive).
   const conversationsLoaded = useConversationStore((s) => s.loaded)
-  // Newest route target the effect has started a sync for. A stale
-  // continuation's generation check can only discard the OLD run — it cannot
-  // undo the store write that the discarded run's in-flight `setActive` may
-  // still commit internally (the store's own setActive commits before the
-  // hook regains control). When a stale completion fires, the repair below
-  // re-asserts the newest route's choice so the store cannot end on a
-  // superseded chat. The ref is assigned BEFORE the guards and blanked on
-  // cleanup: a next route whose effect early-returns (project state still
-  // loading) must still update the target, and a route that left /chats/:id
-  // entirely must leave it empty — otherwise a stale completion reads the
-  // old chat and re-activates it after the user has moved on.
   const newestChatIdRef = useRef<string>('')
 
   useEffect(() => {
@@ -50,13 +46,23 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
     if (!chatId) return
     if (!initialized || projectLoading) return
 
-    // Generation token: only the newest sync run may touch the stores. A
-    // slow switch to chat A must never land after a newer switch to chat B.
-    let generation = 0
-
-    const syncFromRoute = async () => {
-      const myGeneration = ++generation
-      const cancelled = () => myGeneration !== generation
+    /**
+     * One full URL → store sync for `target`: ensure the project host,
+     * validate the conversation, switch the workspace, activate the chat.
+     * Used by BOTH the normal route run and the stale-completion repair, so
+     * a repair activates the newest chat through exactly the same
+     * workspace-switching path as normal route sync — never a bare
+     * setActive that would leave the workspace and conversation stores
+     * pointing at different chats.
+     *
+     * Liveness: after every await the target is re-checked against
+     * `newestChatIdRef`; a superseded continuation stops touching stores.
+     * Redirects fire only from the normal route run (`allowRedirect`) — the
+     * repair never redirects, because its target may itself be superseded
+     * and the newest route's own sync owns navigation.
+     */
+    const runSync = async (target: string, allowRedirect: boolean): Promise<void> => {
+      const isLive = () => newestChatIdRef.current === target
 
       // Step 0: ensure a project host exists. Landing on /chats directly
       // skips the /projects route sync, so activeProjectId may still be ''.
@@ -68,87 +74,98 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           // Degenerate state (every project deleted): the chats home still
           // renders, but an individual chat has no workspace host.
           console.warn('[chatsSync] no project available as workspace host, redirecting to /chats')
-          if (!cancelled()) router.replace('/chats')
+          if (allowRedirect && isLive()) router.replace('/chats')
           return
         }
         const switched = await projectState.setActiveProject(fallback.id)
         if (!switched) {
-          if (!cancelled()) router.replace('/chats')
+          if (allowRedirect && isLive()) router.replace('/chats')
           return
         }
-        if (cancelled()) return
+        if (!isLive()) return
       }
 
       // Step 1: the conversation must exist and be standalone (kind='direct').
       const convState = useConversationStore.getState()
       if (!convState.loaded) return
-      const conversation = convState.conversations.find((c) => c.id === chatId)
+      const conversation = convState.conversations.find((c) => c.id === target)
       if (!conversation || conversation.kind !== 'direct') {
         console.warn('[chatsSync] standalone chat not found or not direct, redirecting to /chats', {
-          chatId,
+          chatId: target,
           found: !!conversation,
         })
-        if (!cancelled()) router.replace('/chats')
+        if (allowRedirect && isLive()) router.replace('/chats')
         return
       }
 
-      if (cancelled()) return
+      if (!isLive()) return
 
       // Step 2: switch workspace (OPFS/SQLite state). switchWorkspace
       // lazy-creates the workspace record on first visit, same as the
       // /projects route. The workspace store serializes concurrent switches
-      // internally; the generation check after the await drops stale
+      // internally; the liveness re-check after the await drops stale
       // completions so a slow switch to chat A never lands after the user
       // has already moved on to chat B.
       const ctxState = useConversationContextStore.getState()
-      const activeWorkspaceId = ctxState.activeWorkspaceId
-      if (activeWorkspaceId !== chatId) {
+      if (ctxState.activeWorkspaceId !== target) {
         try {
-          await ctxState.switchWorkspace(chatId)
+          await ctxState.switchWorkspace(target)
         } catch (error) {
-          if (!cancelled()) {
-            console.warn('[chatsSync] switchWorkspace failed, redirecting to /chats', { chatId, error })
+          if (allowRedirect && isLive()) {
+            console.warn('[chatsSync] switchWorkspace failed, redirecting to /chats', { target, error })
             router.replace('/chats')
           }
           return
         }
-        if (cancelled()) return
+        if (!isLive()) return
       } else {
         await ctxState.refreshPendingChanges(true)
-        if (cancelled()) return
+        if (!isLive()) return
       }
 
-      // Step 3: activate the conversation (loads messages). The generation
-      // check after the await drops stale completions: a slow setActive(chatId)
-      // for chat A must never overwrite the active conversation chosen by a
-      // newer route sync to chat B.
-      const activeConversationId = useConversationStore.getState().activeConversationId
-      if (activeConversationId !== chatId) {
-        await useConversationStore.getState().setActive(chatId)
-        if (!cancelled()) return
-        // Stale completion — but discarding the run is not enough: this
-        // run's `setActive` may have already committed chat-a INSIDE the
-        // store (the store commits before the hook regains control). Re-run
-        // the activation for the newest route so the store ends on the chat
-        // the user last navigated to, never the stale one. The re-run goes
-        // through the same generation-guarded path and is a no-op when the
-        // newest sync already landed.
-        const newest = newestChatIdRef.current
-        if (newest && newest !== useConversationStore.getState().activeConversationId) {
-          await useConversationStore.getState().setActive(newest)
-        }
-        return
+      // Step 3: activate the conversation (loads messages). The liveness
+      // re-check cannot undo a commit that already landed inside the store,
+      // so a stale completion is repaired by the caller below — through
+      // this same full-sync path, never a bare setActive.
+      if (useConversationStore.getState().activeConversationId !== target) {
+        await useConversationStore.getState().setActive(target)
+      }
+    }
+
+    const syncFromRoute = async () => {
+      await runSync(chatId, true)
+
+      // Stale-completion repair. If this run's target was superseded while
+      // its awaits were in flight, the store may hold a conversation this
+      // run's setActive committed internally (the store commits before the
+      // hook regains control). Re-run the FULL sync for the newest route
+      // target — workspace switch included, so conversation and workspace
+      // stores always move together. The loop re-checks the ref after every
+      // pass: if navigation advanced again mid-repair, the repair follows
+      // the newer target instead of an older one winning (each pass runs
+      // the full workspace+activation choreography for its target, and a
+      // superseded pass's own liveness checks stop it mid-flight). An empty
+      // ref (route left entirely) ends the repair. `repaired` starts at the
+      // target this run just completed, so a clean run performs no extra
+      // pass.
+      let repaired: string | null = chatId
+      for (;;) {
+        const target = newestChatIdRef.current
+        if (!target || target === repaired) return
+        await runSync(target, false)
+        repaired = target
       }
     }
 
     void syncFromRoute()
 
     return () => {
-      generation++
       // The route no longer points at a chat (unmount or a next route whose
       // effect early-returned): a stale setActive completion must NOT repair
       // toward the old target — there is no newest route that re-asserts a
-      // choice, so the repair would re-activate a chat the user left.
+      // choice, so the repair would re-activate a chat the user left. (A
+      // next route's effect body re-assigns the ref synchronously right
+      // after this cleanup, so a live navigation never observes the blank.)
       newestChatIdRef.current = ''
     }
   }, [chatId, router, initialized, projectLoading, conversationsLoaded])

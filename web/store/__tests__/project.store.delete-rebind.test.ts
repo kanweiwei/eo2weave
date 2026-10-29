@@ -95,6 +95,45 @@ describe('project.store deleteProject host rebind', () => {
     expect(deleteProjectMock).not.toHaveBeenCalled()
   })
 
+  it('a failed deletion does not strand already-queued deletions (queue keeps draining)', async () => {
+    // Finding: the shared chain was attached with a bare `.then(...)`, so
+    // when p-a's rebind failed the chain rejected and p-b's queued section
+    // was SKIPPED — p-b's caller resolved false for a deletion never
+    // attempted and the project stayed alive. Each queued section must
+    // swallow the predecessor's rejection (the failed caller still sees its
+    // own error via its own link) so the queue drains in order.
+    let alive = new Set(['p-a', 'p-b'])
+    findAllProjectsMock.mockImplementation(async () =>
+      [...alive].map((id) => ({ id, name: id, status: 'active', createdAt: 1, updatedAt: 1 }))
+    )
+    deleteProjectMock.mockImplementation((async (id: string) => {
+      alive.delete(id)
+    }) as never)
+    // The workspace query is keyed by project (like production): p-a owns
+    // host-1, p-b owns host-2. p-a's rebind fails; p-b's rebind must still
+    // run afterwards and must not inherit p-a's failure.
+    findAllWorkspacesByProjectIncludingDirectMock.mockImplementation((async (projectId: string) =>
+      projectId === 'p-a'
+        ? [{ id: 'host-1', projectId: 'p-a' } as never]
+        : [{ id: 'host-2', projectId: 'p-b' } as never]) as never)
+    updateWorkspaceMock.mockImplementation((async (ws: { id: string; projectId: string }) => {
+      if (ws.id === 'host-1') throw new Error('rebind boom')
+    }) as never)
+
+    const [okA, okB] = await Promise.all([
+      useProjectStore.getState().deleteProject('p-a'),
+      useProjectStore.getState().deleteProject('p-b'),
+    ])
+
+    // The failed deletion reports failure to ITS caller only...
+    expect(okA).toBe(false)
+    expect(useProjectStore.getState().error).toContain('rebind boom')
+    // ...and the queued deletion still RAN and succeeded.
+    expect(okB).toBe(true)
+    expect(deleteProjectMock).toHaveBeenCalledWith('p-b')
+    expect(alive.has('p-b')).toBe(false)
+  })
+
   it('last-project deletion rebinds hosts to empty string (no-project), not the dead id', async () => {
     // Only the project being deleted remains.
     useProjectStore.setState({ activeProjectId: '', projects: [project('p-only')] } as never)
