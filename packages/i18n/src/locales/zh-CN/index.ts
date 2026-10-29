@@ -37,6 +37,7 @@ import { assets } from './assets'
 import { processes } from './processes'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { webmcpTools } from './webmcpTools'
 export const zhCN = {
   common,
   app,
@@ -96,4 +97,5 @@ export const zhCN = {
   processes,
   tools,
   schedule,
+  webmcpTools,
 } as const
