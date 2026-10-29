@@ -38,13 +38,17 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
   // still commit internally (the store's own setActive commits before the
   // hook regains control). When a stale completion fires, the repair below
   // re-asserts the newest route's choice so the store cannot end on a
-  // superseded chat.
-  const newestChatIdRef = useRef<string>(chatId)
+  // superseded chat. The ref is assigned BEFORE the guards and blanked on
+  // cleanup: a next route whose effect early-returns (project state still
+  // loading) must still update the target, and a route that left /chats/:id
+  // entirely must leave it empty — otherwise a stale completion reads the
+  // old chat and re-activates it after the user has moved on.
+  const newestChatIdRef = useRef<string>('')
 
   useEffect(() => {
+    newestChatIdRef.current = chatId
     if (!chatId) return
     if (!initialized || projectLoading) return
-    newestChatIdRef.current = chatId
 
     // Generation token: only the newest sync run may touch the stores. A
     // slow switch to chat A must never land after a newer switch to chat B.
@@ -141,6 +145,11 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
 
     return () => {
       generation++
+      // The route no longer points at a chat (unmount or a next route whose
+      // effect early-returned): a stale setActive completion must NOT repair
+      // toward the old target — there is no newest route that re-asserts a
+      // choice, so the repair would re-activate a chat the user left.
+      newestChatIdRef.current = ''
     }
   }, [chatId, router, initialized, projectLoading, conversationsLoaded])
 }

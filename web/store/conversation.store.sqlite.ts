@@ -183,11 +183,13 @@ interface ConversationState {
   /**
    * One-way kind upgrade: 'direct' → 'project' after folder authorization.
    * No downgrade path by design (a mounted folder has no unmount→direct
-   * semantic). Persisted via a dedicated kind write (NOT the generic
+   * Persisted via a dedicated kind write (NOT the generic
    * saveMeta path, whose snapshot of `kind` can race a concurrent transition);
-   * resolves only after the write settles so callers can detect failure.
+   * resolves only after the write settles. Returns true when the kind is
+   * durably persisted; false when the conversation is missing or the write
+   * failed (the in-memory kind is rolled back before resolving false).
    */
-  setConversationKind: (id: string, kind: 'project' | 'direct') => Promise<void>
+  setConversationKind: (id: string, kind: 'project' | 'direct') => Promise<boolean>
   /**
    * User-facing conversion of a standalone chat into a project conversation.
    * Launches the folder-authorization flow (folder picker for the active
@@ -1514,7 +1516,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         }
       })
       const conv = get().conversations.find((c) => c.id === id)
-      if (!conv) return
+      if (!conv) return false
       try {
         // Kind changes go through the dedicated transition write so a generic
         // meta save racing this change cannot carry a stale kind into SQLite.
@@ -1535,7 +1537,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           }
         })
         toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
+        // Explicit failure: callers must not treat a rolled-back kind as
+        // persisted (the error is already surfaced here, so callers only
+        // branch on the result — they do not re-toast).
+        return false
       }
+      return true
     },
 
     convertDirectToProject: async (id) => {
@@ -1568,11 +1575,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const authorized = await folderState.pickDirectory(projectId)
         if (!authorized) return false
 
-        await get().setConversationKind(id, 'project')
-        // Await the persistence above: if the kind write failed, the in-memory
-        // kind rolled back to 'direct' and the conversion must report failure
-        // instead of a success toast that a reload would disprove.
-        if (get().conversations.find((c) => c.id === id)?.kind !== 'project') {
+        // Consume the explicit result instead of re-inspecting store state:
+        // setConversationKind reports persistence failure through its boolean
+        // (after rolling the in-memory kind back), so a false here means the
+        // conversion did not land and must not report success.
+        const persisted = await get().setConversationKind(id, 'project')
+        if (!persisted) {
           return false
         }
       } catch (error) {

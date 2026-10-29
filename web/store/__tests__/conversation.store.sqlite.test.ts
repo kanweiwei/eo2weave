@@ -1213,22 +1213,26 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('upgrade-me', { kind: 'direct' })
 
-      await useConversationStore.getState().setConversationKind(conv.id, 'project')
+      const persisted = await useConversationStore.getState().setConversationKind(conv.id, 'project')
 
+      expect(persisted).toBe(true)
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
       // The kind change goes through the dedicated updateKind write (not the
       // generic saveMeta path, whose kind snapshot can race a transition).
       expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
     })
 
-    it('setConversationKind restores the previous kind when persistence fails', async () => {
+    it('setConversationKind restores the previous kind and resolves false when persistence fails', async () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('rollback-me', { kind: 'direct' })
 
       conversationRepoUpdateKindMock.mockRejectedValueOnce(new Error('persist failed'))
 
-      await useConversationStore.getState().setConversationKind(conv.id, 'project')
+      // The boolean is the explicit failure contract: callers must be able to
+      // detect the rolled-back kind without re-inspecting store state.
+      const persisted = await useConversationStore.getState().setConversationKind(conv.id, 'project')
 
+      expect(persisted).toBe(false)
       // The in-memory kind rolled back to 'direct' so the session matches
       // what a reload will show (the persisted row kept the old kind).
       expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')

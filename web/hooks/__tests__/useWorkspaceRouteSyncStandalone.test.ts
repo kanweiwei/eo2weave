@@ -218,4 +218,87 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     expect(routerReplaceMock).not.toHaveBeenCalled()
     expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
   })
+
+  it('skips stale-completion repair after the hook unmounts (user left /chats/:id)', async () => {
+    // A's sync is suspended inside setActive('chat-a') when the user leaves
+    // the route entirely (unmount). When A's setActive resolves there is no
+    // newest route target anymore — the repair must NOT read the old ref and
+    // re-activate the chat the user just left.
+    let settleSetActiveA: (() => void) | null = null
+    const setActiveAGate = new Promise<void>((resolve) => {
+      settleSetActiveA = resolve
+    })
+
+    setupStores({
+      conversations: [{ id: 'chat-a', kind: 'direct' }],
+    })
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      if (id === 'chat-a') await setActiveAGate
+      useConversationStore.setState({ activeConversationId: id })
+    })
+
+    const { unmount } = renderHook(() => useWorkspaceRouteSyncStandalone('chat-a'))
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-a'))
+
+    // Leave /chats/:chat-a while setActive is still pending.
+    unmount()
+    settleSetActiveA!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The committed setActive inside the store cannot be undone by the hook,
+    // but the stale completion must not fire ANY further activation: no
+    // repair call re-asserts the abandoned chat.
+    expect(setActiveConversationSpy).toHaveBeenCalledTimes(1)
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+  })
+
+  it('stale-completion repair targets the latest route even when its effect early-returned on loading', async () => {
+    // A's sync is suspended inside setActive('chat-a'); the user navigates to
+    // /chats/chat-b while project state is loading, so chat-b's effect
+    // early-returns BEFORE syncing. The repair must still pick up the
+    // chat-b target (tracked before the loading guards) and re-assert chat-b
+    // — never re-activate the abandoned chat-a.
+    let settleSetActiveA: (() => void) | null = null
+    const setActiveAGate = new Promise<void>((resolve) => {
+      settleSetActiveA = resolve
+    })
+
+    setupStores({
+      conversations: [
+        { id: 'chat-a', kind: 'direct' },
+        { id: 'chat-b', kind: 'direct' },
+      ],
+    })
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      if (id === 'chat-a') await setActiveAGate
+      useConversationStore.setState({ activeConversationId: id })
+    })
+
+    const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+      initialProps: { chatId: 'chat-a' },
+    })
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-a'))
+
+    // Navigate to chat-b while project state is loading: the new effect
+    // returns early, so no sync B ever runs — only the ref tracking
+    // (placed before the guards) learns the new target.
+    useProjectStore.setState({ isLoading: true })
+    rerender({ chatId: 'chat-b' })
+    // Give the (early-returning) effect a tick; nothing should have synced.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(switchWorkspaceSpy).not.toHaveBeenCalledWith('chat-b')
+
+    // A's suspended setActive resumes: the repair must re-assert the LATEST
+    // route target (chat-b), not the abandoned chat-a.
+    settleSetActiveA!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
+    // Exactly two activations: the original chat-a call and the repair to
+    // the latest route target — the repair went to chat-b, not chat-a.
+    expect(setActiveConversationSpy).toHaveBeenCalledTimes(2)
+    expect(setActiveConversationSpy).toHaveBeenNthCalledWith(2, 'chat-b')
+  })
 })
