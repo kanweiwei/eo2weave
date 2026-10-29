@@ -91,9 +91,11 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
         // redirect on timeout instead of pinning the route behind its
         // loading gate indefinitely.
         let switched: boolean
+        let activation: Promise<boolean> | null = null
         try {
+          activation = projectState.setActiveProject(fallback.id)
           switched = await Promise.race([
-            projectState.setActiveProject(fallback.id),
+            activation,
             new Promise<never>((_, reject) =>
               setTimeout(
                 () => reject(new Error(`setActiveProject timed out for ${fallback.id}`)),
@@ -108,6 +110,22 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
               error,
             })
             router.replace('/chats')
+          }
+          // The underlying activation cannot be cancelled and may still commit
+          // its store changes AFTER this navigation — a late commit would
+          // silently repoint the page the user moved to. Observe the abandoned
+          // promise and, if it lands after the route moved on, re-run the full
+          // sync for the newest target so the stores converge back onto the
+          // route's actual chat (same repair shape as syncFromRoute below).
+          if (activation) {
+            void activation
+              .catch(() => {})
+              .then(() => {
+                const newest = newestChatIdRef.current
+                if (newest && newest !== target && !isLive()) {
+                  void runSync(newest, false)
+                }
+              })
           }
           return
         }
@@ -146,9 +164,11 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
       // showing stale chat A under chat B's URL indefinitely.
       const ctxState = useConversationContextStore.getState()
       if (ctxState.activeWorkspaceId !== target) {
+        let pendingSwitch: Promise<void> | null = null
         try {
+          pendingSwitch = ctxState.switchWorkspace(target)
           await Promise.race([
-            ctxState.switchWorkspace(target),
+            pendingSwitch,
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error(`switchWorkspace timed out for ${target}`)), SWITCH_WAIT_TIMEOUT_MS)
             ),
@@ -157,6 +177,20 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           if (allowRedirect && isLive()) {
             console.warn('[chatsSync] switchWorkspace failed, redirecting to /chats', { target, error })
             router.replace('/chats')
+          }
+          // Same late-commit class as Step 0: the abandoned switch cannot be
+          // cancelled and its completion may land on the page the user moved
+          // to. Watch it and re-run the full sync for the newest target once
+          // it settles, so the stores converge back onto the route's chat.
+          if (pendingSwitch) {
+            void pendingSwitch
+              .catch(() => {})
+              .then(() => {
+                const newest = newestChatIdRef.current
+                if (newest && newest !== target && !isLive()) {
+                  void runSync(newest, false)
+                }
+              })
           }
           return
         }
