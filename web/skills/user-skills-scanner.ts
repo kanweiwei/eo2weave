@@ -13,7 +13,7 @@
 import type { Skill, SkillResource } from './skill-types'
 import { parseSkillMd, slugify } from './skill-parser'
 import { copyDirectoryRecursive } from './skill-folder-utils'
-import { unzipSync } from 'fflate'
+import { Unzip, UnzipInflate } from 'fflate'
 import {
   getResourceType,
   getMimeType,
@@ -32,6 +32,99 @@ export interface UserSkillScanResult {
   skills: Skill[]
   resources: SkillResource[]
   errors: string[]
+}
+
+/**
+ * Hard caps enforced DURING zip extraction (before/during unzip), so a
+ * decompression-bomb archive cannot exhaust browser memory: every entry is
+ * rejected and its data discarded as soon as any cap is exceeded.
+ */
+export const ZIP_IMPORT_LIMITS = {
+  /** Max compressed size of a single zip entry (bytes). */
+  MAX_ENTRY_COMPRESSED_SIZE: 10 * 1024 * 1024,
+  /** Max expanded size of a single zip entry (bytes). */
+  MAX_ENTRY_SIZE: 10 * 1024 * 1024,
+  /** Max total expanded size across the whole archive (bytes). */
+  MAX_TOTAL_SIZE: 64 * 1024 * 1024,
+  /** Max number of file entries in the archive. */
+  MAX_ENTRIES: 2000,
+} as const
+
+/**
+ * Extract zip entries incrementally with hard size caps (memory-bomb guard).
+ *
+ * Unlike `unzipSync` — which buffers the entire archive before any limit
+ * can be checked — this streams each entry through fflate's `Unzip` and
+ * discards data as soon as a cap trips, then aborts the extraction.
+ *
+ * @returns the accepted entries (path → data), or throws when a cap is hit.
+ */
+async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Array>> {
+  const limits = ZIP_IMPORT_LIMITS
+  const files: Record<string, Uint8Array> = {}
+  let entryCount = 0
+  let totalSize = 0
+  let failure: Error | null = null
+
+  const unzipper = new Unzip()
+  unzipper.register(UnzipInflate)
+  unzipper.onfile = (file) => {
+    // Directory entries carry no data.
+    if (file.name.endsWith('/')) {
+      file.ondata = () => {}
+      file.start()
+      return
+    }
+    entryCount++
+    if (entryCount > limits.MAX_ENTRIES) {
+      failure = new Error(
+        `ZIP archive has too many entries (limit: ${limits.MAX_ENTRIES}).`,
+      )
+      file.terminate()
+      return
+    }
+    // Pre-check the compressed size from the central directory when present.
+    if (typeof file.size === 'number' && file.size > limits.MAX_ENTRY_COMPRESSED_SIZE) {
+      failure = new Error(
+        `ZIP entry "${file.name}" is too large (${file.size} bytes compressed).`,
+      )
+      file.terminate()
+      return
+    }
+    file.ondata = (err, data) => {
+      if (err) {
+        failure = err instanceof Error ? err : new Error(String(err))
+        return
+      }
+      // Once failed, discard the rest instead of buffering it.
+      if (failure) return
+      totalSize += data.length
+      if (data.length > limits.MAX_ENTRY_SIZE || totalSize > limits.MAX_TOTAL_SIZE) {
+        failure = new Error(
+          'ZIP archive expands beyond the import size limit — it may be a decompression bomb.',
+        )
+        return
+      }
+      files[file.name] = data
+    }
+    file.start()
+  }
+
+  const CHUNK_SIZE = 65_536
+  for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
+    if (failure) throw failure
+    unzipper.push(data.subarray(offset, offset + CHUNK_SIZE), false)
+    // Yield so the (synchronous) decoder callbacks for this chunk run and
+    // any limit trip is observed before feeding more compressed data.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  unzipper.push(new Uint8Array(0), true)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  if (failure) throw failure
+  if (entryCount === 0) {
+    throw new Error('ZIP archive is empty')
+  }
+  return files
 }
 
 /**
@@ -519,8 +612,15 @@ function buildSkillEntry(
  * @returns preview data, or throws if the zip is invalid.
  */
 export async function previewUserSkillZip(zipFile: File): Promise<ZipSkillPreview> {
+  // Size caps BEFORE any unzip work: reject oversized archives up front
+  // instead of buffering them (decompression-bomb guard).
+  if (zipFile.size > ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE) {
+    throw new Error(
+      `ZIP archive is too large (${zipFile.size} bytes; limit: ${ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE} bytes).`,
+    )
+  }
   const buffer = await zipFile.arrayBuffer()
-  const unzipped = unzipSync(new Uint8Array(buffer))
+  const unzipped = await unzipWithLimits(new Uint8Array(buffer))
 
   // Build a list of file paths (skip directory entries ending with '/')
   const allPaths = Object.keys(unzipped).filter((p) => !p.endsWith('/'))
@@ -577,19 +677,25 @@ async function writeZipSkillToOpfs(
   raw: Record<string, Uint8Array>,
   dirName: string,
   commonRoot: string,
+  /** Pre-created directory handle — skips the internal removal when the caller already staged the target. */
+  precreatedDir?: FileSystemDirectoryHandle,
 ): Promise<number> {
-  const opfsRoot = await navigator.storage.getDirectory()
-  const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
-  const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+  let skillDir: FileSystemDirectoryHandle
+  if (precreatedDir) {
+    skillDir = precreatedDir
+  } else {
+    const opfsRoot = await navigator.storage.getDirectory()
+    const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
+    const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
 
-  // Remove existing skill directory to avoid stale files
-  try {
-    await userDir.removeEntry(dirName, { recursive: true })
-  } catch {
-    // Directory doesn't exist yet — fine
+    // Remove existing skill directory to avoid stale files
+    try {
+      await userDir.removeEntry(dirName, { recursive: true })
+    } catch {
+      // Directory doesn't exist yet — fine
+    }
+    skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
   }
-
-  const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
   let fileCount = 0
 
   for (const [path, data] of Object.entries(raw)) {
@@ -628,6 +734,12 @@ async function writeZipSkillToOpfs(
  * For single-skill zips, imports the one skill.
  * For bundle zips, imports all skills.
  *
+ * On failure, only the directories THIS import actually touched are cleaned
+ * up: directories that did not exist before the import are removed, and
+ * directories that were overwritten are restored from a staged backup of
+ * their previous content — a previously installed skill that merely appears
+ * in a failed bundle preview is never deleted.
+ *
  * @param preview  The preview returned by previewUserSkillZip
  * @returns the total number of files written across all skills.
  */
@@ -635,21 +747,162 @@ export async function importUserSkillZip(
   preview: ZipSkillPreview,
 ): Promise<number> {
   const { _raw } = preview
+  const skills = preview.isBundle ? (preview.skills ?? []) : preview.skill ? [preview.skill] : []
 
-  if (!preview.isBundle && preview.skill) {
-    const s = preview.skill
-    return writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot)
+  if (skills.length === 0) return 0
+
+  const opfsRoot = await navigator.storage.getDirectory()
+  const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
+  const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+
+  // Stage 1: back up every target directory that already exists, then remove
+  // it so writeZipSkillToOpfs starts from a clean slate. Backups let us
+  // restore the previous version if a later skill in the bundle fails.
+  const backups = new Map<string, Record<string, Uint8Array>>()
+  const preRemoved = new Set<string>()
+  for (const s of skills) {
+    const existing = await readUserSkillDir(userDir, s.dirName)
+    if (existing) {
+      backups.set(s.dirName, existing)
+      try {
+        await userDir.removeEntry(s.dirName, { recursive: true })
+        preRemoved.add(s.dirName)
+      } catch {
+        // Nothing to remove — fine.
+      }
+    }
   }
 
-  if (preview.isBundle && preview.skills) {
+  // Stage 2: write each skill, tracking exactly what this import wrote.
+  const written = new Set<string>()
+  try {
     let total = 0
-    for (const s of preview.skills) {
-      total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot)
+    for (const s of skills) {
+      // Create the target only when we actually write the skill — an
+      // untouched skill's directory must not be (re)created on failure.
+      const target = preRemoved.has(s.dirName)
+        ? await userDir.getDirectoryHandle(s.dirName, { create: true })
+        : undefined
+      total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
+      written.add(s.dirName)
     }
     return total
+  } catch (e) {
+    // Stage 3 (cleanup): restore overwritten skills from their backups,
+    // remove directories created fresh by this failed import, and recreate
+    // (empty) directories we removed but never reached. Never touch
+    // anything this import did not write or stage.
+    for (const dirName of written) {
+      const backup = backups.get(dirName)
+      if (backup) {
+        try {
+          await restoreUserSkillDir(userDir, dirName, backup)
+        } catch (restoreErr) {
+          console.warn(
+            `[UserSkillsScanner] Failed to restore previous version of ${dirName}:`,
+            restoreErr,
+          )
+        }
+      } else {
+        try {
+          await userDir.removeEntry(dirName, { recursive: true })
+        } catch (cleanupErr) {
+          console.warn(
+            `[UserSkillsScanner] Failed to clean up partial skill install ${dirName}:`,
+            cleanupErr,
+          )
+        }
+      }
+    }
+    for (const s of skills) {
+      if (written.has(s.dirName)) continue
+      const backup = backups.get(s.dirName)
+      if (backup) {
+        // Staged-but-never-reached skill: its previous directory was removed
+        // in stage 1 — restore it so it is exactly as before.
+        try {
+          await restoreUserSkillDir(userDir, s.dirName, backup)
+        } catch (restoreErr) {
+          console.warn(
+            `[UserSkillsScanner] Failed to restore untouched skill ${s.dirName}:`,
+            restoreErr,
+          )
+        }
+      } else if (s.dirName !== undefined) {
+        // Freshly created by the failed write attempt (or its self-removal
+        // path) — remove the partial directory so it never looks installed.
+        try {
+          await userDir.removeEntry(s.dirName, { recursive: true })
+        } catch {
+          // Was never created — fine.
+        }
+      }
+    }
+    throw e
+  }
+}
+
+/**
+ * Read every file under `.skills/user/<dirName>/` into memory (backup).
+ * Returns null when the directory does not exist.
+ */
+async function readUserSkillDir(
+  userDir: FileSystemDirectoryHandle,
+  dirName: string,
+): Promise<Record<string, Uint8Array> | null> {
+  const readRecursive = async (
+    dirHandle: FileSystemDirectoryHandle,
+    prefix: string,
+  ): Promise<Record<string, Uint8Array>> => {
+    const out: Record<string, Uint8Array> = {}
+    for await (const [name, entry] of dirHandle.entries()) {
+      const path = prefix ? `${prefix}/${name}` : name
+      if (entry.kind === 'directory') {
+        const sub = await dirHandle.getDirectoryHandle(name)
+        Object.assign(out, await readRecursive(sub, path))
+      } else {
+        const file = await (entry as FileSystemFileHandle).getFile()
+        out[path] = new Uint8Array(await file.arrayBuffer())
+      }
+    }
+    return out
   }
 
-  return 0
+  try {
+    const skillDir = await userDir.getDirectoryHandle(dirName)
+    return await readRecursive(skillDir, '')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Recreate `.skills/user/<dirName>/` from a backup produced by
+ * `readUserSkillDir` (restore path for a failed overwrite-import).
+ */
+async function restoreUserSkillDir(
+  userDir: FileSystemDirectoryHandle,
+  dirName: string,
+  files: Record<string, Uint8Array>,
+): Promise<void> {
+  try {
+    await userDir.removeEntry(dirName, { recursive: true })
+  } catch {
+    // Directory doesn't exist — fine.
+  }
+  const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
+  for (const [path, data] of Object.entries(files)) {
+    const parts = path.split('/').filter(Boolean)
+    if (parts.length === 0) continue
+    let currentDir = skillDir
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentDir = await currentDir.getDirectoryHandle(parts[i], { create: true })
+    }
+    const fileHandle = await currentDir.getFileHandle(parts[parts.length - 1], { create: true })
+    const writable = await fileHandle.createWritable()
+    await writable.write(data)
+    await writable.close()
+  }
 }
 
 /**
