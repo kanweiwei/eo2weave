@@ -242,9 +242,13 @@ export const SnapshotDetailDrawer: React.FC<SnapshotDetailDrawerProps> = ({
                   {t(`sidebar.snapshotList.fileOp${file.opType.charAt(0).toUpperCase() + file.opType.slice(1)}`)}
                 </span>
                 <span className="shrink-0 text-tertiary">
-                  {file.beforeContentSize > 0 ? formatBytes(file.beforeContentSize) : ''}
-                  {file.beforeContentSize > 0 && file.afterContentSize > 0 ? ' → ' : ''}
-                  {file.afterContentSize > 0 ? formatBytes(file.afterContentSize) : ''}
+                  {/* Side presence (contentKind !== 'none'), not byte size,
+                      decides label/arrow rendering — same fix as
+                      RunChangesCard (issue #124): a real zero-byte file must
+                      show its "0 B" label. */}
+                  {file.beforeContentKind !== 'none' ? formatBytes(file.beforeContentSize) : ''}
+                  {file.beforeContentKind !== 'none' && file.afterContentKind !== 'none' ? ' → ' : ''}
+                  {file.afterContentKind !== 'none' ? formatBytes(file.afterContentSize) : ''}
                 </span>
               </button>
               {isExpanded && (
