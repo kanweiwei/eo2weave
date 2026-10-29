@@ -103,17 +103,25 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
 
   const Icon = packageIcon(packageInfo.id)
   const tools = packageInfo.tools ?? []
-  // Legacy (pre-#102) payloads carry a tool COUNT but no per-tool list, so
-  // `tools` is empty there. Disclose the real count instead of "0 tools":
-  // the summary falls back to the package-wide count, and (with no list to
-  // split against) the additional-tools note must NOT claim the tools are
-  // on other origins.
+  // Tool-count disclosure, per protocol:
+  //  - NEW (#102): `tools` = the tools matching THIS tab, `totalTools` = the
+  //    package-wide count. An empty matching list means "no tool matches
+  //    this site" — the package-wide count must be disclosed as ADDITIONAL
+  //    tools on other origins, never as this site's count.
+  //  - LEGACY (1.1.7): the payload carries a COUNT only, no per-tool list,
+  //    so there is no per-site/package split to disclose — the count is the
+  //    only truthful number, and no other-origins note is shown.
+  const isLegacy = legacy === true
   const disclosedToolCount =
     tools.length > 0
       ? tools.length
-      : typeof packageInfo.totalTools === 'number'
+      : isLegacy && typeof packageInfo.totalTools === 'number'
         ? packageInfo.totalTools
         : 0
+  const showAdditionalTools =
+    !isLegacy &&
+    typeof packageInfo.totalTools === 'number' &&
+    packageInfo.totalTools > tools.length
 
   const handleConfirm = async () => {
     setSubmitting(true)
@@ -122,26 +130,27 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
     // Legacy prompts (pre-#102 extension, issue #113) enable through the old
     // recipe bridge with NO consent token; the same result shape keeps the
     // timeout / reload-failure / failure handling below shared verbatim.
+    const handleLateOutcome = (late: PackageOptInEnableResult) => {
+      if (late.ok) {
+        // Findings "Late success hides reload failure" / "Enabled package
+        // skips page reload": a late ok with reloaded:false means the tools
+        // are NOT active — direct the user to reload manually instead of
+        // claiming plain success.
+        setErrorMessage(null)
+        if (late.reloaded === false) {
+          setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
+        } else {
+          setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+        }
+      }
+      // A late FAILURE stays silent: the modal already showed the failure
+      // path and the user can retry or close; re-toasting an error after the
+      // fact would only nag.
+    }
     const runEnable = (): Promise<PackageOptInEnableResult> =>
       legacy
-        ? enableLegacyRecipeAndReload(packageInfo.id)
-        : enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
-            if (late.ok) {
-              // Findings "Late success hides reload failure" / "Enabled package
-              // skips page reload": a late ok with reloaded:false means the tools
-              // are NOT active — direct the user to reload manually instead of
-              // claiming plain success.
-              setErrorMessage(null)
-              if (late.reloaded === false) {
-                setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
-              } else {
-                setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
-              }
-            }
-            // A late FAILURE stays silent: the modal already showed the failure
-            // path and the user can retry or close; re-toasting an error after the
-            // fact would only nag.
-          })
+        ? enableLegacyRecipeAndReload(packageInfo.id, handleLateOutcome)
+        : enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', handleLateOutcome)
     // The 8s timeout may fire while the bridge call is still in flight; the
     // late-completion callback corrects the picture (success / manual-reload
     // notice) instead of leaving the user with an error while the package
@@ -353,10 +362,10 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
             </p>
           )}
 
-          {tools.length > 0 && typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
+          {showAdditionalTools && (
             <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
               {t('sidePanelPackage.additionalToolsNote', {
-                count: packageInfo.totalTools - tools.length,
+                count: packageInfo.totalTools! - tools.length,
               })}
             </p>
           )}

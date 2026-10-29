@@ -132,9 +132,27 @@ export interface LegacyRecipeStatus {
 type ProtocolSupport = 'new' | 'legacy-only' | 'none'
 let protocolSupport: ProtocolSupport | null = null
 
+/**
+ * In-flight legacy enables, keyed by binding + recipe id. The legacy bridge
+ * call cannot be cancelled, so a retry after a client-side TIMEOUT would
+ * start a SECOND enable while the first may still commit (two storage
+ * writes, two tab reloads). Tracking the pending bridge call lets a retry
+ * await the SAME call — and its REAL outcome — instead of firing a
+ * duplicate (finding: "Timed-out enable can be retried concurrently" /
+ * "Retries trigger duplicate enables"). The binding is part of the key so a
+ * different bound tab never inherits another tab's result (finding: "Wrong
+ * tab reports enable success").
+ *
+ * Only UNSETTLED calls are tracked: a settled outcome is never replayed to
+ * a later attempt (a stale success would report an enable that no longer
+ * holds, and a stale failure would block a legitimate retry).
+ */
+const pendingLegacyEnables = new Map<string, Promise<PackageOptInEnableResult>>()
+
 /** Test seam: forget the per-session protocol verdict. */
 export function resetPackagePromptProtocolCache(): void {
   protocolSupport = null
+  pendingLegacyEnables.clear()
 }
 
 const DISMISS_STORAGE_KEY_PREFIX = 'cw_webmcp_package_prompt_dismissed_v1'
@@ -316,6 +334,15 @@ export async function getPendingPackagePrompt(): Promise<
     // Guarded assignment: an overlapping probe may have established 'new'
     // while this call awaited — never downgrade a working new bridge.
     if (legacyAnsweredDefinitively && protocolSupport !== 'new') protocolSupport = 'legacy-only'
+    // Another overlapping probe may have established the NEW protocol while
+    // this fallback awaited. Returning the legacy result now would replace
+    // the new-protocol prompt with a tokenless legacy one (finding: "Stale
+    // probe returns legacy prompt"): discard it and re-probe the new
+    // protocol instead.
+    if (protocolSupport === 'new') {
+      const recheck = await probeNewProtocol(binding, agentWeb.webMCPPackageOptInStatus!)
+      return recheck.result
+    }
     // null from a REAL legacy probe is a legitimate terminal answer
     // (dismissed / no matching recipe) — only an entirely missing legacy
     // surface substitutes the new probe's retryable outcome.
@@ -324,18 +351,26 @@ export async function getPendingPackagePrompt(): Promise<
   }
 
   // No new bridge method at all: an old extension (or no extension) —
-  // decide the session verdict from the legacy surface alone.
-  if (protocolSupport === null) {
-    protocolSupport = agentWeb?.recipeCheckStatus ? 'legacy-only' : 'none'
-    if (protocolSupport === 'none') {
+  // decide the session verdict from the legacy surface alone. The verdict
+  // is committed only AFTER the legacy probe answers definitively: a
+  // transient legacy failure must not lock the session to legacy-only and
+  // hide a new-protocol bridge that appears later (finding: "Recovered
+  // prompts stay hidden").
+  if (!agentWeb?.recipeCheckStatus) {
+    if (protocolSupport === null) {
+      protocolSupport = 'none'
       // eslint-disable-next-line no-console
       console.info(
         '[SidePanelPackagePrompt] skip: extension bridge unavailable (no opt-in protocol; plain web or pre-1.1.7 extension)',
       )
     }
+    return null
   }
-  if (protocolSupport === 'none') return null
-  return legacyProbe()
+  const legacy = await legacyProbe()
+  const legacyAnsweredDefinitively =
+    !(legacy !== null && 'retryable' in legacy && legacy.retryable)
+  if (legacyAnsweredDefinitively && protocolSupport !== 'new') protocolSupport = 'legacy-only'
+  return legacy
 }
 
 interface NewProtocolOutcome {
@@ -464,9 +499,19 @@ async function probeNewProtocol(
  * in 1.1.7) and map the old payload onto the new modal's status shape:
  * package.id = recipe.id, displayName/description/toolCount straight over,
  * `enabled` passthrough; `applicable` means the same thing on both
- * protocols. Never throws — an old extension without the method (or one
- * that fails the probe) resolves to a silent null so ordinary web sessions
- * (no extension at all) stay clean.
+ * protocols.
+ *
+ * Return contract:
+ *  - a prompt shape when a matching, disabled, non-dismissed recipe exists,
+ *  - `{ applicable: false, retryable: true }` for a TRANSIENT failure (the
+ *    probe timed out, the bridge rejected, or the background reported a
+ *    transient error) — the caller retries it, and it must NOT be cached
+ *    as a definitive protocol verdict,
+ *  - `null` for a terminal "nothing to offer" answer (no matching recipe,
+ *    already enabled, dismissed) or a structural failure
+ *    (`UNAUTHORIZED_TARGET` — a bad binding/origin cannot heal).
+ *
+ * Never throws — ordinary web sessions (no extension at all) stay clean.
  */
 async function probeLegacyProtocol(
   binding: string,
@@ -493,7 +538,15 @@ async function probeLegacyProtocol(
   if (!status || status.ok === false) {
     // eslint-disable-next-line no-console
     console.warn('[SidePanelPackagePrompt] skip: legacy bridge returned failure/timeout', { status })
-    return null
+    // A legacy timeout (null) or a transient background error is NOT a
+    // definitive "nothing to offer" answer: returning null here would let
+    // the caller cache the 'legacy-only' verdict and skip a new-protocol
+    // bridge that may have recovered. Stay retryable instead (finding:
+    // "Transient failures hide the prompt"). A structural failure
+    // (UNAUTHORIZED_TARGET — bad binding/origin) cannot heal and stays
+    // terminal, mirroring the new-protocol semantics.
+    const structural = status?.errorCode === 'UNAUTHORIZED_TARGET'
+    return structural ? null : { applicable: false, retryable: true }
   }
   const recipe = status.recipe
   if (!status.applicable || !recipe || typeof recipe.id !== 'string') {
@@ -679,9 +732,15 @@ export async function enablePackageAndReload(
  * reloads the upstream tab itself and reports `reloaded`, mirrored onto
  * the same `PackageOptInEnableResult` the new flow returns so the modal's
  * toast/retry logic stays identical.
+ *
+ * `onSettledLate` mirrors the new-protocol flow: when the client-side
+ * timeout fires but the bridge call lands afterwards, its REAL outcome is
+ * forwarded so the modal can correct the picture instead of staying on
+ * stale timeout guidance (finding: "Late results leave modal stale").
  */
 export async function enableLegacyRecipeAndReload(
   recipeId: string,
+  onSettledLate?: (result: PackageOptInEnableResult) => void,
 ): Promise<PackageOptInEnableResult> {
   const { getSidePanelBindingId } = await import('@/agent/workspace-assistant-context')
   const binding = getSidePanelBindingId()
@@ -692,27 +751,88 @@ export async function enableLegacyRecipeAndReload(
   ).__agentWeb
   if (!agentWeb?.recipeEnable) return { ok: false, errorCode: 'BRIDGE_UNAVAILABLE' }
 
-  try {
-    const raw = await Promise.race([
-      agentWeb.recipeEnable(binding, recipeId),
+  // A previous enable for THIS binding + recipe is still in flight (the
+  // client-side timeout fired but the bridge call kept running): await THAT
+  // call instead of starting a duplicate enable + reload (two storage
+  // writes, two tab reloads). The binding is part of the key: a different
+  // bound tab is a different enable (finding: "Wrong tab reports enable
+  // success"). The wait is bounded by the same budget so a bridge that
+  // never settles cannot wedge the prompt.
+  const key = `${binding}:${recipeId}`
+  const existing = pendingLegacyEnables.get(key)
+  if (existing) {
+    // eslint-disable-next-line no-console
+    console.info('[SidePanelPackagePrompt] legacy enable already in flight; awaiting it', { recipeId })
+    const raced = await Promise.race([
+      existing,
       new Promise<null>(resolve => {
         setTimeout(() => resolve(null), ENABLE_TIMEOUT_MS)
       }),
     ])
-    if (!raw) return { ok: false, errorCode: 'TIMEOUT' }
-    return {
-      ok: raw.ok === true,
-      errorCode: raw.ok === true ? undefined : (raw.errorCode ?? 'ENABLE_FAILED'),
-      error: raw.error,
-      reloaded: raw.reloaded,
-    }
+    if (raced) return raced
+    // The in-flight call is STILL running: report the timeout and let the
+    // late outcome reach the modal through the callback.
+    void existing.then(result => onSettledLate?.(result))
+    return { ok: false, errorCode: 'TIMEOUT' }
+  }
+
+  // The bridge promise is the unit of concurrency control: the client-side
+  // timeout only bounds the WAIT, never the call itself. A SYNCHRONOUS
+  // throw from the bridge method (not a rejected promise) must be caught
+  // here — otherwise it escapes into the modal, which never clears its
+  // submitting state (finding: "Enable dialog stays submitting").
+  let bridgeCall: Promise<PackageOptInEnableResult>
+  try {
+    bridgeCall = agentWeb.recipeEnable(binding, recipeId).then(
+      raw => ({
+        ok: raw?.ok === true,
+        errorCode: raw?.ok === true ? undefined : (raw?.errorCode ?? 'ENABLE_FAILED'),
+        error: raw?.error,
+        reloaded: raw?.reloaded,
+      }),
+      (err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.error('[SidePanelPackagePrompt] legacy enable bridge call failed:', err, { recipeId })
+        return {
+          ok: false,
+          errorCode: 'ENABLE_FAILED',
+          error: err instanceof Error ? err.message : String(err),
+        }
+      },
+    )
   } catch (err: unknown) {
     // eslint-disable-next-line no-console
-    console.error('[SidePanelPackagePrompt] legacy enable bridge call failed:', err, { recipeId })
+    console.error('[SidePanelPackagePrompt] legacy enable bridge threw synchronously:', err, { recipeId })
     return {
       ok: false,
       errorCode: 'ENABLE_FAILED',
       error: err instanceof Error ? err.message : String(err),
     }
   }
+  // Track the call until it SETTLES — never delete an unresolved call
+  // (a retry must not start a second enable that could double-commit and
+  // reload the tab twice: finding "Retries trigger duplicate enables").
+  // A settled call is dropped immediately: replaying its outcome to a
+  // later attempt would report a stale success or block a retry
+  // (findings "Re-enabling reports stale success" / "Failed enables block
+  // immediate retry").
+  pendingLegacyEnables.set(key, bridgeCall)
+  void bridgeCall.finally(() => {
+    if (pendingLegacyEnables.get(key) === bridgeCall) pendingLegacyEnables.delete(key)
+  })
+
+  const timedOut = Symbol('timeout')
+  const outcome = await Promise.race([
+    bridgeCall,
+    new Promise<typeof timedOut>(resolve => {
+      setTimeout(() => resolve(timedOut), ENABLE_TIMEOUT_MS)
+    }),
+  ])
+  if (outcome === timedOut) {
+    // The bridge call is still running: forward its real outcome to the
+    // modal when it lands.
+    void bridgeCall.then(result => onSettledLate?.(result))
+    return { ok: false, errorCode: 'TIMEOUT' }
+  }
+  return outcome
 }
