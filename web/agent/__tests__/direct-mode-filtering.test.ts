@@ -8,7 +8,7 @@
  * else (page_*, run_python, bash, skills, subagents, schedule) must stay
  * available.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   FOLDER_DEPENDENT_TOOLS,
   getToolCategory,
@@ -50,10 +50,14 @@ describe('directMode tool filtering', () => {
     'create_checkpoint', 'rollback_checkpoint',
   ] as const
 
-  it('FOLDER_DEPENDENT_TOOLS covers exactly the task-mandated tool set', () => {
-    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
-      expect(FOLDER_DEPENDENT_TOOLS.has(name), name).toBe(true)
-    }
+  // Registry setup runs in shared setup, not inside the first test: the
+  // filtering, default-registry, and execution tests below all assert against
+  // the full registry (including the dynamically registered checkpoint
+  // tools), and each must hold when run standalone — not only when the
+  // enumeration test happened to run first. registerExecTool() and
+  // registerCheckpointTools() are idempotent (has() guards), so running them
+  // once here is safe regardless of test order or -t selection.
+  beforeAll(() => {
     // Mirror the production registration sequence: exec/processes ride the
     // native-host bridge (bridge stub + probe mocked reachable above) and
     // checkpoint tools are registered when a native directory handle is
@@ -67,6 +71,12 @@ describe('directMode tool filtering', () => {
     const registry = getToolRegistry()
     registry.registerExecTool()
     registry.registerCheckpointTools()
+  })
+
+  it('FOLDER_DEPENDENT_TOOLS covers exactly the task-mandated tool set', () => {
+    for (const name of REQUIRED_FOLDER_DEPENDENT_TOOLS) {
+      expect(FOLDER_DEPENDENT_TOOLS.has(name), name).toBe(true)
+    }
   })
 
   it('isToolAllowedInDirectMode rejects folder tools and keeps everything else', () => {
