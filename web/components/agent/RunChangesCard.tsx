@@ -316,9 +316,13 @@ export const RunChangesCard: React.FC<RunChangesCardProps> = ({ snapshotId }) =>
                           {fileOpLabel(file.opType)}
                         </span>
                         <span className="shrink-0 text-tertiary">
-                          {formatBytes(file.beforeContentSize)}
-                          {file.beforeContentSize > 0 && file.afterContentSize > 0 ? ' → ' : ''}
-                          {formatBytes(file.afterContentSize)}
+                          {/* Side PRESENCE (contentKind !== 'none'), not byte size,
+                              decides whether a side's label renders: a real
+                              zero-byte file is 'text' with size 0 and must show
+                              its "0 B" label, not be treated as absent (#124). */}
+                          {file.beforeContentKind !== 'none' && formatBytes(file.beforeContentSize)}
+                          {file.beforeContentKind !== 'none' && file.afterContentKind !== 'none' ? ' → ' : ''}
+                          {file.afterContentKind !== 'none' && formatBytes(file.afterContentSize)}
                         </span>
                       </button>
                       {isExpanded && (
