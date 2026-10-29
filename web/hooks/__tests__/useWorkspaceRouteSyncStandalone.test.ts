@@ -430,6 +430,79 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     }
   })
 
+  it('repairs the destination after a timed-out host activation commits late (route left)', async () => {
+    // The timeout releases the ROUTE (redirect to /chats), but the
+    // activation promise keeps running inside the store and commits late —
+    // AFTER the user has left the route. Cleanup blanks newestChatIdRef, so
+    // the stale-completion repair cannot help; the retained
+    // destinationChatIdRef must let the late commit re-run the full sync for
+    // the destination chat instead of leaving the stale host project active.
+    vi.useFakeTimers()
+    try {
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+      let releaseActivation: (() => void) | null = null
+      const activationGate = new Promise<boolean>((resolve) => {
+        releaseActivation = () => resolve(true)
+      })
+      // Mirror the real setActiveProject: the commit lands inside the store
+      // whenever the activation finally settles (long after the timeout).
+      setActiveProjectSpy.mockImplementation(
+        () =>
+          activationGate.then((value) => {
+            useProjectStore.setState({ activeProjectId: PROJECT_A.id })
+            return value
+          }) as Promise<boolean>,
+      )
+
+      const { unmount } = renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveProjectSpy).toHaveBeenCalledWith('project-a')
+
+      // Timeout: the recoverable redirect fires while the activation hangs.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+
+      // The user leaves the route entirely before the activation settles.
+      unmount()
+
+      // The activation settles and commits late inside the store.
+      releaseActivation!()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The late-commit repair restored the destination: full sync ran for
+      // the retained destination chat (workspace switch + activation).
+      expect(useProjectStore.getState().activeProjectId).toBe('project-a')
+      expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-1')
+      expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not repair after a genuinely rejected host activation', async () => {
+    // Only a LATE COMMIT (timeout then eventual success) needs the repair;
+    // a genuine rejection never commits anything, so no sync may run after
+    // the redirect.
+    vi.useFakeTimers()
+    try {
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+      setActiveProjectSpy.mockRejectedValue(new Error('activation failed'))
+
+      renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(switchWorkspaceSpy).not.toHaveBeenCalled()
+      expect(setActiveConversationSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a settled host-project activation still proceeds normally (bound does not fire early)', async () => {
     vi.useFakeTimers()
     try {

@@ -38,6 +38,12 @@ const HOST_ACTIVATION_TIMEOUT_MS = SWITCH_WAIT_TIMEOUT_MS
  * entirely cannot be repaired toward). Every await inside the sync is
  * followed by a liveness re-check against that ref — a continuation whose
  * target was superseded mid-flight discards itself instead of committing.
+ *
+ * One exception to that blanking: `destinationChatIdRef` is retained across
+ * cleanup and exists solely for the late host-activation repair (Step 0) —
+ * a timed-out activation keeps running inside the store and its eventual
+ * commit lands even after the route was left, so the destination's last
+ * selection must stay recoverable.
  */
 export function useWorkspaceRouteSyncStandalone(chatId: string) {
   const router = useRouter()
@@ -48,9 +54,14 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
   // dependency the sync never retries (leaving the chat inactive).
   const conversationsLoaded = useConversationStore((s) => s.loaded)
   const newestChatIdRef = useRef<string>('')
+  // Retained across cleanup (unlike newestChatIdRef): the late host-activation
+  // repair (Step 0) must be able to re-assert the destination's selection even
+  // after the route was left, because the timed-out activation still commits.
+  const destinationChatIdRef = useRef<string>('')
 
   useEffect(() => {
     newestChatIdRef.current = chatId
+    destinationChatIdRef.current = chatId
     if (!chatId) return
     if (!initialized || projectLoading) return
 
@@ -65,12 +76,21 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
      *
      * Liveness: after every await the target is re-checked against
      * `newestChatIdRef`; a superseded continuation stops touching stores.
+     * The exception is the late host-activation repair (`retainTarget`),
+     * which validates against `destinationChatIdRef` — retained across
+     * cleanup — because its activation commits late inside the store even
+     * after the route is left (see the Step 0 catch block).
      * Redirects fire only from the normal route run (`allowRedirect`) — the
      * repair never redirects, because its target may itself be superseded
      * and the newest route's own sync owns navigation.
      */
-    const runSync = async (target: string, allowRedirect: boolean): Promise<void> => {
-      const isLive = () => newestChatIdRef.current === target
+    const runSync = async (
+      target: string,
+      allowRedirect: boolean,
+      retainTarget = false,
+    ): Promise<void> => {
+      const liveRef = () => (retainTarget ? destinationChatIdRef : newestChatIdRef)
+      const isLive = () => liveRef().current === target
 
       // Step 0: ensure a project host exists. Landing on /chats directly
       // skips the /projects route sync, so activeProjectId may still be ''.
@@ -90,8 +110,11 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
         // Step 2 — bound the wait and take the same recoverable /chats
         // redirect on timeout instead of pinning the route behind its
         // loading gate indefinitely.
-        let switched: boolean
+        // Captured BEFORE the race: on a timeout the race rejects, but the
+        // activation keeps running inside the store and its eventual commit
+        // lands even after this handler has bailed (see the catch below).
         let activation: Promise<boolean> | null = null
+        let switched: boolean
         try {
           activation = projectState.setActiveProject(fallback.id)
           switched = await Promise.race([
@@ -114,16 +137,26 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           // The underlying activation cannot be cancelled and may still commit
           // its store changes AFTER this navigation — a late commit would
           // silently repoint the page the user moved to. Observe the abandoned
-          // promise and, if it lands after the route moved on, re-run the full
-          // sync for the newest target so the stores converge back onto the
-          // route's actual chat (same repair shape as syncFromRoute below).
+          // promise and re-run the full sync on settlement:
+          // - a live navigation to another chat re-syncs the newest target
+          //   (upstream repair, newestChatIdRef);
+          // - a route left entirely re-syncs the retained destination id —
+          //   destinationChatIdRef is deliberately NOT blanked on cleanup
+          //   because the late commit still lands, and newestChatIdRef is
+          //   blanked so it cannot carry this repair. On a genuine rejection
+          //   the settlement continuation fires but both guards fail (the
+          //   store holds no committed conversation target to re-assert), so
+          //   nothing is repaired.
           if (activation) {
             void activation
               .catch(() => {})
               .then(() => {
                 const newest = newestChatIdRef.current
+                const destination = destinationChatIdRef.current
                 if (newest && newest !== target && !isLive()) {
                   void runSync(newest, false)
+                } else if (!newest && destination) {
+                  void runSync(destination, false, true)
                 }
               })
           }
@@ -244,6 +277,13 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
       // next route's effect body re-assigns the ref synchronously right
       // after this cleanup, so a live navigation never observes the blank.)
       newestChatIdRef.current = ''
+      // NOTE: destinationChatIdRef is deliberately NOT blanked here — it
+      // backs the late host-activation repair (Step 0), which must still
+      // re-assert the destination's selection after the route is left,
+      // because the timed-out activation commits late inside the store.
+      // Conversation-target repairs keep using newestChatIdRef, which IS
+      // blanked (an abandoned chat must never be re-activated by its own
+      // late completion).
     }
   }, [chatId, router, initialized, projectLoading, conversationsLoaded])
 }
