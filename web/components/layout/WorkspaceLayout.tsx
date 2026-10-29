@@ -17,6 +17,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { useConversationStore } from '@/store/conversation.store'
 import { useAssetStore } from '@/store/asset.store'
 import { useFlowStore } from '@/store/flow.store'
@@ -109,6 +110,9 @@ export function WorkspaceLayout({
   onDraftConversationCreated,
   routeSpace = 'projects',
 }: WorkspaceLayoutProps) {
+  // Client-side router for in-app navigation (see onOpenStandaloneChats
+  // below — a document-level navigation there would trip the unload guard).
+  const router = useRouter()
   const waitForWorkspaceReady = useCallback(async (workspaceId: string, timeoutMs = 30000) => {
     const manager = await getWorkspaceManager()
     const start = Date.now()
@@ -876,10 +880,13 @@ export function WorkspaceLayout({
         onScheduleDrawerOpen={() => setScheduleDrawerOpen(true)}
         onWorkflowOpen={() => useFlowStore.getState().setPanelOpen(true)}
         onOpenStandaloneChats={() => {
-          // Static import — WorkspaceLayout sits outside the Router context,
-          // so navigation goes through the anchor-style assign (full App
-          // Router navigation for internal paths is provided by <a> fallback).
-          if (typeof window !== 'undefined') window.location.assign(chatsPath())
+          // Client-side navigation: /chats is an internal App Router route, and
+          // a full document navigation here would trip the unload guard (and
+          // tear down a running agent / pending file changes) for what is just
+          // a route-space switch. WorkspaceLayout renders inside the App
+          // Router's client tree (WorkspaceRouteView / ChatsRouteView), so
+          // useRouter is available at this layer.
+          router.push(chatsPath())
         }}
         routeSpace={routeSpace}
         onNewConversation={() => {

@@ -404,4 +404,49 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     expect(useConversationStore.getState().activeConversationId).toBe('chat-c')
     expect(routerReplaceMock).not.toHaveBeenCalled()
   })
+
+  it('bounds the host-project activation wait: a stalled setActiveProject redirects to /chats', async () => {
+    vi.useFakeTimers()
+    try {
+      // No active project: Step 0 must bind a host before anything else.
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+      // The activation never settles — the stall class the bound exists for.
+      setActiveProjectSpy.mockImplementation(() => new Promise<boolean>(() => {}))
+
+      renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveProjectSpy).toHaveBeenCalledWith('project-a')
+      expect(routerReplaceMock).not.toHaveBeenCalled()
+
+      // Past the HOST_ACTIVATION_TIMEOUT_MS bound (30s, shared with the
+      // switchWorkspace bound) the sync gives up and takes the recoverable
+      // /chats redirect instead of pinning the route behind its loading gate.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+      expect(switchWorkspaceSpy).not.toHaveBeenCalled()
+      expect(setActiveConversationSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a settled host-project activation still proceeds normally (bound does not fire early)', async () => {
+    vi.useFakeTimers()
+    try {
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+
+      renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      // Well past the bound minus a tick: the activation resolves first, so
+      // the sync must continue into the workspace switch — no redirect.
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(routerReplaceMock).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-1')
+      expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1')
+      expect(routerReplaceMock).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

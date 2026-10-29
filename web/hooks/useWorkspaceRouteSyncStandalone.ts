@@ -10,6 +10,11 @@ import { chatPath } from '@/lib/route-paths'
 /** Bounded wait for switchWorkspace (see Step 2 below for why). */
 const SWITCH_WAIT_TIMEOUT_MS = 30_000
 
+/** Bounded wait for the host-project activation in Step 0 — same stall class
+ * as switchWorkspace (setActiveProject can hang on OPFS/SQLite init without
+ * rejecting), so it gets the same bound and the same recoverable redirect. */
+const HOST_ACTIVATION_TIMEOUT_MS = SWITCH_WAIT_TIMEOUT_MS
+
 /**
  * useWorkspaceRouteSyncStandalone — URL → store sync for /chats/:chatId.
  *
@@ -80,7 +85,32 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           if (allowRedirect && isLive()) router.replace('/chats')
           return
         }
-        const switched = await projectState.setActiveProject(fallback.id)
+        // setActiveProject can stall without rejecting (e.g. SQLite/OPFS
+        // unresponsive during init), same stall class as switchWorkspace in
+        // Step 2 — bound the wait and take the same recoverable /chats
+        // redirect on timeout instead of pinning the route behind its
+        // loading gate indefinitely.
+        let switched: boolean
+        try {
+          switched = await Promise.race([
+            projectState.setActiveProject(fallback.id),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`setActiveProject timed out for ${fallback.id}`)),
+                HOST_ACTIVATION_TIMEOUT_MS,
+              ),
+            ),
+          ])
+        } catch (error) {
+          if (allowRedirect && isLive()) {
+            console.warn('[chatsSync] host-project activation failed, redirecting to /chats', {
+              fallback: fallback.id,
+              error,
+            })
+            router.replace('/chats')
+          }
+          return
+        }
         if (!switched) {
           if (allowRedirect && isLive()) router.replace('/chats')
           return
