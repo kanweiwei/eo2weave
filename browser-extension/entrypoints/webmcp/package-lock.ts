@@ -20,13 +20,20 @@
  *   3. Release clears the key only when the caller still owns it — a lock
  *      that was stolen mid-transaction is never released by its loser.
  *
- * `chrome.storage.local` has no compare-and-swap primitive, so acquire uses
- * an owner-CONDITIONED write: the set only lands when the stored lease is
- * still absent/expired (an inline re-read between the get and the set keeps
- * the steal window as tight as storage allows), followed by a read-back
- * verification — the last writer owns the lease, every loser retries. A
- * caller that lost the race is never told it holds the lock: it either
- * verifies its own owner token after the write or keeps waiting.
+ * `chrome.storage.local` has no compare-and-swap primitive, so atomicity is
+ * achieved CONTEXTUALLY: every lease caller in this codebase reaches
+ * `acquireLease`/`heartbeatLease`/`releaseLease` from the BACKGROUND service
+ * worker (pages go through the `webmcp_package_lock` bridge, management and
+ * opt-in run in-process) — and a Chrome extension runs exactly ONE service
+ * worker instance at a time. Each read→write→read-back sequence therefore
+ * runs inside a PER-PACKAGE in-process promise queue (round-2 finding
+ * "Concurrent package transactions corrupt data"): two acquirers interleave
+ * only between sequences, never inside one, so the last writer of a sequence
+ * is decided by the event loop, not by a storage race. A caller that lost
+ * the race never sees itself as the owner: it verifies its own owner token
+ * after the write or keeps waiting. (If a future context ever acquired the
+ * lease directly from a page, this guarantee would not hold — the queue is
+ * per JS context.)
  */
 
 export { USER_PACKAGE_LOCK_KEY_PREFIX } from './package-lock-protocol'
@@ -72,6 +79,28 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/**
+ * Per-package serialization of the lease's read→write→read-back sequences.
+ * All lease callers live in the single background service worker (pages
+ * reach the lease only through the `webmcp_package_lock` bridge), so
+ * queueing the sequences in-process makes each one ATOMIC with respect to
+ * every other lease caller — chrome.storage.local has no CAS, and this is
+ * the only honest way to get the "last writer of a sequence is decided by
+ * the event loop" guarantee the read-back verification relies on (round-2
+ * finding: "Concurrent package transactions corrupt data").
+ */
+const leaseQueues = new Map<string, Promise<unknown>>()
+
+function runExclusively<T>(packageId: string, step: () => Promise<T>): Promise<T> {
+  const previous = leaseQueues.get(packageId) ?? Promise.resolve()
+  const gate = previous.catch(() => {}).then(step)
+  leaseQueues.set(packageId, gate)
+  void gate.finally(() => {
+    if (leaseQueues.get(packageId) === gate) leaseQueues.delete(packageId)
+  })
+  return gate
+}
+
 /** Low-level acquire: returns the owner token, or null on timeout. */
 async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEOUT_MS): Promise<string | null> {
   const owner = randomOwner()
@@ -81,21 +110,23 @@ async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEO
     const stored = await chrome.storage.local.get(key)
     const existing = readLease(stored[key])
     if (!existing || existing.expiresAt <= Date.now()) {
-      // CONDITIONED write (finding: "Concurrent callers both acquire the
-      // lock"): write the lease ONLY when the stored value still holds the
-      // free/expired state we just observed. chrome.storage.local has no
-      // CAS, so the re-read narrows the window and the READ-BACK below is
-      // the real arbiter — the last writer wins, and a caller that lost
-      // the race never sees itself as the owner.
-      const freeAtWrite = !readLease((await chrome.storage.local.get(key))[key])
-        || readLease((await chrome.storage.local.get(key))[key])!.expiresAt <= Date.now()
-      if (freeAtWrite) {
+      // ATOMIC attempt (finding: "Concurrent package transactions corrupt
+      // data"): the free-check → conditioned write → read-back verification
+      // sequence runs inside the per-package queue, so a concurrent
+      // acquirer can only start its own sequence AFTER this one finished —
+      // it observes our lease live and waits instead of verifying its own
+      // token over it. (Same guarantee as before, without the storage-level
+      // interleaving window between the three storage calls.)
+      const won = await runExclusively(packageId, async () => {
+        const atWrite = readLease((await chrome.storage.local.get(key))[key])
+        if (atWrite && atWrite.expiresAt > Date.now()) return false
         await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
         // Read-back: the last writer wins; if we are not the owner any more,
         // another acquirer overwrote us and we must wait for it instead.
         const verify = readLease((await chrome.storage.local.get(key))[key])
-        if (verify?.owner === owner) return owner
-      }
+        return verify?.owner === owner
+      })
+      if (won) return owner
     }
     if (Date.now() > deadline) return null
     await delay(RETRY_MIN_MS + Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS))
@@ -106,22 +137,29 @@ async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEO
  * Extend OUR lease (heartbeat). Never resurrects a stolen lease; returns
  * FALSE when the lease is no longer ours so the holder can ABORT the
  * transaction instead of mutating an unlocked package (finding: "Expired
- * lock holders keep mutating").
+ * lock holders keep mutating"). The ownership check and the write run
+ * inside the per-package queue, so a concurrent acquirer can never slip
+ * between them and see its lease overwritten by this stale heartbeat
+ * (round-2 finding: "Concurrent package transactions corrupt data").
  */
 async function heartbeatLease(packageId: string, owner: string): Promise<boolean> {
   const key = lockKey(packageId)
-  const stored = readLease((await chrome.storage.local.get(key))[key])
-  if (stored?.owner !== owner) return false
-  await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
-  return true
+  return runExclusively(packageId, async () => {
+    const stored = readLease((await chrome.storage.local.get(key))[key])
+    if (stored?.owner !== owner) return false
+    await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
+    return true
+  })
 }
 
 /** Release the lease only if we still own it. */
 async function releaseLease(packageId: string, owner: string): Promise<void> {
   const key = lockKey(packageId)
   try {
-    const stored = readLease((await chrome.storage.local.get(key))[key])
-    if (stored?.owner === owner) await chrome.storage.local.remove(key)
+    await runExclusively(packageId, async () => {
+      const stored = readLease((await chrome.storage.local.get(key))[key])
+      if (stored?.owner === owner) await chrome.storage.local.remove(key)
+    })
   } catch {
     // A leftover lease expires on its own via the TTL.
   }
@@ -150,12 +188,27 @@ export async function withPackageLock<T>(
   // callback must stop mutating state. The signal is surfaced so the
   // transaction can bail at its next step instead of writing unowned.
   const controller = new AbortController()
+  // Finding: "Lease loss leaves writers active" — heartbeat STORAGE errors
+  // (get/set rejecting) were swallowed, so a storage outage longer than the
+  // lease TTL let the lease expire while the holder kept mutating. Count
+  // consecutive failures: after two missed heartbeats (~2 TTLs with no
+  // successful extension) the holder must assume the lease is gone and
+  // abort — fail closed beats mutating an unowned package. A single
+  // transient hiccup (one failed heartbeat followed by a good one) stays
+  // harmless because the TTL only expires after 15s without a successful
+  // refresh and one interval is 5s.
+  let heartbeatFailures = 0
   const heartbeat = setInterval(() => {
     void heartbeatLease(packageId, owner).then(alive => {
-      // Storage hiccups are tolerated (fail-safe direction: a missed
-      // heartbeat can let the lease expire, which releases the lock).
-      if (!alive) controller.abort()
-    }, () => {})
+      if (!alive) {
+        controller.abort()
+        return
+      }
+      heartbeatFailures = 0
+    }, () => {
+      heartbeatFailures += 1
+      if (heartbeatFailures >= 2) controller.abort()
+    })
   }, HEARTBEAT_INTERVAL_MS)
   let lockLost = false
   controller.signal.addEventListener('abort', () => { lockLost = true })

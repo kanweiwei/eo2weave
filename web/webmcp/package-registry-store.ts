@@ -57,6 +57,37 @@ interface StoredRegistry {
 let sessionAdded: StoredRegistry[] | null = null
 let sessionRemoved: Set<string> | null = null
 
+/**
+ * Cross-tab reconciliation (round-2 findings: "Concurrent registry edits are
+ * lost" / "Peer removal is undone in another tab"): when a PEER tab writes
+ * the persisted list, the `storage` event fires in this tab (it fires only
+ * in tabs OTHER than the writer, so a tab never observes its own write).
+ * Replaying our deltas over a list we have not reconciled would resurrect a
+ * registry a peer removed (our `sessionAdded` is stale) — so a peer write
+ * prunes every session addition that the peer's persisted list no longer
+ * holds: if the peer's list still contains the entry, our delta stays; if
+ * the peer removed it, the removal WINS and our stale addition is dropped.
+ * The React layer re-reads via its own effect/state updates; the mirror is
+ * corrected here so any LATER read converges to the peer's state plus this
+ * session's still-valid deltas.
+ */
+function reconcileWithPersisted(): void {
+  if (!sessionAdded?.length) return
+  const persistedUrls = new Set(readPersistedRegistries().map(entry => entry.manifestUrl))
+  sessionAdded = sessionAdded.filter(entry => persistedUrls.has(entry.manifestUrl))
+  if (sessionAdded.length === 0) sessionAdded = null
+}
+
+let reconcileListenerInstalled = false
+function ensureReconcileListener(): void {
+  if (reconcileListenerInstalled || typeof window === 'undefined') return
+  reconcileListenerInstalled = true
+  window.addEventListener('storage', event => {
+    if (event.storageArea !== localStorage || event.key !== REGISTRIES_STORAGE_KEY) return
+    reconcileWithPersisted()
+  })
+}
+
 function storageAvailable(): boolean {
   try {
     const probe = '__webmcp_registry_probe__'
@@ -69,6 +100,13 @@ function storageAvailable(): boolean {
 }
 
 function loadStoredRegistries(): StoredRegistry[] {
+  ensureReconcileListener()
+  // A peer tab may have written the list since our last read (its write does
+  // not fire a storage event in ITS window, and our listener reconciles in
+  // THIS one): prune session additions the peer's fresh persisted list no
+  // longer holds BEFORE replaying deltas, so a peer removal is not undone by
+  // our stale replay (finding: "Peer removal is undone in another tab").
+  reconcileWithPersisted()
   const persisted = readPersistedRegistries()
   if (!sessionAdded && !sessionRemoved) return persisted
   const removed = sessionRemoved ?? new Set<string>()
@@ -302,21 +340,31 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
 }
 
 /**
- * Best-effort catalog-refresh notification to the extension background
- * (finding: "Uninstall leaves tools registered"): install/uninstall change
- * the EXTERNAL package directory the background's catalog reads, but
- * nothing else observes OPFS writes. Without this signal a removed package's
- * tools stay registered (and a fresh install's tools stay unregistered)
- * until an unrelated refresh. The bridge method is optional — older
- * extensions and tests without a bridge simply skip it (the in-tab UI
- * refreshes itself through the section's own state updates).
+ * Catalog-refresh notification to the extension background (finding:
+ * "Uninstall leaves tools registered"): install/uninstall change the
+ * EXTERNAL package directory the background's catalog reads, but nothing
+ * else observes OPFS writes. Without this signal a removed package's tools
+ * stay registered (and a fresh install's tools stay unregistered) until an
+ * unrelated refresh. The bridge method is optional — older extensions and
+ * tests without a bridge simply skip it (the in-tab UI refreshes itself
+ * through the section's own state updates).
+ *
+ * Returns true when the background CONFIRMED the refresh (finding: "Refresh
+ * failure leaves stale tools" — an `{ ok: false }` response was swallowed
+ * and a failed refresh reported as success, silently leaving the old tool
+ * catalog in place). Callers decide how to surface a `false` result; the
+ * in-tab UI stays correct either way because it re-reads the mount itself.
  */
-async function notifyBackgroundCatalogChanged(): Promise<void> {
+async function notifyBackgroundCatalogChanged(): Promise<boolean> {
+  const bridge = getWebMCPBridge()
+  if (!bridge?.webMCPPackagesChangedNotify) return false
   try {
-    await getWebMCPBridge()?.webMCPPackagesChangedNotify?.()
+    const result = await bridge.webMCPPackagesChangedNotify()
+    return result?.ok === true
   } catch {
     // Extension context gone mid-operation — the next catalog refresh
     // picks the change up anyway.
+    return false
   }
 }
 
@@ -335,7 +383,7 @@ async function notifyBackgroundCatalogChanged(): Promise<void> {
 export async function installRegistryPackage(
   registry: PackageRegistry,
   pkg: RegistryManifestPackage,
-): Promise<{ filesWritten: number }> {
+): Promise<{ filesWritten: number; catalogRefreshed: boolean }> {
   const collision = await findPackageIdCollision(pkg.id)
   if (collision) {
     throw new Error(
@@ -361,15 +409,21 @@ export async function installRegistryPackage(
       )
     }
   })
-  await notifyBackgroundCatalogChanged()
-  return result
+  // A rejected/failed refresh is SURFACED, not swallowed (finding: "Refresh
+  // failure leaves stale tools"): the files are committed, but the
+  // extension's tool catalog may still show the previous state until the
+  // next refresh — the caller can tell the user instead of reporting a
+  // fully clean success.
+  const refreshed = await notifyBackgroundCatalogChanged()
+  return { ...result, catalogRefreshed: refreshed }
 }
 
 /** Uninstall: remove the package directory from the `webmcp` mount. */
-export async function uninstallRegistryPackage(packageId: string): Promise<void> {
+export async function uninstallRegistryPackage(packageId: string): Promise<{ catalogRefreshed: boolean }> {
   const provider = await providerRegistry.get('webmcp')
   await uninstallPackage(packageId, provider)
-  await notifyBackgroundCatalogChanged()
+  const refreshed = await notifyBackgroundCatalogChanged()
+  return { catalogRefreshed: refreshed }
 }
 
 /**

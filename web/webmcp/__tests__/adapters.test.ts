@@ -177,6 +177,12 @@ describe('URL matching', () => {
     '^https://x\\.com/(a+)/b+$', // group, separator, quantified class
   ] as Array<string>)('keeps accepting safe quantified-group patterns %s', urlRegex => {
     expect(hasNestedQuantifier(urlRegex)).toBe(false)
+    // Finding: "Safe patterns are not validated" — a guard that merely
+    // tolerates the pattern is not enough: manifest validation must ACCEPT
+    // every shipped-safe shape, otherwise a validator that rejects them all
+    // still passes this test (the guard would be dead code for real
+    // packages).
+    expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id)).not.toThrow()
   })
   it('keeps matching a normal pattern that merely uses a quantified group', () => {
     const urlRegex = '^https://example\\.com/articles(?:/[^?#]*)?$'
@@ -184,7 +190,15 @@ describe('URL matching', () => {
     expect(matchesToolUrl(urlRegex, 'https://example.com/articles/1')).toBe(true)
   })
   it('does not match an over-long URL (no backtracking work for a hostile pattern)', () => {
-    const long = `https://example.com/${'a'.repeat(5000)}`
+    // Finding: "Long URL test misses the length guard" — the URL must
+    // OTHERWISE match the fixture pattern (`/articles/` prefix), so the
+    // assertion fails because of the LENGTH CAP alone: if the cap were
+    // removed, a long `/articles/…` URL would actually match the fixture
+    // pattern and this test would go red. (The previous fixture — `a`s
+    // only — mismatched the pattern and masked the guard entirely.)
+    const long = `https://example.com/articles/${'a'.repeat(5000)}`
+    expect(long.length).toBeGreaterThan(4096)
+    expect(matchesToolUrl(manifest.tools[0].urlRegex, 'https://example.com/articles/1')).toBe(true)
     expect(matchesToolUrl(manifest.tools[0].urlRegex, long)).toBe(false)
   })
 })

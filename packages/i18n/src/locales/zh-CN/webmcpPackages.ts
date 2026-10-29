@@ -47,4 +47,5 @@ export const webmcpPackages = {
   errorGeneric: "操作失败。{detail}",
   addSessionOnly: "{label} 仅在本次会话内生效——浏览器存储不可用，刷新后列表将丢失。",
   dismissError: "关闭",
+  catalogRefreshUnavailable: "操作已成功，但暂时无法刷新扩展的工具目录 — 下次刷新时生效。",
 }

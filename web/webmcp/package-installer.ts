@@ -137,7 +137,7 @@ export async function installPackage(
    * loser now rejects instead of silently replacing the winner.
    */
   underLock?: (lockSignal: AbortSignal) => Promise<void>,
-): Promise<{ filesWritten: number }> {
+): Promise<{ filesWritten: number; catalogRefreshed?: boolean }> {
   const fetchImpl = options?.fetchImpl ?? fetch
   const id = pkg.id
   // Package id doubles as the directory name on the mount; keep the same
@@ -290,8 +290,22 @@ async function withInstallerLock<T>(
       if (packageLocks.get(packageId) === chained) packageLocks.delete(packageId)
     })
   }
-  const bridge = getWebMCPBridge()?.webMCPPackageLock
-  if (!bridge) {
+  const bridge = getWebMCPBridge()
+  if (!bridge?.webMCPPackageLock) {
+    // Finding: "Fallback allows concurrent package changes" — a bridge
+    // WITHOUT the lock RPC means the page talks to an OLD extension whose
+    // provider transport can mutate the mount from OTHER contexts (opt-in
+    // enables, management deletes) that this page's local mutex cannot see.
+    // A local-only lock would be a fiction of safety, so the install
+    // FAILS CLOSED instead of proceeding. A page with no extension at all
+    // (tests / standalone web) still gets the in-process mutex — there is
+    // no other writer to lose a race against.
+    if (bridge) {
+      throw new PackageInstallError(
+        `Package ${packageId} locking is unavailable in the connected extension; update the extension before installing.`,
+        'LOCK_LOST',
+      )
+    }
     // No extension bridge — the in-process mutex is all we can coordinate.
     // The transaction still gets a signal (it simply never aborts: there is
     // no lease to lose), so `fn` keeps a single shape in both modes.
@@ -302,9 +316,10 @@ async function withInstallerLock<T>(
       release()
     }
   }
-  let acquired: Awaited<ReturnType<typeof bridge>>
+  const lockBridge = bridge.webMCPPackageLock
+  let acquired: Awaited<ReturnType<typeof lockBridge>>
   try {
-    acquired = await bridge(packageId, 'acquire', undefined, 30_000)
+    acquired = await lockBridge(packageId, 'acquire', undefined, 30_000)
   } catch (error) {
     // A rejecting acquire (bridge interruption) must still release the
     // local gate — otherwise every later call for this id waits forever
@@ -335,7 +350,7 @@ async function withInstallerLock<T>(
   const controller = new AbortController()
   let lockLost: string | null = null
   const heartbeat = setInterval(() => {
-    void bridge(packageId, 'heartbeat', owner)
+    void lockBridge(packageId, 'heartbeat', owner)
       .then(result => {
         if (!result?.ok) {
           lockLost = `lock for ${packageId} was lost (lease expired)`
@@ -373,7 +388,7 @@ async function withInstallerLock<T>(
     throw error
   } finally {
     clearInterval(heartbeat)
-    await bridge(packageId, 'release', owner).catch(() => {})
+    await lockBridge(packageId, 'release', owner).catch(() => {})
     release()
   }
 }
@@ -474,7 +489,16 @@ async function swapPackageIntoPlace(
       if (error instanceof PackageInstallError) throw error
       throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
-    // All writes landed — swap the new tree in.
+    // All writes landed — swap the new tree in. FENCE the swap commit
+    // itself (finding: "Lease-lost writes still execute"): a lease lost
+    // while the last staged write was pending must not rename under the
+    // new owner's lease — the swap is the transaction's decisive mutation.
+    if (lockSignal.aborted) {
+      throw new PackageInstallError(
+        `The install of ${id} was aborted: the package lock was lost mid-transaction`,
+        'LOCK_LOST',
+      )
+    }
     if (hasRename) {
       let hadOld = false
       try {

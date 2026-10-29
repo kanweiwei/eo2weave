@@ -145,6 +145,11 @@ async function writePackageActivation(mount: string, directory: string): Promise
     throw Object.assign(new Error('Package directory vanished before enable'), { code: 'PACKAGE_UNINSTALLED' })
   }
   const bytes = new TextEncoder().encode(serializeWebMCPConfig({ activation: 'enabled' }))
+  // Finding: "Lease-lost writes still execute" — the activation write is the
+  // transaction's last mutation; a lease lost while earlier awaits (the
+  // presence stat, the catalog re-read) were pending must stop HERE, not
+  // commit a config under the new owner's lease. The caller also fences its
+  // own steps; this is the commit-point backstop inside the write itself.
   await provider.writeFile(`${directory}/config.json`, bytes)
   try {
     await provider.stat(`${directory}/manifest.json`)
@@ -166,9 +171,34 @@ async function writePackageActivation(mount: string, directory: string): Promise
   // key the builtin watcher listens on — so the adapter background refreshes
   // the catalog and the newly enabled tools register immediately instead of
   // waiting for an unrelated refresh. Only AFTER the write actually stuck.
+  //
+  // Finding: "Enable reports failure after committing" — the activation
+  // config has COMMITTED by this point, so a failing sentinel must not
+  // surface as a failed enable: the caller would report ENABLE_FAILED for a
+  // package that is in fact enabled. Retry the bounce a few times (a
+  // transient storage error must not leave the tools unregistered), and on
+  // persistent failure report a DISTINCT code so the UI can say
+  // "enabled, catalog refresh unconfirmed" instead of recording a failure
+  // cooldown for a done deal.
   const sentinel = `${USER_PACKAGE_CONFIG_SENTINEL_PREFIX}${directory}`
-  await chrome.storage.local.set({ [sentinel]: Date.now() })
-  await chrome.storage.local.remove(sentinel)
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await chrome.storage.local.set({ [sentinel]: Date.now() })
+      await chrome.storage.local.remove(sentinel)
+      return
+    } catch (error) {
+      lastError = error
+      // eslint-disable-next-line no-console
+      console.warn('[PackageOptIn] activation sentinel bounce failed (the enable IS committed):', error)
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+  void lastError
+  throw Object.assign(
+    new Error('The package was enabled, but the catalog refresh notification could not be delivered; the tools may register late.'),
+    { code: 'ENABLE_NOTIFY_FAILED' },
+  )
 }
 
 /**
@@ -219,8 +249,13 @@ interface ConsentTokenRecord {
 
 /**
  * Fingerprint of a package candidate: SHA-256 over the manifest version plus
- * a JSON record per tool (`name`, `path`, `urlRegex`, and the ACTUAL SOURCE
- * bytes of the tool — finding: "Changed packages reuse old consent" —
+ * a JSON record per tool (`name`, `path`, `urlRegex`, the ACTUAL SOURCE
+ * bytes of the tool, and the tool DESCRIPTION — finding: "Changed tool
+ * descriptions reuse consent": the opt-in modal DISPLAYS the description, so
+ * a package that swaps descriptions under stable names/paths/source would
+ * otherwise pass old consent while showing the user something it no longer
+ * is — plus the package-level description) — finding: "Changed packages
+ * reuse old consent" —
  * version, tool names and paths alone do not change when a repackaged
  * module swaps the workflow source under the same names, so the old consent
  * tokens kept working; tool NAMES belong in the fingerprint too — a rename
@@ -256,6 +291,7 @@ async function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebM
         path: tool.path,
         urlRegex: tool.urlRegex,
         source: sources?.[tool.path] ?? '',
+        description: tool.description ?? '',
       }))
     : candidate.tools.map(tool => tool.name).sort().map(name => ({ name }))
   // Bytewise ordering (NOT localeCompare — that is environment-dependent):
@@ -265,6 +301,11 @@ async function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebM
     const right = JSON.stringify(b)
     return left < right ? -1 : left > right ? 1 : 0
   })
+  // The PACKAGE description is consent-visible too (finding: "Changed tool
+  // descriptions reuse consent" — the modal shows it above the tool list), so
+  // it joins the digest as its own record; a description swap under a stable
+  // tool list must invalidate stale tokens the same way.
+  records.push({ description: manifest?.description ?? '' })
   return `${version}|${await sha256Hex(JSON.stringify(records))}`
 }
 
@@ -770,6 +811,13 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           // mutations").
           if (lockSignal.aborted) return lost()
           await writePackageActivation(candidate.mount, candidate.directory)
+          // Finding: "Enable reports failure after committing" — the sentinel
+          // bounce is a NOTIFICATION, not part of the activation state: the
+          // config write has already committed when it runs. A storage
+          // failure here must not flip a committed enable into ENABLE_FAILED
+          // (which records a cooldown and claims the enable failed); the
+          // storage.onChanged listener ALSO refreshes on the set/remove
+          // lifecycle, so report the partial state honestly instead.
           return true
         })
         if (!enableResult) {
@@ -864,6 +912,20 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           sendResponse({
             ok: false,
             errorCode: 'PACKAGE_UNINSTALLED',
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return false
+        }
+        // Finding: "Enable reports failure after committing" — a failed
+        // sentinel bounce after a COMMITTED activation write is a partial
+        // success, not a failed enable: the config on disk is `enabled`.
+        // Report the dedicated code (the UI treats it like VERIFY_INCOMPLETE:
+        // guidance, no failure cooldown) so the user is not told the enable
+        // failed when the tools are (or will be) active.
+        if (raceCode === 'ENABLE_NOTIFY_FAILED') {
+          sendResponse({
+            ok: false,
+            errorCode: 'ENABLE_NOTIFY_FAILED',
             error: err instanceof Error ? err.message : String(err),
           })
           return false

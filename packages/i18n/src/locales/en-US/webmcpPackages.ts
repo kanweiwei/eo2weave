@@ -46,5 +46,6 @@ export const webmcpPackages = {
   errorCollision: "This package conflicts with an existing one. {detail}",
   errorGeneric: "The operation failed. {detail}",
   addSessionOnly: "{label} was added for this session only — browser storage is unavailable, so the list will not survive a reload.",
+  catalogRefreshUnavailable: "The operation succeeded, but the extension's tool catalog could not be refreshed right now — it updates on the next refresh.",
   dismissError: "Dismiss",
 }

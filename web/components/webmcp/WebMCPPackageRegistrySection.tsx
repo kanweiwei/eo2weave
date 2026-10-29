@@ -544,9 +544,16 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const handleInstall = async (registry: PackageRegistry, pkg: RegistryManifestPackage): Promise<boolean> => {
     setBusyId(pkg.id)
     try {
-      await installRegistryPackage(registry, pkg)
+      const result = await installRegistryPackage(registry, pkg)
       await refreshInstalled()
-      setActionError(null)
+      // Finding: "Refresh failure leaves stale tools" — a background refresh
+      // the extension did NOT confirm must not render as a fully clean
+      // install: the files are committed, but the extension's tool catalog
+      // may lag until the next refresh. Surface it through the same inline
+      // error channel (non-fatal for the flow).
+      setActionError(result.catalogRefreshed
+        ? null
+        : t('settings.webmcpPackages.catalogRefreshUnavailable'))
       setConfirmPkg(null)
       return true
     } catch (error) {
@@ -560,9 +567,11 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const handleUninstall = async (pkgId: string): Promise<boolean> => {
     setBusyId(pkgId)
     try {
-      await uninstallRegistryPackage(pkgId)
+      const result = await uninstallRegistryPackage(pkgId)
       await refreshInstalled()
-      setActionError(null)
+      setActionError(result.catalogRefreshed
+        ? null
+        : t('settings.webmcpPackages.catalogRefreshUnavailable'))
       return true
     } catch (error) {
       setActionError(localizedError(t, error))

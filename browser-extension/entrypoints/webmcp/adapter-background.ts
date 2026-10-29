@@ -107,16 +107,26 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       // therefore require a trusted CreatorWeave sender (the web app
       // origins + loopback dev, the same check the
       // `webmcp_adapter_validate` branch above applies). READ operations
-      // stay open: the page-facing VFS needs them to render the file tree.
+      // stay open: the page-facing VFS needs them to render the file tree —
+      // EXCEPT `readFile` on the package mount itself (round-2 finding:
+      // "Websites can read package files"): bytes of installed packages are
+      // not page content, and an untrusted page able to list directories
+      // could pull package sources and configs straight off the mount.
+      // `stat`/`readdir` stay open so the VFS tree still renders (names
+      // only); file BYTES require a trusted sender.
       // One validated mount value drives ALL checks and the dispatch below
       // (absent mount defaults to the writable `webmcp` mount).
       const mount = message.mount ?? 'webmcp'
+      const mutating = ['writeFile', 'mkdir', 'remove'].includes(String(message.method))
+      const untrusted = !isTrustedCreatorWeaveSenderUrl(sender.url)
       if (
         mount === 'webmcp' &&
-        ['writeFile', 'mkdir', 'remove'].includes(String(message.method)) &&
-        !isTrustedCreatorWeaveSenderUrl(sender.url)
+        (mutating || String(message.method) === 'readFile') &&
+        untrusted
       ) {
-        respond({ ok: false, code: 'EACCES', error: 'Mutating the WebMCP package mount requires a trusted CreatorWeave page' })
+        respond({ ok: false, code: 'EACCES', error: mutating
+          ? 'Mutating the WebMCP package mount requires a trusted CreatorWeave page'
+          : 'Reading package files requires a trusted CreatorWeave page' })
         return false
       }
       // Second layer of the same finding: even a TRUSTED page must not arm a

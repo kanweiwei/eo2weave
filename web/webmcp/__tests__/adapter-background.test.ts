@@ -5,6 +5,25 @@ import { createAdapterService } from '../../../browser-extension/entrypoints/web
 vi.mock('../../../browser-extension/entrypoints/webmcp/adapter-service', () => ({
   createAdapterService: vi.fn(),
 }))
+// The user-mount provider is backed by OPFS (unavailable in tests). Mocking
+// the storage module lets the trusted-write test assert the write REACHES the
+// provider (finding: "Trusted writes can still be denied" — `code !==
+// 'EACCES'` also passes for EINVAL/EIO, i.e. a write the provider denied).
+const adapterWriteFile = vi.hoisted(() => vi.fn(async () => undefined))
+vi.mock('../../../browser-extension/entrypoints/webmcp/provider-storage', () => ({
+  // A PLAIN async function: `vi.resetAllMocks()` in beforeEach wipes
+  // implementations set through vi.fn, which would make the provider
+  // `undefined` mid-test.
+  getAdapterStorage: async () => ({
+    readOnly: false,
+    stat: vi.fn(),
+    readdir: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: adapterWriteFile,
+    mkdir: vi.fn(),
+    remove: vi.fn(),
+  }),
+}))
 
 const onUpdated = vi.fn()
 const onRemoved = vi.fn()
@@ -156,6 +175,10 @@ it('lets a TRUSTED page mutate the webmcp mount (reads stay open for everyone)',
   // settings installer writes the DISABLED default config). An
   // `activation: "enabled"` payload is separately refused by the consent
   // layer below — enabling is exclusively the opt-in flow's job.
+  // Finding: "Trusted writes can still be denied" — `code !== 'EACCES'`
+  // also passes for EINVAL/EROFS/EIO, i.e. a write the gate let through but
+  // the provider DENIED. The storage module mock at the top of the file lets
+  // this test assert the write REACHES the provider and succeeds.
   const writeResult = await new Promise<Record<string, unknown>>((resolve) => {
     listener(
       {
@@ -169,7 +192,8 @@ it('lets a TRUSTED page mutate the webmcp mount (reads stay open for everyone)',
       resolve
     )
   })
-  expect(writeResult.code).not.toBe('EACCES')
+  expect(writeResult).toEqual({ ok: true, value: null })
+  expect(adapterWriteFile).toHaveBeenCalledWith('com.discord.main/config.json', expect.any(Uint8Array))
   // The consent layer still refuses an ACTIVATION write even from a trusted
   // page — enabling is exclusively the opt-in flow's job.
   const activateResult = await new Promise<Record<string, unknown>>((resolve) => {
@@ -186,6 +210,26 @@ it('lets a TRUSTED page mutate the webmcp mount (reads stay open for everyone)',
     )
   })
   expect(activateResult).toEqual(expect.objectContaining({ ok: false, code: 'EACCES' }))
+  vi.restoreAllMocks()
+})
+
+/**
+ * SECURITY (round-2 finding: "Websites can read package files"): the
+ * all-sites content relay lets ANY page reach `webmcp_provider_call`, and
+ * the provider returns file BYTES — an untrusted page could pull installed
+ * package sources and configs straight off the mount. `readdir`/`stat` stay
+ * open for the VFS tree (names only); `readFile` bytes require a trusted
+ * CreatorWeave sender.
+ */
+it('blocks readFile on the webmcp mount from untrusted pages', async () => {
+  const listener = onMessage.mock.calls[0][0]
+  const respond = vi.fn()
+  listener(
+    { type: 'webmcp_provider_call', mount: 'webmcp', method: 'readFile', path: 'com.discord.main/workflows/read.js' },
+    { id: 'test', url: 'https://evil.example/page' },
+    respond
+  )
+  expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EACCES' }))
 })
 
 /**
