@@ -1,4 +1,4 @@
-// 프로모션 랜딩 페이지 (/skill-install?skill=<dirName>, issue #126).
+// Promotion landing page (/skill-install?skill=<dirName>, issue #126).
 export const skillInstall = {
     loading: "준비 중…",
     errorTitle: "이 스킬을 불러올 수 없습니다",
@@ -14,6 +14,7 @@ export const skillInstall = {
     installing: "설치 중…",
     installDone: "설치 완료!",
     installFailed: "설치 실패",
+    registerFailed: "스킬이 설치되었지만 등록에 실패했습니다. 다시 시도해 주세요.",
     aiReady: "AI 모델이 준비되었습니다",
     aiNotReady: "마지막 단계: Nutstore AI에 로그인하면 스킬을 실행할 수 있습니다",
     aiLater: "지금은 건너뛰기",
