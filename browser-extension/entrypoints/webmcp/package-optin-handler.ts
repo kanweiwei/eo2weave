@@ -218,9 +218,9 @@ interface ConsentTokenRecord {
 }
 
 /**
- * Fingerprint of a package candidate: SHA-256 over the manifest version plus,
- * for every tool, the sorted `name:path:urlRegex` triple and the hash of the
- * tool's ACTUAL SOURCE bytes (finding: "Changed packages reuse old consent" —
+ * Fingerprint of a package candidate: SHA-256 over the manifest version plus
+ * a JSON record per tool (`name`, `path`, `urlRegex`, and the ACTUAL SOURCE
+ * bytes of the tool — finding: "Changed packages reuse old consent" —
  * version, tool names and paths alone do not change when a repackaged
  * module swaps the workflow source under the same names, so the old consent
  * tokens kept working; tool NAMES belong in the fingerprint too — a rename
@@ -228,7 +228,11 @@ interface ConsentTokenRecord {
  * cryptographic (round-3 finding: "Stale consent accepts changed code" — a
  * 32-bit FNV-1a truncation collides for crafted source swaps, which would
  * let a replacement pass the old consent) and deterministic across contexts;
- * Web Crypto is available in every extension context.
+ * Web Crypto is available in every extension context. Records are serialized
+ * with `JSON.stringify` rather than delimiter joins — an unescaped `:`/`,`
+ * join is injective only for delimiter-free fields, so different tool lists
+ * could otherwise hash to the same input (round-5 finding: "Old consent
+ * enables unseen tools").
  */
 async function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebMCPPackageEntry): Promise<string> {
   const manifest = entry?.package?.manifest
@@ -238,10 +242,30 @@ async function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebM
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text) as BufferSource)
     return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
   }
-  const toolPairs: string[] = manifest?.tools
-    ? manifest.tools.map(tool => `${tool.name}:${tool.path}:${tool.urlRegex}:${sources?.[tool.path] ?? ''}`)
-    : candidate.tools.map(tool => tool.name).sort()
-  return `${version}|${await sha256Hex(toolPairs.sort().join(','))}`
+  // Each tool is serialized as a JSON record instead of being joined with
+  // raw `:`/`,` delimiters (finding: "Old consent enables unseen tools"):
+  // delimiter joins are ambiguous — a tool field CONTAINING the delimiters
+  // can make two different tool lists produce the same hash input, so a
+  // consent token minted for one list would validate against another and
+  // enable tools the user never saw. JSON encoding is injective for these
+  // string-keyed records and byte-deterministic, so the fingerprint stays
+  // comparable across contexts.
+  const records: Array<Record<string, string>> = manifest?.tools
+    ? manifest.tools.map(tool => ({
+        name: tool.name,
+        path: tool.path,
+        urlRegex: tool.urlRegex,
+        source: sources?.[tool.path] ?? '',
+      }))
+    : candidate.tools.map(tool => tool.name).sort().map(name => ({ name }))
+  // Bytewise ordering (NOT localeCompare — that is environment-dependent):
+  // the sort only fixes record order so the digest is stable.
+  records.sort((a, b) => {
+    const left = JSON.stringify(a)
+    const right = JSON.stringify(b)
+    return left < right ? -1 : left > right ? 1 : 0
+  })
+  return `${version}|${await sha256Hex(JSON.stringify(records))}`
 }
 
 /**
@@ -691,7 +715,16 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         const enableFailure = (errorCode: string, error: string) => {
           sendResponse({ ok: false, errorCode, error })
         }
-        const enableResult = await withPackageLock(candidate.directory, async (): Promise<boolean> => {
+        const enableResult = await withPackageLock(candidate.directory, async (lockSignal): Promise<boolean> => {
+          // Guard every step (finding: "Lost lease does not stop
+          // mutations"): when the heartbeat loses the lease the signal
+          // aborts, and the transaction stops BEFORE the next mutation
+          // instead of writing a config under the new owner's lease.
+          const lost = () => {
+            enableFailure('LOCK_LOST', 'The package lease was lost while enabling; nothing was enabled.')
+            return false
+          }
+          if (lockSignal.aborted) return lost()
           if (candidate.mount !== 'builtin-webmcp') {
             const provider = await getAdapterStorage()
             try {
@@ -700,6 +733,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
               enableFailure('PACKAGE_UNINSTALLED', 'The package was removed while enabling; nothing was enabled.')
               return false
             }
+            if (lockSignal.aborted) return lost()
           }
           // Re-check the package CONTENT under the lock (finding:
           // "Replacement receives old consent"): the fingerprint in the
@@ -723,12 +757,18 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           // so a replacement that changed tool names or URL rules (while
           // keeping paths + source bytes) now yields a different fingerprint
           // and the old consent is rejected instead of arming it.
+          if (lockSignal.aborted) return lost()
           const freshFingerprint = freshEntry ? await packageFingerprint(candidate, freshEntry) : null
           const oldFingerprint = await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
+          if (lockSignal.aborted) return lost()
           if (freshFingerprint === null || freshFingerprint !== oldFingerprint) {
             enableFailure('PACKAGE_MISMATCH', 'The package changed while enabling; nothing was enabled.')
             return false
           }
+          // The activation write is the mutation: an aborted transaction
+          // must not perform it (finding: "Lost lease does not stop
+          // mutations").
+          if (lockSignal.aborted) return lost()
           await writePackageActivation(candidate.mount, candidate.directory)
           return true
         })
