@@ -26,6 +26,34 @@ import { RESOURCE_LIMITS } from './skill-types'
 const SKILLS_ROOT = '.skills'
 /** Subdirectory under SKILLS_ROOT for user skills */
 const USER_SKILLS_DIR = 'user'
+/**
+ * Subdirectory under SKILLS_ROOT for durable import backups. Before an
+ * import removes an existing skill directory, the previous content is
+ * staged here (one unique run folder per import) so a tab close between
+ * removal and rollback cannot lose the skill. Cleaned up when the import
+ * finishes; a crashed import leaves the backup behind as recovery data.
+ */
+const IMPORT_BACKUPS_DIR = '.import-backups'
+
+/** True when the error is an OPFS "not found" (absence — not a failure). */
+function isNotFoundError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === 'NotFoundError') return true
+  // Test doubles and polyfills may not produce real DOMExceptions.
+  return e instanceof Error && e.message.includes('NotFoundError')
+}
+
+/** Concatenate streamed decoder chunks into a single buffer. */
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0]
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  const merged = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) {
+    merged.set(c, off)
+    off += c.length
+  }
+  return merged
+}
 
 /** Scan result */
 export interface UserSkillScanResult {
@@ -91,7 +119,13 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
       file.terminate()
       return
     }
-    file.ondata = (err, data) => {
+    // Cumulative expanded size for THIS entry (the decoder may deliver a
+    // large entry in several chunks — checking each chunk alone would let
+    // a single oversized entry slip through chunk by chunk). Chunks are
+    // buffered and concatenated once, on the entry's final chunk.
+    let entrySize = 0
+    let entryChunks: Uint8Array[] = []
+    file.ondata = (err, data, final) => {
       if (err) {
         failure = err instanceof Error ? err : new Error(String(err))
         return
@@ -99,13 +133,21 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
       // Once failed, discard the rest instead of buffering it.
       if (failure) return
       totalSize += data.length
-      if (data.length > limits.MAX_ENTRY_SIZE || totalSize > limits.MAX_TOTAL_SIZE) {
+      entrySize += data.length
+      if (
+        entrySize > limits.MAX_ENTRY_SIZE ||
+        totalSize > limits.MAX_TOTAL_SIZE
+      ) {
         failure = new Error(
           'ZIP archive expands beyond the import size limit — it may be a decompression bomb.',
         )
         return
       }
-      files[file.name] = data
+      entryChunks.push(data)
+      if (final) {
+        files[file.name] = concatChunks(entryChunks)
+        entryChunks = []
+      }
     }
     file.start()
   }
@@ -729,16 +771,73 @@ async function writeZipSkillToOpfs(
 }
 
 /**
+ * Write a flat map of relative paths → data into `dirHandle` (staging and
+ * restore helper).
+ */
+async function writeSkillFiles(
+  dirHandle: FileSystemDirectoryHandle,
+  files: Record<string, Uint8Array>,
+): Promise<void> {
+  for (const [path, data] of Object.entries(files)) {
+    const parts = path.split('/').filter(Boolean)
+    if (parts.length === 0) continue
+    let currentDir = dirHandle
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentDir = await currentDir.getDirectoryHandle(parts[i], { create: true })
+    }
+    const fileHandle = await currentDir.getFileHandle(parts[parts.length - 1], { create: true })
+    const writable = await fileHandle.createWritable()
+    await writable.write(data)
+    await writable.close()
+  }
+}
+
+/**
+ * Read a staged backup directory back from OPFS (restore path for a failed
+ * overwrite-import). Unlike the in-memory backup map, this survives a tab
+ * close during the import window.
+ */
+async function readStagedBackup(
+  stagedDir: FileSystemDirectoryHandle,
+): Promise<Record<string, Uint8Array>> {
+  const readRecursive = async (
+    dirHandle: FileSystemDirectoryHandle,
+    prefix: string,
+  ): Promise<Record<string, Uint8Array>> => {
+    const out: Record<string, Uint8Array> = {}
+    for await (const [name, entry] of dirHandle.entries()) {
+      const path = prefix ? `${prefix}/${name}` : name
+      if (entry.kind === 'directory') {
+        const sub = await dirHandle.getDirectoryHandle(name)
+        Object.assign(out, await readRecursive(sub, path))
+      } else {
+        const file = await (entry as FileSystemFileHandle).getFile()
+        out[path] = new Uint8Array(await file.arrayBuffer())
+      }
+    }
+    return out
+  }
+  return readRecursive(stagedDir, '')
+}
+
+/**
  * Import a previewed zip skill into OPFS `.skills/user/<dirName>/` (stage 2).
  *
  * For single-skill zips, imports the one skill.
  * For bundle zips, imports all skills.
  *
+ * Backups are DURABLE: before any original is removed, the previous content
+ * is staged on disk under `.skills/.import-backups/<runId>/<dirName>/`, so a
+ * tab close between removal and rollback cannot lose the skill — the backup
+ * survives in OPFS. On success the staged run directory is deleted; on
+ * failure the skill is restored FROM THE STAGED DIRECTORY (not memory) and
+ * the run directory is then cleaned up.
+ *
  * On failure, only the directories THIS import actually touched are cleaned
  * up: directories that did not exist before the import are removed, and
- * directories that were overwritten are restored from a staged backup of
- * their previous content — a previously installed skill that merely appears
- * in a failed bundle preview is never deleted.
+ * directories that were overwritten are restored from the staged backup — a
+ * previously installed skill that merely appears in a failed bundle preview
+ * is never deleted.
  *
  * @param preview  The preview returned by previewUserSkillZip
  * @returns the total number of files written across all skills.
@@ -754,22 +853,52 @@ export async function importUserSkillZip(
   const opfsRoot = await navigator.storage.getDirectory()
   const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
   const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+  const backupsRoot = await skillsDir.getDirectoryHandle(IMPORT_BACKUPS_DIR, { create: true })
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const runDir = await backupsRoot.getDirectoryHandle(runId, { create: true })
 
-  // Stage 1: back up every target directory that already exists, then remove
-  // it so writeZipSkillToOpfs starts from a clean slate. Backups let us
-  // restore the previous version if a later skill in the bundle fails.
-  const backups = new Map<string, Record<string, Uint8Array>>()
+  // Stage 1: back up every target directory that already exists — staged
+  // DURABLY under .skills/.import-backups/<runId>/ — then remove it so
+  // writeZipSkillToOpfs starts from a clean slate. The staged backups let
+  // us restore the previous version if a later skill in the bundle fails,
+  // even if this tab dies before the rollback runs.
+  const backedUp = new Set<string>()
   const preRemoved = new Set<string>()
-  for (const s of skills) {
-    const existing = await readUserSkillDir(userDir, s.dirName)
-    if (existing) {
-      backups.set(s.dirName, existing)
-      try {
-        await userDir.removeEntry(s.dirName, { recursive: true })
-        preRemoved.add(s.dirName)
-      } catch {
-        // Nothing to remove — fine.
+  try {
+    for (const s of skills) {
+      // Throws on a real read failure — absence (NotFoundError) returns
+      // null and is the only "no backup needed" signal.
+      const existing = await readUserSkillDir(userDir, s.dirName)
+      if (existing) {
+        const stagedDir = await runDir.getDirectoryHandle(s.dirName, { create: true })
+        await writeSkillFiles(stagedDir, existing)
+        backedUp.add(s.dirName)
+        try {
+          await userDir.removeEntry(s.dirName, { recursive: true })
+          preRemoved.add(s.dirName)
+        } catch {
+          // Nothing to remove — fine.
+        }
       }
+    }
+  } catch (e) {
+    // Backup staging failed BEFORE anything was removed — abort the import
+    // without touching any existing skill.
+    try {
+      await backupsRoot.removeEntry(runId, { recursive: true })
+    } catch {
+      // Cleanup best-effort.
+    }
+    throw e
+  }
+
+  const hasStagedBackup = async (dirName: string): Promise<boolean> => {
+    if (!backedUp.has(dirName)) return false
+    try {
+      await runDir.getDirectoryHandle(dirName)
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -786,57 +915,71 @@ export async function importUserSkillZip(
       total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
       written.add(s.dirName)
     }
+    // Success: the staged backups are no longer needed. Cleanup is
+    // best-effort — a leftover staging dir must never turn a successful
+    // import into a rollback.
+    try {
+      await backupsRoot.removeEntry(runId, { recursive: true })
+    } catch (cleanupErr) {
+      console.warn(
+        `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
+        cleanupErr,
+      )
+    }
     return total
   } catch (e) {
-    // Stage 3 (cleanup): restore overwritten skills from their backups,
-    // remove directories created fresh by this failed import, and recreate
+    // Stage 3 (cleanup): restore overwritten skills from their STAGED
+    // backups (disk — survives even if this tab is closing), remove
+    // directories created fresh by this failed import, and recreate
     // (empty) directories we removed but never reached. Never touch
     // anything this import did not write or stage.
+    const restoreFromStaging = async (dirName: string) => {
+      const stagedDir = await runDir.getDirectoryHandle(dirName)
+      const files = await readStagedBackup(stagedDir)
+      await restoreUserSkillDir(userDir, dirName, files)
+    }
     for (const dirName of written) {
-      const backup = backups.get(dirName)
-      if (backup) {
-        try {
-          await restoreUserSkillDir(userDir, dirName, backup)
-        } catch (restoreErr) {
-          console.warn(
-            `[UserSkillsScanner] Failed to restore previous version of ${dirName}:`,
-            restoreErr,
-          )
-        }
-      } else {
-        try {
+      try {
+        if (await hasStagedBackup(dirName)) {
+          await restoreFromStaging(dirName)
+        } else {
           await userDir.removeEntry(dirName, { recursive: true })
-        } catch (cleanupErr) {
-          console.warn(
-            `[UserSkillsScanner] Failed to clean up partial skill install ${dirName}:`,
-            cleanupErr,
-          )
         }
+      } catch (restoreErr) {
+        console.warn(
+          `[UserSkillsScanner] Failed to roll back ${dirName}:`,
+          restoreErr,
+        )
       }
     }
     for (const s of skills) {
       if (written.has(s.dirName)) continue
-      const backup = backups.get(s.dirName)
-      if (backup) {
-        // Staged-but-never-reached skill: its previous directory was removed
-        // in stage 1 — restore it so it is exactly as before.
-        try {
-          await restoreUserSkillDir(userDir, s.dirName, backup)
-        } catch (restoreErr) {
-          console.warn(
-            `[UserSkillsScanner] Failed to restore untouched skill ${s.dirName}:`,
-            restoreErr,
-          )
-        }
-      } else if (s.dirName !== undefined) {
-        // Freshly created by the failed write attempt (or its self-removal
-        // path) — remove the partial directory so it never looks installed.
-        try {
+      try {
+        if (await hasStagedBackup(s.dirName)) {
+          // Staged-but-never-reached skill: its previous directory was
+          // removed in stage 1 — restore it so it is exactly as before.
+          await restoreFromStaging(s.dirName)
+        } else {
+          // Freshly created by the failed write attempt (or its
+          // self-removal path) — remove the partial directory so it never
+          // looks installed.
           await userDir.removeEntry(s.dirName, { recursive: true })
-        } catch {
-          // Was never created — fine.
         }
+      } catch (restoreErr) {
+        console.warn(
+          `[UserSkillsScanner] Failed to roll back untouched skill ${s.dirName}:`,
+          restoreErr,
+        )
       }
+    }
+    // Rollback done (best-effort) — clean up the staged run directory.
+    try {
+      await backupsRoot.removeEntry(runId, { recursive: true })
+    } catch (cleanupErr) {
+      console.warn(
+        `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
+        cleanupErr,
+      )
     }
     throw e
   }
@@ -844,7 +987,12 @@ export async function importUserSkillZip(
 
 /**
  * Read every file under `.skills/user/<dirName>/` into memory (backup).
- * Returns null when the directory does not exist.
+ *
+ * Returns null ONLY when the directory does not exist (absence). Any other
+ * error — a failing getFile, an unreadable entry, a partial read — throws,
+ * so a caller must never interpret a real read failure as "nothing to
+ * back up" and proceed without a backup (that would let a later failed
+ * import delete the user's existing skill).
  */
 async function readUserSkillDir(
   userDir: FileSystemDirectoryHandle,
@@ -868,12 +1016,14 @@ async function readUserSkillDir(
     return out
   }
 
+  let skillDir: FileSystemDirectoryHandle
   try {
-    const skillDir = await userDir.getDirectoryHandle(dirName)
-    return await readRecursive(skillDir, '')
-  } catch {
-    return null
+    skillDir = await userDir.getDirectoryHandle(dirName)
+  } catch (e) {
+    if (isNotFoundError(e)) return null
+    throw e
   }
+  return await readRecursive(skillDir, '')
 }
 
 /**
