@@ -20,4 +20,5 @@ export const sidePanelPackage = {
   enabledToast: "{name}이(가) 활성화되었습니다. 도구를 적용하기 위해 페이지를 새로고침합니다",
   enableFailedToast: "활성화에 실패했습니다. 확장 프로그램이 최신 버전인지 확인 후 다시 시도해 주세요.",
   consentRetryToast: "확인 토큰이 만료되었습니다. 이 대화상자를 닫으면 다시 시도할 수 있습니다(쿨다운이 기록되지 않음).",
+  enabledVerificationUnavailableToast: "{name}을(를) 활성화하고 페이지를 새로고침했지만 쓰기 검증을 완료하지 못했습니다 — 도구가 나타나지 않으면 확장 프로그램의 '지원되는 사이트' 관리 페이지에서 확인하세요.",
 }

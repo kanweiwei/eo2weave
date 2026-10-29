@@ -59,6 +59,30 @@ it('blocks Web callers from the internal package configuration API', () => {
   expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EACCES' }))
 })
 
+it.each([
+  ['an ARRAY mount that stringifies to extension-skills', ['extension-skills']],
+  ['a NUMBER mount', 0],
+])('refuses a NON-STRING mount (%s) instead of letting it fall through to the writable provider', (_label, mount) => {
+  // Round-3 finding "Sites bypass package consent": `String(['extension-skills'])`
+  // passed the string-based allowlist, then the strict-equality dispatch fell
+  // through to the writable `webmcp` provider — a hostile page could reach
+  // package config writes that way.
+  const listener = onMessage.mock.calls[0][0]
+  const respond = vi.fn()
+  listener(
+    {
+      type: 'webmcp_provider_call',
+      mount,
+      method: 'writeFile',
+      path: 'com.hostile.pkg/config.json',
+      content: btoa(JSON.stringify({ activation: 'enabled' })),
+    },
+    { id: 'test', url: 'https://evil.example/page' },
+    respond,
+  )
+  expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EINVAL' }))
+})
+
 it('routes the extension skill mount through the background transport', async () => {
   const listener = onMessage.mock.calls[0][0]
   const result = await new Promise<Record<string, unknown>>((resolve) => {

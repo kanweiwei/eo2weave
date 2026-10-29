@@ -175,6 +175,16 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
     // reads) — not in the builtin override storage.
     const stored = JSON.parse(new TextDecoder().decode(await userStorage.readFile(enablePath)))
     expect(stored).toEqual({ activation: 'enabled' })
+    // The storage sentinel was bounced (finding: "External tools stay
+    // unregistered"): the adapter background learns about the OPFS config
+    // write ONLY through this chrome.storage.local handshake — a write that
+    // stops sending it would leave the tools unregistered while the test
+    // still passed on the config.json assertion above.
+    const sentinelKey = `webmcp_user_package_config_com.discord.main`
+    const setKeys = (chrome.storage.local.set as ReturnType<typeof vi.fn>).mock.calls.map(call => Object.keys(call[0] ?? {})).flat()
+    expect(setKeys).toContain(sentinelKey)
+    const removeKeys = (chrome.storage.local.remove as ReturnType<typeof vi.fn>).mock.calls.map(call => call[0])
+    expect(removeKeys).toContain(sentinelKey)
   })
 
   it('enable verifies against the user-mount config after the write', async () => {
@@ -386,5 +396,26 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
     expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'PACKAGE_MISMATCH' })
+  })
+
+  it('REFUSES a tokenless enable of an EXTERNAL package even in grace mode (round 3)', async () => {
+    // Round-3 finding "External activation skips consent": the tokenless
+    // grace path is a compat shim for pre-token BUILTIN clients — external
+    // packages never had a legacy caller, so a page must not be able to
+    // activate its own installed package without a consent token.
+    await seedInstalledPackage(userStorage)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const respond = vi.fn()
+      const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+      await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main' }, respond)
+      expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'CONSENT_REQUIRED' })
+      // Nothing was written and the tab was not reloaded.
+      const stored = JSON.parse(new TextDecoder().decode(await userStorage.readFile(enablePath)))
+      expect(stored).toEqual({ activation: 'disabled' })
+      expect(reload).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

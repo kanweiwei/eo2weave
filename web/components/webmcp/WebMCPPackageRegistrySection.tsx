@@ -47,24 +47,53 @@ interface WebMCPPackageRegistrySectionProps {
 
 /** Bound for the section's own manifest.json preview fetches. */
 const REGISTRY_PREVIEW_TIMEOUT_MS = 30_000
+/**
+ * Concurrent manifest-preview fetch cap (finding: "Large catalogs overload
+ * settings"): the section reads one manifest per package to verify tool
+ * counts — a huge catalog must not launch every request at once.
+ */
+const PREVIEW_CONCURRENCY = 6
 
 /**
  * Read a preview response under a byte cap (finding: "Registry bodies hang
- * or exhaust memory"). Prefers streaming text so the cap is enforced BEFORE
- * parsing; falls back to `json()` for response doubles without a text body
- * (tests).
+ * or exhaust memory"; round-3: "Preview size cap buffers full response").
+ * The cap is enforced WHILE the body streams — buffering `text()` first let
+ * an oversized body exhaust page memory before the check ran, and the
+ * fallback `json()` path had no cap at all. Test doubles without a
+ * streaming body get the same limit applied to their buffered text.
  */
 async function readJsonCapped(response: Response, maxBytes: number): Promise<unknown> {
-  if (typeof response.text === 'function') {
-    // A declared content-length over the cap rejects before any body read.
-    const declared = Number(response.headers?.get?.('content-length') ?? 0)
-    if (Number.isFinite(declared) && declared > maxBytes) {
-      throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+  // A declared content-length over the cap rejects before any body read.
+  const declared = Number(response.headers?.get?.('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+  }
+  const reader = response.body?.getReader?.()
+  if (reader) {
+    const chunks: Uint8Array[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => {})
+        throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+      }
+      chunks.push(value)
     }
+    const merged = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      merged.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return JSON.parse(new TextDecoder().decode(merged))
+  }
+  // No streaming body (test doubles): cap the buffered text by its UTF-8
+  // byte size, which is what the wire limit counts.
+  if (typeof response.text === 'function') {
     const text = await response.text()
-    // UTF-16 `length` under-counts multi-byte characters (CJK paths in
-    // skill names) — measure the actual UTF-8 byte size (finding: "Oversized
-    // previews exhaust memory").
     const bytes = new TextEncoder().encode(text)
     if (bytes.length > maxBytes) {
       throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
@@ -117,7 +146,7 @@ interface RegistryCardProps {
   activations: Map<string, 'enabled' | 'disabled'>
   busyId: string | null
   onInstall: (registry: PackageRegistry, pkg: RegistryManifestPackage, verifiedToolCount: number) => Promise<boolean>
-  onUninstall: (pkg: RegistryManifestPackage) => Promise<boolean>
+  onUninstall: (pkgId: string) => Promise<boolean>
   onRemoveRegistry: (registry: PackageRegistry) => void
 }
 
@@ -127,12 +156,16 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
   const [refreshing, setRefreshing] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   /**
-   * Tool count per package id, taken from the package's OWN manifest.json
-   * (the file the extension validates). The registry's `toolCount` is a
-   * publisher-provided claim and may disagree with the package contents —
-   * the verified count is shown instead so the catalog never misleads.
+   * Tool count per package id + version, taken from the package's OWN
+   * manifest.json (the file the extension validates). The registry's
+   * `toolCount` is a publisher-provided claim and may disagree with the
+   * package contents — the verified count is shown instead so the catalog
+   * never misleads.
    */
-  const [verifiedToolCounts, setVerifiedToolCounts] = useState<Map<string, number>>(new Map())
+  const [verifiedToolCounts, setVerifiedToolCounts] = useState<Map<string, { count: number; version: string }>>(new Map())
+  /** Packages whose preview manifest could not be read (count shown as unverified). */
+  const [unverifiedCounts, setUnverifiedCounts] = useState<Set<string>>(new Set())
+  void unverifiedCounts
 
   const load = useCallback(async (force: boolean) => {
     setRefreshing(true)
@@ -151,7 +184,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
   }, [load])
 
   /** Read one package's manifest.json and record its real tool count. */
-  const readToolCount = useCallback(async (pkgId: string) => {
+  const readToolCount = useCallback(async (pkgId: string, version: string) => {
     try {
       const { registryFileUrl, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES } = await import('@/webmcp/package-registry-client')
       const response = await fetch(registryFileUrl(registry, `packages/${pkgId}/manifest.json`), {
@@ -161,23 +194,66 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
         // manifest must not hang the settings page.
         signal: AbortSignal.timeout(REGISTRY_PREVIEW_TIMEOUT_MS),
       })
-      if (!response.ok) return
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: unknown }
-      if (!Array.isArray(data.tools)) return
+      if (!Array.isArray(data.tools)) throw new Error('The package manifest lists no tools')
       const count = (data.tools as unknown[]).length
+      // Record the count TOGETHER with the catalog version it was verified
+      // for (round-3 finding: "Refresh shows stale tool count"): a catalog
+      // refresh that bumps the version drops the stale entry immediately,
+      // so the card and the install confirmation cannot act on a count
+      // read for an older package version.
+      setUnverifiedCounts(previous => {
+        if (!previous.has(pkgId)) return previous
+        const next = new Set(previous)
+        next.delete(pkgId)
+        return next
+      })
       setVerifiedToolCounts(previous => {
         const next = new Map(previous)
-        next.set(pkgId, count)
+        next.set(pkgId, { count, version })
         return next
       })
     } catch {
-      // Unreadable manifest — keep the registry's claim for that package.
+      // Preview failed (finding: "Failed preview shows claimed count"): the
+      // registry's claim must NOT keep masquerading as a verified count —
+      // record the failure so the UI shows the count as unverified.
+      setUnverifiedCounts(previous => {
+        if (previous.has(pkgId)) return previous
+        const next = new Set(previous)
+        next.add(pkgId)
+        return next
+      })
+      setVerifiedToolCounts(previous => {
+        if (!previous.has(pkgId)) return previous
+        const next = new Map(previous)
+        next.delete(pkgId)
+        return next
+      })
     }
   }, [registry])
 
   useEffect(() => {
-    for (const pkg of manifest?.packages ?? []) void readToolCount(pkg.id)
+    // Bound concurrent preview fetches (finding: "Large catalogs overwhelm
+    // settings"): at most PREVIEW_CONCURRENCY manifest requests run at
+    // once; the rest queue behind them.
+    const packages = manifest?.packages ?? []
+    let cursor = 0
+    const workers = Array.from({ length: Math.min(PREVIEW_CONCURRENCY, packages.length) }, async () => {
+      while (cursor < packages.length) {
+        const pkg = packages[cursor]
+        cursor += 1
+        await readToolCount(pkg.id, pkg.version)
+      }
+    })
+    void Promise.all(workers)
   }, [manifest, readToolCount])
+
+  /** Verified count for the CURRENT catalog version, else null (unverified). */
+  const verifiedCountOf = useCallback((pkg: RegistryManifestPackage): number | null => {
+    const verified = verifiedToolCounts.get(pkg.id)
+    return verified && verified.version === pkg.version ? verified.count : null
+  }, [verifiedToolCounts])
 
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-800">
@@ -223,9 +299,15 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
           const busy = busyId === pkg.id
           const expanded = expandedId === pkg.id
           // The verified count (from the package manifest) wins over the
-          // registry's claim; the claim is only used until the manifest was
-          // read (or when it cannot be read at all).
-          const toolCount = verifiedToolCounts.get(pkg.id) ?? pkg.toolCount
+          // registry's claim — but only while it matches the CURRENT catalog
+          // version and the preview actually succeeded (findings: "Failed
+          // preview shows claimed count" / "Refresh shows stale tool
+          // count"). An unverified count falls back to the claim and is
+          // marked as such so the user never confirms an install against a
+          // number presented as verified.
+          const verifiedCount = verifiedCountOf(pkg)
+          const toolCount = verifiedCount ?? pkg.toolCount
+          const countUnverified = verifiedCount === null
           const active = installed && activations.get(pkg.id) === 'enabled'
           return (
             <div key={pkg.id} className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
@@ -242,7 +324,10 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
                   <div className="truncate font-mono text-xs font-medium">{pkg.id}</div>
                   <div className="mt-0.5 line-clamp-2 text-xs text-tertiary">{pkg.description}</div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-tertiary">
-                    <span>{format(t('settings.webmcpPackages.toolsCount'), { count: toolCount })}</span>
+                    <span>
+                      {format(t('settings.webmcpPackages.toolsCount'), { count: toolCount })}
+                      {countUnverified ? ` ${t('settings.webmcpPackages.toolsCountUnverified')}` : ''}
+                    </span>
                     <span>·</span>
                     <span>{format(t('settings.webmcpPackages.version'), { version: pkg.version })}</span>
                   </div>
@@ -266,7 +351,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
                       type="button"
                       className="rounded-md border border-red-300 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
                       disabled={busy}
-                      onClick={() => void onUninstall(pkg)}
+                      onClick={() => void onUninstall(pkg.id)}
                     >
                       {busy ? t('settings.webmcpPackages.uninstalling') : t('settings.webmcpPackages.uninstall')}
                     </button>
@@ -275,7 +360,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
                       type="button"
                       className="rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                       disabled={busy}
-                      onClick={() => void onInstall(registry, pkg, verifiedToolCounts.get(pkg.id) ?? pkg.toolCount)}
+                      onClick={() => void onInstall(registry, pkg, verifiedCount ?? Number.NaN)}
                     >
                       {busy ? t('settings.webmcpPackages.installing') : t('settings.webmcpPackages.install')}
                     </button>
@@ -350,7 +435,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const [confirmPkg, setConfirmPkg] = useState<{
     registry: PackageRegistry
     pkg: RegistryManifestPackage
-    /** Tool count VERIFIED from the package manifest (falls back to the claim). */
+    /** Tool count VERIFIED from the package manifest (NaN when unverified). */
     verifiedToolCount: number
   } | null>(null)
   /**
@@ -440,10 +525,10 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     }
   }
 
-  const handleUninstall = async (pkg: RegistryManifestPackage): Promise<boolean> => {
-    setBusyId(pkg.id)
+  const handleUninstall = async (pkgId: string): Promise<boolean> => {
+    setBusyId(pkgId)
     try {
-      await uninstallRegistryPackage(pkg.id)
+      await uninstallRegistryPackage(pkgId)
       await refreshInstalled()
       setActionError(null)
       return true
@@ -496,9 +581,9 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           busyId={busyId}
           onInstall={(reg, pkg, verifiedCount) => {
             // The confirmation discloses the count VERIFIED from the package
-            // manifest (finding: "Confirmation shows wrong tool count") — the
-            // registry's claim is only a fallback when the manifest was
-            // unreadable.
+            // manifest (finding: "Confirmation shows wrong tool count") — an
+            // unreadable manifest passes NaN and the confirmation states the
+            // count could not be verified instead of quoting the claim.
             setConfirmPkg({ registry: reg, pkg, verifiedToolCount: verifiedCount })
             return Promise.resolve(true)
           }}
@@ -506,6 +591,46 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           onRemoveRegistry={handleRemoveRegistry}
         />
       ))}
+
+      {/*
+        Installed-packages inventory (round-3 finding: "Removing registry
+        hides uninstall action"): removal deliberately leaves installed
+        packages in place, but the registry cards above are the ONLY place
+        uninstall buttons were rendered — remove the registry and its
+        packages became unremovable until the user re-added it. This
+        inventory lists every installed package directly from the mount,
+        independent of any registry, so uninstall stays reachable.
+      */}
+      {installedIds.size > 0 && (
+        <div className="rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-800">
+          <div className="text-xs font-semibold">{t('settings.webmcpPackages.installedTitle')}</div>
+          <div className="mt-2 space-y-1.5">
+            {[...installedIds].sort().map(pkgId => {
+              const busy = busyId === pkgId
+              const active = activations.get(pkgId) === 'enabled'
+              return (
+                <div key={pkgId} className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-mono text-xs font-medium">{pkgId}</div>
+                    <span className="inline-flex items-center gap-1 rounded-full border border-neutral-300 px-2 py-0.5 text-xs text-tertiary dark:border-neutral-600">
+                      <Check className="h-3 w-3 text-green-600 dark:text-green-400" />
+                      {active ? t('settings.webmcpPackages.installedActive') : t('settings.webmcpPackages.installedInactive')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-md border border-red-300 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                    disabled={busy}
+                    onClick={() => void handleUninstall(pkgId)}
+                  >
+                    {busy ? t('settings.webmcpPackages.uninstalling') : t('settings.webmcpPackages.uninstall')}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Collapsed advanced option: add a custom package repository */}
       <div className="rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700">
@@ -551,7 +676,12 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
               {format(t('settings.webmcpPackages.confirmInstallTitle'), { id: confirmPkg.pkg.id })}
             </div>
             <div className="mt-2 text-xs text-tertiary">
-              {format(t('settings.webmcpPackages.confirmInstallBody'), { count: confirmPkg.verifiedToolCount })}
+              {Number.isNaN(confirmPkg.verifiedToolCount)
+                // The preview manifest could not be read (finding: "Failed
+                // preview shows claimed count") — say so instead of showing
+                // the registry's claim as if it were verified.
+                ? t('settings.webmcpPackages.confirmInstallBodyUnverified')
+                : format(t('settings.webmcpPackages.confirmInstallBody'), { count: confirmPkg.verifiedToolCount })}
             </div>
             {actionError && (
               <div className="mt-2 text-xs text-red-600 dark:text-red-400">

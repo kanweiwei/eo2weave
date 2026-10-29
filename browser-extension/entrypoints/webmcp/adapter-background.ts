@@ -90,7 +90,14 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
     }
     if (message.type === 'webmcp_provider_call') {
       if (sender.id !== chrome.runtime.id) { respond({ ok: false, code: 'EACCES', error: 'Untrusted storage caller' }); return false }
-      if (message.mount !== undefined && !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(String(message.mount))) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
+      // SECURITY (round 3 finding: "Sites bypass package consent"):
+      // `mount` must be a STRING. `String(['extension-skills'])` equals the
+      // allowed name, so an array passed every string-based check below and
+      // then fell through the `===` DISPATCH here to the writable `webmcp`
+      // provider — one validated mount value must drive both the
+      // authorization checks and the dispatch.
+      if (typeof message.mount !== 'string') { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
+      if (message.mount !== undefined && !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(message.mount)) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
       // SECURITY (finding: "Websites bypass package consent"): the
       // all-sites content relay forwards `webmcp_provider_call` from ANY
       // page, so a hostile page could reach the writable `webmcp` mount
@@ -101,8 +108,11 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       // origins + loopback dev, the same check the
       // `webmcp_adapter_validate` branch above applies). READ operations
       // stay open: the page-facing VFS needs them to render the file tree.
+      // One validated mount value drives ALL checks and the dispatch below
+      // (absent mount defaults to the writable `webmcp` mount).
+      const mount = message.mount ?? 'webmcp'
       if (
-        String(message.mount ?? 'webmcp') === 'webmcp' &&
+        mount === 'webmcp' &&
         ['writeFile', 'mkdir', 'remove'].includes(String(message.method)) &&
         !isTrustedCreatorWeaveSenderUrl(sender.url)
       ) {
@@ -123,7 +133,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       // write, and checking the raw string let those shapes bypass the
       // guard (finding: "Trailing slash bypasses activation guard").
       if (
-        String(message.mount ?? 'webmcp') === 'webmcp' &&
+        mount === 'webmcp' &&
         String(message.method) === 'writeFile' &&
         typeof message.path === 'string'
       ) {
@@ -150,7 +160,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
           }
         }
       }
-      void (message.mount === 'extension-skills' ? skillCall : message.mount === 'builtin-webmcp' ? builtinCall : providerCall)(message).then(respond)
+      void (mount === 'extension-skills' ? skillCall : mount === 'builtin-webmcp' ? builtinCall : providerCall)(message).then(respond)
       return true
     }
     if (message.type === 'webmcp_package_lock') {
@@ -180,6 +190,21 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       if (action === 'release') { void bridgeReleasePackageLock(packageId, owner).then(respond); return true }
       respond({ ok: false, code: 'EINVAL', error: 'Unknown lock action' })
       return false
+    }
+    if (message.type === 'webmcp_packages_changed_notify') {
+      // The settings page (through the provider bridge) finished an install
+      // or uninstall of an EXTERNAL package (finding: "Uninstall leaves
+      // tools registered") — the catalog must be re-read or the removed
+      // package's tools stay registered (or a new install's tools stay
+      // unregistered) until an unrelated refresh. TRUSTED PAGES ONLY: the
+      // refresh itself is harmless, but gating keeps the message namespace
+      // consistent with the other package operations above.
+      if (sender.id !== chrome.runtime.id || !isTrustedCreatorWeaveSenderUrl(sender.url)) {
+        respond({ ok: false, code: 'EACCES', error: 'Package change notification requires a trusted CreatorWeave page' })
+        return false
+      }
+      void refresh().then(() => respond({ ok: true }), () => respond({ ok: false }))
+      return true
     }
     if (message.type.startsWith('webmcp_packages_')) {
       if (message.type === 'webmcp_packages_changed') return false

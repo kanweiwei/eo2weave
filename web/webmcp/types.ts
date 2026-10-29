@@ -158,4 +158,6 @@ export interface WebMCPBridge {
     owner?: string,
     timeoutMs?: number,
   ) => Promise<{ ok: boolean; owner?: string; code?: string; error?: string }>
+  /** Announce an external-package install/uninstall so the background refreshes its catalog (extension ≥ this build only). */
+  webMCPPackagesChangedNotify?: () => Promise<{ ok: boolean; error?: string }>
 }

@@ -96,6 +96,13 @@ export const MAX_PACKAGE_FILES = 200
 /** Total staged size cap — the extension bridge itself refuses files > 32 MiB. */
 export const MAX_PACKAGE_TOTAL_BYTES = 20 * 1024 * 1024
 export const MAX_PACKAGE_FILE_BYTES = 8 * 1024 * 1024
+/**
+ * Cap on packages per registry catalog (finding: "Large catalogs overwhelm
+ * settings page"): the settings section fetches a manifest preview per
+ * package, so an unbounded catalog would launch unbounded requests and
+ * rendering work. 50 packages is far above any legitimate catalog.
+ */
+export const MAX_REGISTRY_PACKAGES = 50
 
 const manifestCache = new Map<string, { data: RegistryManifest; ts: number }>()
 
@@ -339,22 +346,40 @@ export async function fetchRegistryManifest(
   return result.manifest
 }
 
+/** Registry ids must satisfy the same reverse-domain rule as package manifests. */
+const REGISTRY_ID_PATTERN = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/
+/** Same semver rule the package manifest validator applies. */
+const REGISTRY_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+
 /**
  * Structural validation — the installer reads `packages[].files[].{path,sha256}`
  * to decide what to download, so every entry must be well-formed. Extra
  * manifest fields are tolerated (forward compatibility); a malformed entry
  * rejects the WHOLE manifest rather than installing a half-readable catalog.
+ *
+ * Package IDs are validated against the SAME reverse-domain rule the
+ * extension's `validateManifest` enforces (finding: "Catalog accepts
+ * un-installable IDs") — an entry the catalog would list but the installer
+ * can never install is rejected at catalog time instead. Versions must be
+ * semantic versions for the same reason: the downloaded manifest's version
+ * field must pass `validateManifest`, so a registry version claim that is
+ * not a semver would guarantee an install failure.
  */
 export function validateRegistryManifest(data: unknown): RegistryManifest {
   if (!isPlainObject(data)) throw new RegistryError('Registry manifest must be a JSON object')
   if (!Array.isArray(data.packages)) throw new RegistryError('Registry manifest is missing the packages array')
+  if (data.packages.length > MAX_REGISTRY_PACKAGES) {
+    throw new RegistryError(`Registry manifest lists too many packages (${data.packages.length}; the limit is ${MAX_REGISTRY_PACKAGES})`)
+  }
   const packages: RegistryManifestPackage[] = data.packages.map((entry, index) => {
     if (!isPlainObject(entry)) throw new RegistryError(`Package #${index} is not an object`)
     const { id, version, description, toolCount, files } = entry
-    if (typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) {
-      throw new RegistryError(`Package #${index} has an invalid id`)
+    if (typeof id !== 'string' || !REGISTRY_ID_PATTERN.test(id)) {
+      throw new RegistryError(`Package #${index} has an invalid id (must be a reverse-domain namespace, such as com.example.tools)`)
     }
-    if (typeof version !== 'string' || !version) throw new RegistryError(`Package ${id}: missing version`)
+    if (typeof version !== 'string' || !REGISTRY_VERSION_PATTERN.test(version)) {
+      throw new RegistryError(`Package ${id}: version must be a semantic version`)
+    }
     if (typeof description !== 'string') throw new RegistryError(`Package ${id}: missing description`)
     if (typeof toolCount !== 'number' || !Number.isInteger(toolCount) || toolCount < 0) {
       throw new RegistryError(`Package ${id}: invalid toolCount`)

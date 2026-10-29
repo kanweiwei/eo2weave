@@ -66,6 +66,7 @@ export default defineContentScript({
       'webmcp_discover_tools',
       'webmcp_provider_call',
       'webmcp_package_lock',
+      'webmcp_packages_changed_notify',
       'webmcp_invoke_tool',
       'webmcp_get_host_authorization',
       'webmcp_plugin_download_stream',

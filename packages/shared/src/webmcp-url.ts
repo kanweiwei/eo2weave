@@ -26,10 +26,31 @@ const MAX_MATCH_URL_LENGTH = 4096
 interface SequenceAnalysis {
   /** The whole sequence can match the empty string. */
   canMatchEmpty: boolean
-  /** The FIRST atom of the sequence carries a quantifier (`(a+)` → true). */
+  /**
+   * The FIRST atom of the sequence carries a quantifier (`(a+)` → true).
+   * Atom here means ANY top-level atom, including a group: the value is
+   * propagated OUT of group bodies so a wrapper cannot hide a quantified
+   * first atom from an enclosing group's analysis (finding: "Nested
+   * wrappers bypass regex guard" — `((a+))+` used to lose the inner
+   * `leadingAtomQuantified` because the wrapper's own body analysis
+   * discarded it).
+   */
   leadingAtomQuantified: boolean
-  /** A top-level `|` was seen (branches may overlap when repeated). */
+  /**
+   * The sequence contains a top-level `|` anywhere, OR any nested group
+   * body analysed here reported an alternation/overlapping-branch risk —
+   * both let repeated branches overlap when the whole atom is quantified
+   * (`(a|aa)*`, and `((a|aa))+` through the same propagation).
+   */
   alternation: boolean
+  /**
+   * The FIRST atom of the sequence ends in a quantified atom at its top
+   * level — the body starts `a+…` or `(...)+…` with no leading separator.
+   * Quantifying a group over such a body (`(a+)(a+)+`, `((a+)(a+))+`)
+   * splits input spans between adjacent quantifiers (finding: "URL
+   * matching stalls on backtracking").
+   */
+  leadingAtomEndsQuantified: boolean
 }
 
 /**
@@ -88,6 +109,9 @@ function analyzeSequence(pattern: string, from: number, until: number): Sequence
   const atoms: boolean[] = []
   /** Index just past the FIRST atom — a quantifier here targets it. */
   let firstAtomEnd = -1
+  /** Risk flags reported by nested group bodies (propagated outward). */
+  let nestedLeadingQuantified = false
+  let nestedAlternation = false
   let alternation = false
   let emptyBranch = false
   let depth = 0
@@ -119,6 +143,14 @@ function analyzeSequence(pattern: string, from: number, until: number): Sequence
         const bodyStart = groupBodyStart(pattern, groupOpen)
         // A group atom is skippable when its own body can match empty.
         const inner = bodyStart <= i ? analyzeSequence(pattern, bodyStart, i) : null
+        // Propagate the body's own risk flags outward (finding: "Nested
+        // wrappers bypass regex guard") — a wrapper group must not be able
+        // to hide a quantified first atom or an overlapping alternation
+        // from the ENCLOSING group's body analysis.
+        if (inner) {
+          nestedLeadingQuantified ||= inner.leadingAtomQuantified
+          nestedAlternation ||= inner.alternation
+        }
         atoms.push(inner ? inner.canMatchEmpty : false)
         i += 1
         if (firstAtomEnd === -1) firstAtomEnd = i
@@ -159,7 +191,12 @@ function analyzeSequence(pattern: string, from: number, until: number): Sequence
       if (atoms.length > 0) atoms[atoms.length - 1] = atoms[atoms.length - 1]! || allowsZero!
       if (firstAtomEnd === quantifierAt) {
         // The quantifier targeted the first atom of this sequence.
-        return { canMatchEmpty: false, leadingAtomQuantified: true, alternation }
+        return {
+          canMatchEmpty: false,
+          leadingAtomQuantified: true,
+          alternation: alternation || nestedAlternation,
+          leadingAtomEndsQuantified: true,
+        }
       }
       continue
     }
@@ -185,7 +222,15 @@ function analyzeSequence(pattern: string, from: number, until: number): Sequence
     emptyBranch ||
     atoms.length === 0 ||
     (!alternation && atoms.every(skippable => skippable))
-  return { canMatchEmpty, leadingAtomQuantified: false, alternation }
+  return {
+    canMatchEmpty,
+    leadingAtomQuantified: false,
+    alternation: alternation || nestedAlternation,
+    // The first top-level atom of this body is a group whose own body
+    // began with a quantified atom (`((a+)(a+))+` wrapper shape) —
+    // propagated from the nested scan so no wrapper can hide it.
+    leadingAtomEndsQuantified: nestedLeadingQuantified,
+  }
 }
 
 /**
@@ -198,7 +243,16 @@ function analyzeSequence(pattern: string, from: number, until: number): Sequence
 function bodyIsDangerous(pattern: string, bodyStart: number, bodyEnd: number): boolean {
   if (bodyStart >= bodyEnd) return true // `()*` — empty body matches empty
   const body = analyzeSequence(pattern, bodyStart, bodyEnd)
-  return body.canMatchEmpty || body.leadingAtomQuantified || body.alternation
+  return (
+    body.canMatchEmpty ||
+    body.leadingAtomQuantified ||
+    body.alternation ||
+    // The body STARTS with a quantified atom (`(a+)(a+)+`): quantifying
+    // the group splits input spans between the leading inner quantifier
+    // and the outer one — adjacent overlapping quantifiers (finding:
+    // "URL matching stalls on backtracking").
+    body.leadingAtomEndsQuantified
+  )
 }
 
 /**
@@ -273,6 +327,124 @@ function hasFlatQuantifierChain(pattern: string): boolean {
 }
 
 /**
+ * Index just past the first top-level atom of `pattern[from, until)` when
+ * that atom carries a quantifier, else -1. Used to detect a body that
+ * STARTS with a quantified atom (`(a+)(a+)+` — adjacent quantifiers).
+ */
+function firstAtomQuantifiedEnd(pattern: string, from: number, until: number): number {
+  let depth = 0
+  let groupOpen = -1
+  let firstAtomEnd = -1
+  let i = from
+  while (i < until) {
+    const char = pattern[i]
+    if (char === '\\') { i += 2; if (firstAtomEnd === -1) firstAtomEnd = i; return -1 }
+    if (char === '[') { i = classEnd(pattern, i); if (firstAtomEnd === -1) firstAtomEnd = i; return -1 }
+    if (char === '(') { if (depth === 0) groupOpen = i; depth += 1; i += 1; continue }
+    if (char === ')') {
+      depth -= 1
+      if (depth === 0 && groupOpen !== -1) {
+        i += 1
+        if (firstAtomEnd === -1) firstAtomEnd = i
+        groupOpen = -1
+        continue
+      }
+      i += 1
+      continue
+    }
+    if (isQuantifierChar(char) && depth === 0) {
+      // The quantifier must target the FIRST atom: if any atom was already
+      // closed before this position, this quantifier belongs to a LATER
+      // atom — the first atom is unquantified.
+      if (firstAtomEnd === -1 || firstAtomEnd !== i) return -1
+      if (char === '{') {
+        const close = pattern.indexOf('}', i)
+        if (close === -1 || !/^\d+(,\d*)?$/.test(pattern.slice(i + 1, close))) {
+          // Literal `{` — not a quantifier; the first atom ends here.
+          return -1
+        }
+        i = close + 1
+      } else {
+        i += 1
+      }
+      if (pattern[i] === '?') i += 1
+      return i
+    }
+    if (char === '|' && depth === 0) return -1 // alternation — no single first atom
+    if (isQuantifierChar(char) || depth > 0) { i += 1; continue }
+    // Plain character atom: it ends here; a quantifier at the next index
+    // targets it — let the loop's quantifier branch inspect that position.
+    i += 1
+    if (firstAtomEnd === -1) firstAtomEnd = i
+    continue
+  }
+  return -1
+}
+
+/**
+ * True when a group body is an AMBIGUOUS alternation: its branches overlap
+ * (one can match a prefix of another) or a branch can match empty —
+ * `(a|a?)`, `(?:a|aa)`, `(x|)`. Two or more such groups in a row multiply
+ * the ways the same input span can be split between them; V8 backtracks
+ * exponentially on a near-miss even though NO quantifier appears anywhere
+ * (round-3 finding: "Repeated alternatives evade ReDoS guard").
+ */
+function groupBodyIsAmbiguousAlternation(pattern: string, bodyStart: number, bodyEnd: number): boolean {
+  const body = analyzeSequence(pattern, bodyStart, bodyEnd)
+  if (!body.alternation && !body.canMatchEmpty) return false
+  if (!body.alternation) return false
+  // Overlap check: any branch whose FIRST character also starts another
+  // branch (a|aa), or any empty-able branch (a|a?) — both create split
+  // points. Compare the first literal of each top-level branch.
+  const branches: string[] = []
+  let depth = 0
+  let start = bodyStart
+  for (let i = bodyStart; i < bodyEnd; i += 1) {
+    const char = pattern[i]
+    if (char === '\\') { i += 1; continue }
+    if (char === '[') { i = classEnd(pattern, i); continue }
+    if (char === '(') { depth += 1; continue }
+    if (char === ')') { depth -= 1; continue }
+    if (char === '|' && depth === 0) {
+      branches.push(pattern.slice(start, i))
+      start = i + 1
+    }
+  }
+  branches.push(pattern.slice(start, bodyEnd))
+  if (body.canMatchEmpty || branches.some(branch => branch === '')) return true
+  const firstLiterals = branches.map(branch => literalFirstChar(branch))
+  // Any two branches sharing a first character overlap.
+  for (let a = 0; a < firstLiterals.length; a += 1) {
+    for (let b = a + 1; b < firstLiterals.length; b += 1) {
+      const fa = firstLiterals[a]
+      const fb = firstLiterals[b]
+      if (fa !== null && fb !== null && fa === fb) return true
+    }
+  }
+  return false
+}
+
+/** First DISTINCT literal character a branch can start with, or null. */
+function literalFirstChar(branch: string): string | null {
+  for (let i = 0; i < branch.length; i += 1) {
+    const char = branch[i]
+    if (char === '\\') return branch[i + 1] ?? null
+    if (char === '[') return null // class — treat as non-overlapping
+    if (char === '(' || char === '|' || char === ')' || isQuantifierChar(char)) return null
+    return char
+  }
+  return null
+}
+
+/**
+ * Convenience wrapper used by `hasNestedQuantifier`: true when this
+ * unquantified group's body is an ambiguous alternation.
+ */
+function adjacentGroupBodyIsAmbiguous(pattern: string, bodyStart: number, bodyEnd: number): boolean {
+  return groupBodyIsAmbiguousAlternation(pattern, bodyStart, bodyEnd)
+}
+
+/**
  * Structural backtracking scan: every group followed by a quantifier gets
  * its body analyzed, and flat quantifier chains are rejected (see
  * `hasFlatQuantifierChain`). Groups that are not quantified are irrelevant
@@ -282,6 +454,10 @@ function hasFlatQuantifierChain(pattern: string): boolean {
 export function hasNestedQuantifier(pattern: string): boolean {
   if (hasFlatQuantifierChain(pattern)) return true
   const opens: number[] = []
+  /** Set when the last closed top-level atom ended in a quantified atom. */
+  let pendingTrailingQuantified = false
+  /** Run of consecutive unquantified groups with ambiguous alternation bodies. */
+  let ambiguousAlternationGroups = 0
   for (let i = 0; i < pattern.length; i += 1) {
     const char = pattern[i]
     if (char === '\\') { i += 1; continue }
@@ -290,6 +466,12 @@ export function hasNestedQuantifier(pattern: string): boolean {
       continue
     }
     if (char === '(') {
+      // A new group immediately after a group whose body starts with a
+      // quantified atom (`(a+)(a+)…`): the previous group's trailing
+      // quantifier and this group's leading quantifier split the same
+      // input span — reject (finding: "URL matching stalls on
+      // backtracking").
+      if (opens.length === 0 && pendingTrailingQuantified) return true
       opens.push(i)
       continue
     }
@@ -299,7 +481,35 @@ export function hasNestedQuantifier(pattern: string): boolean {
       if (isQuantifierChar(pattern[i + 1]) && bodyIsDangerous(pattern, groupBodyStart(pattern, open), i)) {
         return true
       }
+      // UNQUANTIFIED group: when its body STARTS with a quantified atom
+      // and the NEXT atom in the outer sequence is ALSO quantified
+      // (`(a+)(a+)…`), the two quantifiers split the same input span
+      // between them even without a wrapping quantifier (finding: "URL
+      // matching stalls on backtracking" — adjacent quantified groups,
+      // which the group-free flat-chain scan cannot see).
+      if (firstAtomQuantifiedEnd(pattern, groupBodyStart(pattern, open), i) !== -1) {
+        pendingTrailingQuantified = true
+      } else if (adjacentGroupBodyIsAmbiguous(pattern, groupBodyStart(pattern, open), i)) {
+        // Round-3 finding ("Repeated alternatives evade ReDoS guard"): an
+        // unquantified group whose body is an AMBIGUOUS alternation
+        // (`(a|a?)`) followed by more such groups passes every quantifier
+        // check, yet each boundary multiplies the split points — measured
+        // exponential on a near-miss input. Reject the shape outright;
+        // legitimate URL patterns never chain ambiguous groups.
+        pendingTrailingQuantified = false
+        ambiguousAlternationGroups += 1
+        if (ambiguousAlternationGroups >= 2) return true
+      } else {
+        pendingTrailingQuantified = false
+        ambiguousAlternationGroups = 0
+      }
+      continue
     }
+    if (isQuantifierChar(char) && opens.length === 0 && pendingTrailingQuantified) {
+      // A quantified atom right after a group that itself ends quantified.
+      return true
+    }
+    if (!isQuantifierChar(char) && char !== '|') pendingTrailingQuantified = false
   }
   return false
 }

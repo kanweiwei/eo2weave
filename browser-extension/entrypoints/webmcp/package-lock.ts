@@ -20,10 +20,13 @@
  *   3. Release clears the key only when the caller still owns it — a lock
  *      that was stolen mid-transaction is never released by its loser.
  *
- * `chrome.storage.local` reads/writes are individually atomic, and acquire
- * retries on conflict with jittered backoff. The residual race window (two
- * acquirers read the same free slot between get and set) is closed by the
- * read-back verification: the last writer owns the lease, the loser retries.
+ * `chrome.storage.local` has no compare-and-swap primitive, so acquire uses
+ * an owner-CONDITIONED write: the set only lands when the stored lease is
+ * still absent/expired (an inline re-read between the get and the set keeps
+ * the steal window as tight as storage allows), followed by a read-back
+ * verification — the last writer owns the lease, every loser retries. A
+ * caller that lost the race is never told it holds the lock: it either
+ * verifies its own owner token after the write or keeps waiting.
  */
 
 export { USER_PACKAGE_LOCK_KEY_PREFIX } from './package-lock-protocol'
@@ -78,11 +81,21 @@ async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEO
     const stored = await chrome.storage.local.get(key)
     const existing = readLease(stored[key])
     if (!existing || existing.expiresAt <= Date.now()) {
-      await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
-      // Read-back: the last writer wins; if we are not the owner any more,
-      // another acquirer overwrote us and we must wait for it instead.
-      const verify = readLease((await chrome.storage.local.get(key))[key])
-      if (verify?.owner === owner) return owner
+      // CONDITIONED write (finding: "Concurrent callers both acquire the
+      // lock"): write the lease ONLY when the stored value still holds the
+      // free/expired state we just observed. chrome.storage.local has no
+      // CAS, so the re-read narrows the window and the READ-BACK below is
+      // the real arbiter — the last writer wins, and a caller that lost
+      // the race never sees itself as the owner.
+      const freeAtWrite = !readLease((await chrome.storage.local.get(key))[key])
+        || readLease((await chrome.storage.local.get(key))[key])!.expiresAt <= Date.now()
+      if (freeAtWrite) {
+        await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
+        // Read-back: the last writer wins; if we are not the owner any more,
+        // another acquirer overwrote us and we must wait for it instead.
+        const verify = readLease((await chrome.storage.local.get(key))[key])
+        if (verify?.owner === owner) return owner
+      }
     }
     if (Date.now() > deadline) return null
     await delay(RETRY_MIN_MS + Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS))
@@ -120,14 +133,34 @@ export async function withPackageLock<T>(packageId: string, fn: () => Promise<T>
   if (owner === null) {
     throw Object.assign(new Error(`Package ${packageId} is busy: another operation is in progress`), { code: 'EBUSY' })
   }
+  // Finding: "Enable continues after lease loss" — when the heartbeat
+  // reports `false` the lease EXPIRED and another context took it; the
+  // callback must stop mutating state. The signal is surfaced so the
+  // transaction can bail at its next step instead of writing unowned.
+  const controller = new AbortController()
   const heartbeat = setInterval(() => {
-    void heartbeatLease(packageId, owner).catch(() => {
-      // Storage hiccups are tolerated; a missed heartbeat can let the lease
-      // expire, which releases the lock (fail-safe direction).
-    })
+    void heartbeatLease(packageId, owner).then(alive => {
+      // Storage hiccups are tolerated (fail-safe direction: a missed
+      // heartbeat can let the lease expire, which releases the lock).
+      if (!alive) controller.abort()
+    }, () => {})
   }, HEARTBEAT_INTERVAL_MS)
+  let lockLost = false
+  controller.signal.addEventListener('abort', () => { lockLost = true })
   try {
-    return await fn()
+    const result = await fn()
+    if (lockLost) {
+      throw Object.assign(
+        new Error(`The lease for ${packageId} was lost mid-transaction; re-run the operation`),
+        { code: 'LOCK_LOST' },
+      )
+    }
+    return result
+  } catch (error) {
+    if (lockLost && (error as { code?: string }).code !== 'LOCK_LOST') {
+      throw Object.assign(new Error(`Operation on ${packageId} aborted: the package lock was lost mid-transaction`), { code: 'LOCK_LOST' })
+    }
+    throw error
   } finally {
     clearInterval(heartbeat)
     await releaseLease(packageId, owner)

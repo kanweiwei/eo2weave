@@ -26,6 +26,7 @@ import {
   type RegistryManifestPackage,
 } from './package-registry-client'
 import { installPackage, uninstallPackage } from './package-installer'
+import { getWebMCPBridge } from './bridge-client'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
 
@@ -41,10 +42,20 @@ interface StoredRegistry {
  * unavailable (private mode, storage quota) the session keeps working: a
  * registry the user just added stays listed until the tab closes instead of
  * silently vanishing (finding: "Registry addition disappears in private
- * mode"). Reads merge the mirror OVER storage so nothing is lost in either
- * direction.
+ * mode").
+ *
+ * The mirror is OPERATION-BASED, not snapshot-based (findings: "Concurrent
+ * registry additions disappear" / "Removed registry reappears"): it records
+ * additions and removals SEPARATELY and replays them over the persisted
+ * list on every read. A snapshot union would re-add entries another tab
+ * removed (the persisted list still contains them) and overwrite a peer
+ * tab's concurrent addition with a stale snapshot; replaying the deltas
+ * keeps both orders correct:
+ *   - read = persisted list, minus session removals, plus session additions;
+ *   - write = the merged list (so persistence also converges).
  */
-let sessionRegistries: StoredRegistry[] | null = null
+let sessionAdded: StoredRegistry[] | null = null
+let sessionRemoved: Set<string> | null = null
 
 function storageAvailable(): boolean {
   try {
@@ -69,16 +80,19 @@ function loadStoredRegistries(): StoredRegistry[] {
     }
   }
   const persisted = fromStorage()
-  if (!sessionRegistries) return persisted
-  // Merge: union by manifestUrl, session additions win (they may not have
-  // landed in storage), persisted entries the session deleted stay deleted.
-  const byUrl = new Map(persisted.map(entry => [entry.manifestUrl, entry]))
-  for (const entry of sessionRegistries) byUrl.set(entry.manifestUrl, entry)
+  if (!sessionAdded && !sessionRemoved) return persisted
+  const removed = sessionRemoved ?? new Set<string>()
+  const added = sessionAdded ?? []
+  // Replay: persisted entries survive unless removed in this session; this
+  // session's additions are appended in their original order (replacing a
+  // persisted entry with the same manifestUrl — a re-add after removal).
+  const byUrl = new Map(persisted.filter(entry => !removed.has(entry.manifestUrl)).map(entry => [entry.manifestUrl, entry]))
+  for (const entry of added) byUrl.set(entry.manifestUrl, entry)
   return [...byUrl.values()]
 }
 
 function saveStoredRegistries(registries: StoredRegistry[]): boolean {
-  sessionRegistries = registries
+  sessionAdded = registries
   try {
     localStorage.setItem(REGISTRIES_STORAGE_KEY, JSON.stringify(registries))
     return true
@@ -114,19 +128,34 @@ export function registriesPersisted(): boolean {
  * The addition is MERGED against the latest persisted list (fresh read just
  * before the write), so two settings tabs adding different registries
  * concurrently do not overwrite each other (finding: "Concurrent registry
- * additions are lost").
+ * additions are lost"). The session records the addition as a DELTA so a
+ * failed persistence write still keeps it visible, and a peer tab's later
+ * read of the persisted list cannot resurrect it in THIS tab's view.
  */
 export function addRegistry(input: string): PackageRegistry {
   const registry = parseRegistryInput(input)
+  const stored: StoredRegistry = { input: input.trim(), label: registry.label, rawBase: registry.rawBase, manifestUrl: registry.manifestUrl }
+  // Record the delta FIRST — the view must reflect the addition even when
+  // the write below fails (private mode).
+  sessionAdded = [...(sessionAdded ?? []).filter(entry => entry.manifestUrl !== stored.manifestUrl), stored]
+  sessionRemoved?.delete(stored.manifestUrl)
   const fresh = loadStoredRegistries().filter(entry => entry.manifestUrl !== registry.manifestUrl)
-  fresh.push({ input: input.trim(), label: registry.label, rawBase: registry.rawBase, manifestUrl: registry.manifestUrl })
+  fresh.push(stored)
   lastWritePersisted = saveStoredRegistries(fresh)
   return registry
 }
 
-/** Remove a registry from the list (installed packages are NOT uninstalled). */
+/**
+ * Remove a registry from the list (installed packages are NOT uninstalled).
+ * The removal is recorded as a session DELTA (finding: "Removed registry
+ * reappears"): even when the persistence write fails and the persisted list
+ * still contains the entry, later reads of THIS session exclude it instead
+ * of resurrecting it from storage.
+ */
 export function removeRegistry(manifestUrl: string): void {
-  lastWritePersisted = saveStoredRegistries(loadStoredRegistries().filter(entry => entry.manifestUrl !== manifestUrl))
+  sessionRemoved = new Set([...(sessionRemoved ?? []), manifestUrl])
+  sessionAdded = (sessionAdded ?? []).filter(entry => entry.manifestUrl !== manifestUrl)
+  lastWritePersisted = saveStoredRegistries(loadStoredRegistries())
   invalidateRegistryCache()
 }
 
@@ -138,16 +167,42 @@ export async function loadRegistryCatalog(
   return fetchRegistryManifest(registry, options)
 }
 
-/** True when a directory on the mount does NOT hold a readable, valid manifest. */
-async function directoryHasValidManifest(mount: string, directory: string): Promise<boolean> {
+/** True when a directory on the mount holds a VALID package manifest. */
+async function readManifestId(mount: string, directory: string): Promise<{ id: string } | 'INVALID' | 'UNREADABLE'> {
   try {
     const provider = await providerRegistry.get(mount)
     const bytes = await provider.readFile(`${directory}/manifest.json`)
-    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { id?: unknown }
-    return typeof parsed.id === 'string'
-  } catch {
-    return false
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(bytes))
+    } catch {
+      return 'INVALID'
+    }
+    // The manifest must carry a string id — a bare `{}` or a manifest with
+    // a non-string id is not a package (finding: "Invalid directory offered
+    // for uninstall" / "Malformed packages count as valid"). Full schema
+    // validation stays the catalog's job; the id-shape check here keeps the
+    // installer from treating arbitrary JSON as an installed package.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'INVALID'
+    const id = (parsed as { id?: unknown }).id
+    return typeof id === 'string' && id ? { id } : 'INVALID'
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    const name = (error as { name?: string }).name
+    // A confirmed missing manifest (the directory holds no package) is
+    // distinct from a TRANSIENT read failure (quota, OPFS hiccup) — the
+    // collision check must fail closed on the latter (findings: "Transient
+    // reads bypass collision checks" / "Unreadable manifests hide
+    // collisions").
+    if (code === 'ENOENT' || name === 'NotFoundError') return 'INVALID'
+    return 'UNREADABLE'
   }
+}
+
+/** True when the directory holds a readable manifest with a string id. */
+async function directoryHasValidManifest(mount: string, directory: string): Promise<boolean> {
+  const state = await readManifestId(mount, directory)
+  return state !== 'INVALID' && state !== 'UNREADABLE'
 }
 
 /**
@@ -158,32 +213,28 @@ async function directoryHasValidManifest(mount: string, directory: string): Prom
  * installed package, or a user-created package. The catalog then marks the
  * survivors as conflicting and the colliding package becomes unusable.
  *
- * Three distinct collisions are checked across BOTH mounts:
+ * Four distinct collisions are checked across BOTH mounts:
  *   1. the target directory already exists and holds a DIFFERENT package
  *      (its manifest id differs from the incoming one);
  *   2. the target directory exists but holds NO readable manifest — it is
  *      nonetheless OCCUPIED (user data the installer must not erase);
  *   3. another directory on any mount already publishes the SAME manifest
- *      id (duplicate namespace — the catalog would withdraw both).
+ *      id (duplicate namespace — the catalog would withdraw both);
+ *   4. another directory holds an INVALID manifest (a bare `{}` or an id
+ *      disagreeing with the directory name) — occupied, not installable
+ *      over (findings: "Malformed packages count as valid" / "Invalid
+ *      directory offered for uninstall").
  *
  * Returns the conflicting package description, or null when the install may
- * proceed. A mount that cannot be LISTED fails the check (fail closed):
- * proceeding could create a duplicate namespace on a mount that is only
- * temporarily unreadable (finding: "Unreadable mount permits duplicate
- * package").
+ * proceed. A mount that cannot be LISTED — or a manifest that cannot be
+ * READ for reasons other than absence (transient OPFS/quota failure) —
+ * fails the check (fail closed): proceeding could create a duplicate
+ * namespace or overwrite data we could not inspect (findings: "Unreadable
+ * mount permits duplicate package" / "Transient reads bypass collision
+ * checks" / "Unreadable manifests hide collisions").
  */
 export async function findPackageIdCollision(packageId: string): Promise<string | null> {
   const mounts = ['webmcp', 'builtin-webmcp']
-  const manifestIdOf = async (mount: string, directory: string): Promise<string | null> => {
-    try {
-      const provider = await providerRegistry.get(mount)
-      const bytes = await provider.readFile(`${directory}/manifest.json`)
-      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { id?: unknown }
-      return typeof parsed.id === 'string' ? parsed.id : null
-    } catch {
-      return null
-    }
-  }
   for (const mount of mounts) {
     let entries: Array<{ name: string; kind: string }>
     let provider: Awaited<ReturnType<typeof providerRegistry.get>>
@@ -196,16 +247,23 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
     }
     for (const entry of entries) {
       if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
-      const manifestId = await manifestIdOf(mount, entry.name)
+      const state = await readManifestId(mount, entry.name)
+      if (state === 'UNREADABLE') {
+        // A manifest we cannot READ may be the very id being installed —
+        // refusing beats installing a duplicate namespace.
+        return `The manifest of ${entry.name} on ${mount} could not be read; try again later`
+      }
+      const manifestId = state === 'INVALID' ? null : state.id
       if (!manifestId) {
         if (entry.name === packageId) {
-          // The target directory exists but holds no readable manifest —
+          // The target directory exists but holds no valid manifest —
           // treat it as occupied anyway: the installer must never delete
           // data it cannot interpret (finding: "Existing data is
           // overwritten").
           return `${entry.name} on ${mount} already exists but is not a valid package; remove or rename it first`
         }
-        // An invalid directory under a DIFFERENT name cannot collide.
+        // An invalid directory under a DIFFERENT name cannot collide by id,
+        // but it may still be user data — it just cannot be matched by id.
         continue
       }
       if (entry.name === packageId) {
@@ -232,8 +290,35 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
 }
 
 /**
+ * Best-effort catalog-refresh notification to the extension background
+ * (finding: "Uninstall leaves tools registered"): install/uninstall change
+ * the EXTERNAL package directory the background's catalog reads, but
+ * nothing else observes OPFS writes. Without this signal a removed package's
+ * tools stay registered (and a fresh install's tools stay unregistered)
+ * until an unrelated refresh. The bridge method is optional — older
+ * extensions and tests without a bridge simply skip it (the in-tab UI
+ * refreshes itself through the section's own state updates).
+ */
+async function notifyBackgroundCatalogChanged(): Promise<void> {
+  try {
+    await getWebMCPBridge()?.webMCPPackagesChangedNotify?.()
+  } catch {
+    // Extension context gone mid-operation — the next catalog refresh
+    // picks the change up anyway.
+  }
+}
+
+/**
  * Install one package from its manifest entry into the `webmcp` VFS mount.
  * Verifies every file's sha256 BEFORE writing anything (all-or-nothing).
+ *
+ * The id-collision check runs TWICE (finding: "Concurrent collision check
+ * is bypassed"): once BEFORE the installer's lock (fast rejection with a
+ * precise message) and once again INSIDE `installPackage`'s per-package
+ * cross-context lock via `assertNoCollisionUnderLock` — two registries
+ * concurrently first-installing the same id both pass the unlocked check,
+ * then serialize on the lock; without the re-check the later install would
+ * silently replace the earlier one.
  */
 export async function installRegistryPackage(
   registry: PackageRegistry,
@@ -246,13 +331,28 @@ export async function installRegistryPackage(
     )
   }
   const provider = await providerRegistry.get('webmcp')
-  return installPackage(registry, pkg, provider)
+  const result = await installPackage(registry, pkg, provider, undefined, async () => {
+    // Runs while the installer holds the per-package cross-context lock.
+    // `findPackageIdCollision` already allows the one legitimate shape
+    // (the same package re-installed over itself), so ANY non-null result
+    // here is a conflict that appeared or became visible after the
+    // unlocked check — reject before anything is written.
+    const underLock = await findPackageIdCollision(pkg.id)
+    if (underLock) {
+      throw new Error(
+        `Cannot install ${pkg.id}: ${underLock}. Remove or rename it first — installing would replace it.`,
+      )
+    }
+  })
+  await notifyBackgroundCatalogChanged()
+  return result
 }
 
 /** Uninstall: remove the package directory from the `webmcp` mount. */
 export async function uninstallRegistryPackage(packageId: string): Promise<void> {
   const provider = await providerRegistry.get('webmcp')
-  return uninstallPackage(packageId, provider)
+  await uninstallPackage(packageId, provider)
+  await notifyBackgroundCatalogChanged()
 }
 
 /**

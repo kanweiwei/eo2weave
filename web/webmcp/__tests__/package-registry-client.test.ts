@@ -6,6 +6,7 @@ import {
   registryFromManifestUrl,
   validateRegistryManifest,
   MAX_PACKAGE_FILES,
+  MAX_REGISTRY_PACKAGES,
   RegistryError,
   type RegistryManifest,
 } from '../package-registry-client'
@@ -239,6 +240,43 @@ describe('validateRegistryManifest', () => {
       packages: [VALID_MANIFEST.packages[0], { ...VALID_MANIFEST.packages[0] }],
     }
     expect(() => validateRegistryManifest(bad)).toThrow(RegistryError)
+  })
+
+  it('rejects IDs the package manifest validator would refuse (round 3)', () => {
+    // Finding: "Catalog accepts un-installable IDs" — validateManifest
+    // requires a lowercase reverse-domain id, so a registry entry with an
+    // uppercase or flat id would appear in the catalog but could never
+    // install. The catalog must reject it at load time instead.
+    for (const id of ['Com.Example.Main', 'com.example', 'flatname', 'com.example..main', '-com.example']) {
+      const bad = {
+        packages: [{ ...VALID_MANIFEST.packages[0], id }],
+      }
+      expect(() => validateRegistryManifest(bad)).toThrow(RegistryError)
+    }
+  })
+
+  it('rejects non-semver version claims (round 3)', () => {
+    // The downloaded manifest's version must pass validateManifest's semver
+    // rule; a registry version that would guarantee an install failure is
+    // rejected at catalog time.
+    const bad = {
+      packages: [{ ...VALID_MANIFEST.packages[0], version: 'not-semver' }],
+    }
+    expect(() => validateRegistryManifest(bad)).toThrow(RegistryError)
+  })
+
+  it('rejects catalogs exceeding the package-count cap (round 3)', () => {
+    // Finding: "Large catalogs overwhelm settings page" — the section
+    // fetches one manifest preview per entry, so an unbounded catalog
+    // would launch unbounded requests and rendering work.
+    const bad = {
+      packages: Array.from({ length: MAX_REGISTRY_PACKAGES + 1 }, (_, i) => ({
+        ...VALID_MANIFEST.packages[0],
+        id: `com.example.pkg${i}`,
+        files: [{ path: `packages/com.example.pkg${i}/manifest.json`, sha256: 'a'.repeat(64) }],
+      })),
+    }
+    expect(() => validateRegistryManifest(bad)).toThrow(/too many packages/)
   })
 })
 

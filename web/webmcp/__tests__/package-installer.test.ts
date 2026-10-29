@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { memoryProvider } from '@creatorweave/fs-provider/memory'
-import { installPackage, uninstallPackage, sha256Hex, PackageInstallError, INSTALLER_DEFAULT_CONFIG } from '../package-installer'
+import { installPackage, uninstallPackage, sha256Hex, PackageInstallError } from '../package-installer'
 import { registryFromManifestUrl, MAX_PACKAGE_FILES, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_TOTAL_BYTES } from '../package-registry-client'
 import type { RegistryManifestPackage } from '../package-registry-client'
 
@@ -121,9 +121,14 @@ describe('installPackage', () => {
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
     await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(servingFiles) })
-    // The installed config.json is ALWAYS the disabled default.
+    // The installed config.json is ALWAYS the LITERAL disabled default —
+    // asserted against the literal, NOT `INSTALLER_DEFAULT_CONFIG` (finding:
+    // "Enabled default passes test"): the constant is what the installer
+    // writes, so comparing against it would still pass if the constant were
+    // ever changed to `{ activation: 'enabled' }` and silently armed every
+    // installed package without consent.
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
-      .toEqual(INSTALLER_DEFAULT_CONFIG)
+      .toEqual({ activation: 'disabled' })
   })
 
   it('rejects aliased registry paths that would overwrite each other', async () => {
@@ -397,6 +402,43 @@ describe('installPackage — failed replacement keeps the old package', () => {
     expect(await full.readFile('.com.example.pkg.previous/manifest.json')).toEqual(before)
   })
 
+  it('ABORTS and keeps the backup when the live-package stat is INDETERMINATE (round 3)', async () => {
+    // Finding: "Retry deletes the last backup" — a stat that fails with
+    // something OTHER than ENOENT (transient/permission error) must not read
+    // as "exists": that is how a retry skipped backup recovery and then
+    // deleted the preserved backup. The swap refuses and the backup survives.
+    const full = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, await validPkg(), full, { fetchImpl: fetchServing(fixtureFiles()) })
+    const before = await full.readFile('com.example.pkg/manifest.json')
+    // Simulate the post-failure state: only the backup remains.
+    if (!full.rename) throw new Error('memory provider must support rename')
+    await full.rename('com.example.pkg', '.com.example.pkg.previous')
+
+    let liveStatCalls = 0
+    const flaky = {
+      stat: (path: string) => {
+        if (String(path) === 'com.example.pkg') {
+          liveStatCalls += 1
+          throw new Error('EACCES: transient stat failure')
+        }
+        return full.stat(path)
+      },
+      readdir: (path: string) => full.readdir(path),
+      readFile: (path: string) => full.readFile(path),
+      writeFile: (path: string, bytes: Uint8Array) => full.writeFile(path, bytes),
+      mkdir: (path: string, options?: { recursive?: boolean }) => full.mkdir(path, options),
+      remove: (path: string, options?: { recursive?: boolean }) => full.remove(path, options),
+    }
+    const v2Files = { 'manifest.json': JSON.stringify({ ...TOOL_MANIFEST, version: '2.0.0' }), 'workflows/read.js': WORKFLOW_SOURCE }
+    const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    await expect(installPackage(registry, v2, flaky, { fetchImpl: fetchServing(v2Files) }))
+      .rejects.toMatchObject({ code: 'STORAGE_FAILED' })
+    expect(liveStatCalls).toBeGreaterThan(0)
+    // The preserved backup was NOT touched — it still holds the old package.
+    expect(await full.readFile('.com.example.pkg.previous/manifest.json')).toEqual(before)
+  })
+
   it('removes the PARTIAL live directory when a FIRST install fails mid-copy', async () => {
     // Finding: "Failed first install leaves partial package" — nothing to
     // roll back to, so the half-written directory must be removed instead
@@ -471,16 +513,26 @@ describe('installPackage — failed replacement keeps the old package', () => {
 })
 
 describe('installPackage — overlapping operations', () => {
+  /** Distinct workflow source per version (finding: "Torn versions pass
+   * concurrency test"): a shared source would let a TORN tree — one
+   * version's manifest next to the other version's workflow — pass the
+   * coherence check, since the workflow assertion could not tell which
+   * version the file came from. */
+  const workflowSourceFor = (version: string) => WORKFLOW_SOURCE.replace("'title'", `'title-v${version}'`)
+
   /** The installed tree must be ONE complete version: manifest and workflow
    * contents must both come from the SAME fixture (never a torn mix). */
   async function expectCoherentInstall(provider: ReturnType<typeof memoryProvider>): Promise<'1.0.0' | '2.0.0'> {
     const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json'))) as { version: string }
     expect(['1.0.0', '2.0.0']).toContain(manifest.version)
     const workflow = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
-    expect(workflow).toBe(WORKFLOW_SOURCE)
-    // The installer always appends the disabled-default config.json.
+    // The workflow must belong to the SAME version as the manifest — a torn
+    // tree (manifest v1 + workflow v2) fails this assertion.
+    expect(workflow).toBe(workflowSourceFor(manifest.version))
+    // The installer always appends the disabled-default config.json
+    // (asserted against the literal — see the finding note above).
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
-      .toEqual(INSTALLER_DEFAULT_CONFIG)
+      .toEqual({ activation: 'disabled' })
     const listed = (await provider.readdir('com.example.pkg')).map(entry => entry.name).sort()
     expect(listed).toEqual(['config.json', 'manifest.json', 'workflows'])
     return manifest.version as '1.0.0' | '2.0.0'
@@ -489,8 +541,13 @@ describe('installPackage — overlapping operations', () => {
   it('serializes two installs of the same id (each ends with a complete tree)', async () => {
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
-    const v1Files = fixtureFiles()
-    const v2Files = fixtureFiles({ ...TOOL_MANIFEST, version: '2.0.0' })
+    const v1Files: Record<string, string> = { ...fixtureFiles(), 'workflows/read.js': workflowSourceFor('1.0.0') }
+    const v1Manifest = { ...TOOL_MANIFEST, version: '1.0.0' }
+    v1Files['manifest.json'] = JSON.stringify(v1Manifest)
+    const v2Files = {
+      'manifest.json': JSON.stringify({ ...TOOL_MANIFEST, version: '2.0.0' }),
+      'workflows/read.js': workflowSourceFor('2.0.0'),
+    }
     const v1 = await pkgWithFiles(v1Files)
     const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
     const [r1, r2] = await Promise.all([
@@ -508,8 +565,12 @@ describe('installPackage — overlapping operations', () => {
   it('serializes an uninstall against a running install', async () => {
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
-    const pkg = await validPkg()
-    const installPromise = installPackage(registry, pkg, provider, { fetchImpl: fetchServing(fixtureFiles()) })
+    // Same per-version workflow source as the test above, so a torn tree
+    // cannot pass the coherence check here either.
+    const files: Record<string, string> = { ...fixtureFiles(), 'workflows/read.js': workflowSourceFor('1.0.0') }
+    files['manifest.json'] = JSON.stringify({ ...TOOL_MANIFEST, version: '1.0.0' })
+    const pkg = await pkgWithFiles(files)
+    const installPromise = installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
     const uninstallPromise = uninstallPackage('com.example.pkg', provider)
     await Promise.all([installPromise, uninstallPromise])
     // Whichever ran last wins — the package is either ABSENT or ONE

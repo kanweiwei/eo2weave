@@ -873,6 +873,17 @@ export default defineContentScript({
       },
 
       /**
+       * Announce an install/uninstall of an EXTERNAL package completed in
+       * this tab so the background re-reads its catalog immediately (the
+       * removed package's tools are withdrawn / the new package's tools
+       * register without waiting for an unrelated refresh). Trusted-page
+       * gated background-side.
+       */
+      async webMCPPackagesChangedNotify() {
+        return sendToBridge('webmcp_packages_changed_notify', {});
+      },
+
+      /**
        * Pull page context from the upstream tab that opened this CreatorWeave
        * side panel. Used by workspace-assistant-context.ts at system-prompt
        * build time. The extension executes

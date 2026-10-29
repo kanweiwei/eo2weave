@@ -73,17 +73,57 @@ describe('findPackageIdCollision', () => {
     await provider.writeFile('.com.example.pkg.installing/manifest.json', MANIFEST('com.example.pkg'))
     expect(await findPackageIdCollision('com.example.pkg')).toBeNull()
   })
+
+  it('treats a MALFORMED target manifest as occupied, not as the package (round 3)', async () => {
+    // Finding: "Malformed packages count as valid" — a directory holding a
+    // manifest that is valid JSON but not a package (a bare object) is NOT
+    // a re-install target: the installer must refuse to overwrite it.
+    const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    await provider.writeFile('com.example.pkg/manifest.json', new TextEncoder().encode('{}'))
+    expect(await findPackageIdCollision('com.example.pkg')).toMatch(/not a valid package/)
+  })
+
+  it('treats an unreadable NON-target manifest as a failed check (fail closed, round 3)', async () => {
+    // Findings: "Transient reads bypass collision checks" / "Unreadable
+    // manifests hide collisions" — a read error on a DIFFERENT directory
+    // may hide the very id being installed; the check must fail instead of
+    // continuing.
+    const full = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await seed(full, 'com.other.pkg', 'com.other.pkg')
+    providers.webmcp.current = {
+      stat: (path: string) => full.stat(path),
+      readdir: (path: string) => full.readdir(path),
+      readFile: async (path: string) => {
+        if (path === 'com.other.pkg/manifest.json') throw new Error('quota exceeded')
+        return full.readFile(path)
+      },
+    }
+    expect(await findPackageIdCollision('com.example.new')).toMatch(/could not be read/)
+  })
+
+  it('distinguishes a MISSING manifest from an unreadable one (round 3)', async () => {
+    // A directory with NO manifest under a different name is not a
+    // collision; the ENOENT path stays "skip", only real read errors fail.
+    const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await provider.mkdir('com.hollow.dir', { recursive: true })
+    expect(await findPackageIdCollision('com.example.new')).toBeNull()
+  })
 })
 
 describe('installRegistryPackage', () => {
   it('refuses to install over an existing package with a different manifest id', async () => {
     const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
     await seed(provider, 'com.example.pkg', 'com.other.pkg')
+    const seededBytes = await provider.readFile('com.example.pkg/manifest.json')
     const registry = { rawBase: 'https://raw.githubusercontent.com/o/r/main', manifestUrl: 'https://raw.githubusercontent.com/o/r/main/manifest.json', label: 'o/r' }
     const pkg = { id: 'com.example.pkg', version: '1.0.0', description: '', toolCount: 0, files: [] }
 
     await expect(installRegistryPackage(registry, pkg)).rejects.toThrow(/Cannot install com\.example\.pkg/)
-    // The existing package is untouched.
-    await expect(provider.stat('com.example.pkg/manifest.json')).resolves.toMatchObject({ kind: 'file' })
+    // The existing package is untouched (finding: "Replacement can pass
+    // unnoticed"): existence alone would still pass if the install replaced
+    // the contents before rejecting — the manifest must be BYTE-identical
+    // to the seeded one.
+    expect(await provider.readFile('com.example.pkg/manifest.json')).toEqual(seededBytes)
   })
 })

@@ -112,9 +112,31 @@ describe('URL matching', () => {
    * The pattern is rejected at VALIDATION time (manifest validation), so
    * such a package never reaches the matching stage.
    */
-  it.each(['^(https://example\\.com/)+(a+)+$', '^(https://example\\.com/)*(.*)*$', '^(x+x+)+y$'])(
+  it.each([
+    '^(https://example\\.com/)+(a+)+$',
+    '^(https://example\\.com/)*(.*)*$',
+    '^(x+x+)+y$',
+    // Round-3 additions: wrappers hiding the inner quantifier, escaped
+    // character classes, and ADJACENT quantified atoms/groups — each can
+    // backtrack combinatorially on a long near-match URL.
+    '^https://example\\.com/((a+))+$', // wrapper group hides `(a+)`
+    '^https://example\\.com/x((a+))+y$', // wrapper with literal tail
+    '^https://example\\.com/([a\\]]+)+b$', // escaped `]` inside the class
+    '^https://example\\.com/(a+)(a+)$', // adjacent quantified groups
+    '^https://example\\.com/(a+)(a+)(a+)$', // three adjacent groups
+    '^(a+)(a+)$', // adjacent groups, no literal prefix
+    '^https://example\\.com/a+a+a+b$', // adjacent quantified single atoms
+    // Round-3 additions: AMBIGUOUS alternation groups — no quantifier
+    // anywhere, yet the overlapping/empty-able branches multiply the input
+    // split points and V8 backtracks exponentially on a near-miss.
+    '^(a|a?)(a|a?)(a|a?)y$', // empty-able branches
+    '^https://example\\.com/(a|aa)(a|aa)b$', // overlapping prefixes
+    '^https://example\\.com/(?:a|aa)(?:a|aa)b$', // non-capturing variant
+    '^(x|)(y|)z$', // empty branches
+  ] as Array<string>)(
     'rejects the catastrophic-backtracking pattern %s',
     urlRegex => {
+      expect(hasNestedQuantifier(urlRegex)).toBe(true)
       expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id))
         .toThrow(/nested quantifiers/i)
     },
@@ -145,7 +167,15 @@ describe('URL matching', () => {
     '^(https://example\\.com/articles)+(?:/[^?#]*)?$',
     '^(https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?))(?:\\?[^#]*)?(?:#.*)?$',
     '^(https://example\\.com)/(?:\\?[^#]*)?(?:#.*)?$|^^(https://other\\.test)/x$',
-  ])('keeps accepting safe quantified-group patterns %s', urlRegex => {
+    // Round-3 additions: shapes the ADJACENT-quantifier detection must not
+    // flag — quantified atoms separated by literal separators, safe query
+    // tails, single quantifiers and the shipped builtin patterns.
+    '^https://example\\.com/v[0-9]+/x+$',
+    '^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$',
+    '^https://www\\.xiaohongshu\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$',
+    '^https://x\\.com/(a+)/b(?:c+)$', // groups separated by a literal
+    '^https://x\\.com/(a+)/b+$', // group, separator, quantified class
+  ] as Array<string>)('keeps accepting safe quantified-group patterns %s', urlRegex => {
     expect(hasNestedQuantifier(urlRegex)).toBe(false)
   })
   it('keeps matching a normal pattern that merely uses a quantified group', () => {

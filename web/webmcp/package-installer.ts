@@ -128,6 +128,15 @@ export async function installPackage(
   pkg: RegistryManifestPackage,
   provider: FsProvider,
   options?: { fetchImpl?: typeof fetch; timeoutMs?: number },
+  /**
+   * Called INSIDE the per-package cross-context lock, after the lock is
+   * held and before anything is written (finding: "Concurrent collision
+   * check is bypassed"): lets the caller re-run its id-collision check
+   * against the mount state the lock actually observed — two concurrent
+   * first installs pass the unlocked check, serialize on the lock, and the
+   * loser now rejects instead of silently replacing the winner.
+   */
+  underLock?: () => Promise<void>,
 ): Promise<{ filesWritten: number }> {
   const fetchImpl = options?.fetchImpl ?? fetch
   const id = pkg.id
@@ -207,6 +216,15 @@ export async function installPackage(
     if (manifest.id !== id) {
       throw new PackageInstallError(`Package manifest id ${manifest.id} does not match registry id ${id}`, 'INVALID_PACKAGE')
     }
+    // The registry entry's version claim must agree with the downloaded
+    // manifest (finding: "Displayed version can be wrong") — otherwise the
+    // settings card would report a version the user did not actually get.
+    if (manifest.version !== pkg.version) {
+      throw new PackageInstallError(
+        `Package manifest version ${manifest.version} does not match registry version ${pkg.version}`,
+        'INVALID_PACKAGE',
+      )
+    }
     for (const tool of manifest.tools) toolPaths.add(tool.path)
     const sources: Record<string, string> = Object.create(null)
     for (const file of staged) {
@@ -235,6 +253,7 @@ export async function installPackage(
   // mutex below keeps concurrent callers in THIS context queued instead of
   // fighting over the lease with retry backoff.
   return withInstallerLock(id, async () => {
+    if (underLock) await underLock()
     await swapPackageIntoPlace(id, staged, provider)
     return { filesWritten: staged.length }
   })
@@ -298,10 +317,13 @@ async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Pr
     )
   }
   const owner = acquired.owner
-  // SECURITY (finding: "Expired lock holders keep mutating"): a heartbeat
-  // reporting `ok:false` means the lease EXPIRED and another context took
-  // it — continuing the swap would mutate an unlocked package. Abort with
-  // a distinct error; the swap's own failure paths keep the mount usable.
+  // SECURITY (finding: "Install continues after lease loss", round 3): a
+  // heartbeat reporting `ok:false` means the lease EXPIRED and another
+  // context owns the package now — continuing the swap would mutate an
+  // unowned package. Record the loss AND race it against the transaction:
+  // `Promise.race` does not cancel `fn`, but the swap's remaining writes
+  // check the flag and bail at the next step, and the loss is always
+  // surfaced as a LOCK_LOST failure instead of a silent success.
   let lockLost: string | null = null
   const heartbeat = setInterval(() => {
     void bridge(packageId, 'heartbeat', owner)
@@ -357,15 +379,30 @@ async function swapPackageIntoPlace(
   let backupPreserved = false
   try {
     await removeMissingOk(provider, staging)
-    // SECURITY (critical, "Retry deletes last good package"): a PRIOR
-    // failed replacement may have left `backup` behind holding the ONLY
-    // surviving copy of the package (restoration failed there). If the live
-    // directory is ALSO gone, this backup is not redundant state — it is a
-    // recoverable install. Restore it before proceeding, so the retry can
-    // never delete the last good copy; if the live tree exists, the backup
-    // is genuinely stale and safe to clear below.
+    // SECURITY (critical, "Retry deletes last good package"; round 3:
+    // "Retry deletes the last backup"): a PRIOR failed replacement may have
+    // left `backup` behind holding the ONLY surviving copy of the package
+    // (restoration failed there). If the live directory is ALSO gone, this
+    // backup is not redundant state — it is a recoverable install. Restore
+    // it before proceeding, so the retry can never delete the last good
+    // copy; if the live tree exists, the backup is genuinely stale and safe
+    // to clear below. An INDETERMINATE stat (transient/permission failure)
+    // must NOT read as "exists": that is exactly how a retry skipped
+    // recovery and then deleted the preserved backup. Abort instead — the
+    // backup survives untouched and the caller can retry.
     const liveExists = await pathExists(provider, id)
-    if (!liveExists && (await pathExists(provider, backup))) {
+    const backupExists = liveExists === false ? await pathExists(provider, backup) : false
+    if (liveExists === null || backupExists === null) {
+      // The abort must also keep the backup out of the cleanup below — it
+      // may be the only surviving copy (finding: "Retry deletes the last
+      // backup").
+      backupPreserved = true
+      throw new PackageInstallError(
+        `The state of ${id} on the mount could not be determined (stat failed); a preserved backup was kept and nothing was modified — retry`,
+        'STORAGE_FAILED',
+      )
+    }
+    if (!liveExists && backupExists) {
       try {
         await copyTree(provider, backup, id)
         // Recovered — the backup is now redundant.
@@ -485,15 +522,15 @@ async function swapPackageIntoPlace(
   }
 }
 
-/** True when the path exists, tolerating absence in both error shapes. */
-async function pathExists(provider: FsProvider, path: string): Promise<boolean> {
+/** True when the path exists; `null` when the answer is INDETERMINATE. */
+async function pathExists(provider: FsProvider, path: string): Promise<boolean | null> {
   try {
     await provider.stat(path)
     return true
   } catch (error) {
     const e = error as { code?: string; name?: string }
     if (e.code === 'ENOENT' || e.name === 'NotFoundError') return false
-    return true // treat unknown stat errors as existing: do NOT risk deleting
+    return null // transient/permission failure — the answer is unknown
   }
 }
 

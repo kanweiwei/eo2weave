@@ -218,33 +218,30 @@ interface ConsentTokenRecord {
 }
 
 /**
- * Fingerprint of a package candidate: the manifest version plus, for every
- * tool, the sorted `name:path:urlRegex` triple and the hash of the tool's
- * ACTUAL SOURCE bytes (finding: "Changed packages reuse old consent" —
+ * Fingerprint of a package candidate: SHA-256 over the manifest version plus,
+ * for every tool, the sorted `name:path:urlRegex` triple and the hash of the
+ * tool's ACTUAL SOURCE bytes (finding: "Changed packages reuse old consent" —
  * version, tool names and paths alone do not change when a repackaged
  * module swaps the workflow source under the same names, so the old consent
  * tokens kept working; tool NAMES belong in the fingerprint too — a rename
- * under a stable path changes what the user is consenting to). The hash is
- * a non-crypto 64-bit FNV-1a over the sorted pairs; it only needs collision
- * resistance against accidental/unmotivated drift, is synchronous and
- * deterministic across contexts.
+ * under a stable path changes what the user is consenting to). The digest is
+ * cryptographic (round-3 finding: "Stale consent accepts changed code" — a
+ * 32-bit FNV-1a truncation collides for crafted source swaps, which would
+ * let a replacement pass the old consent) and deterministic across contexts;
+ * Web Crypto is available in every extension context.
  */
-function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebMCPPackageEntry): string {
+async function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebMCPPackageEntry): Promise<string> {
   const manifest = entry?.package?.manifest
   const version = manifest?.version ?? ''
   const sources = entry?.package?.sources
-  const hashFnv1a = (text: string): string => {
-    let hash = 0xcbf29ce4
-    for (let i = 0; i < text.length; i += 1) {
-      hash ^= text.charCodeAt(i)
-      hash = Math.imul(hash, 0x1000193)
-    }
-    return (hash >>> 0).toString(16)
+  const sha256Hex = async (text: string): Promise<string> => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text) as BufferSource)
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
   }
-  const toolPairs = manifest?.tools
-    ? manifest.tools.map(tool => `${tool.name}:${tool.path}:${tool.urlRegex}:${hashFnv1a(sources?.[tool.path] ?? '')}`).sort().join(',')
-    : candidate.tools.map(tool => tool.name).sort().join(',')
-  return `${version}|${toolPairs}`
+  const toolPairs: string[] = manifest?.tools
+    ? manifest.tools.map(tool => `${tool.name}:${tool.path}:${tool.urlRegex}:${sources?.[tool.path] ?? ''}`)
+    : candidate.tools.map(tool => tool.name).sort()
+  return `${version}|${await sha256Hex(toolPairs.sort().join(','))}`
 }
 
 /**
@@ -450,7 +447,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
             ? issueConsentToken(
                 tabId,
                 candidate.id,
-                packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
+                await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
               )
             : undefined
         // Sibling candidates for the dismissed-best case (finding: "Dismissal
@@ -468,26 +465,25 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // enable packages, so offering an enabled sibling as an alternative
         // either re-enables and reloads it redundantly (grace mode) or fails
         // the consent check (strict mode).
-        const alternatives = findPackageOptInCandidates(entries, statusUrl)
-          .filter(item => item.directory !== candidate.directory)
-          .filter(item => item.activation === 'disabled')
-          .slice(0, 8)
-          // Each DISABLED sibling gets its OWN package-bound consent token
-          // (findings: "Sibling consent cannot complete" / "Sibling opt-in
-          // is rejected"): a token never enables a package other than the
-          // one it was minted for, so the client must be able to echo a
-          // sibling-bound token back on confirm.
-          .map(item => ({
-            ...item,
-            consentToken:
-              item.activation === 'disabled'
-                ? issueConsentToken(
-                    tabId,
-                    item.id,
-                    packageFingerprint(item, entries.find(e => e.directory === item.directory)),
-                  )
-                : undefined,
-          }))
+        const alternatives = await Promise.all(
+          findPackageOptInCandidates(entries, statusUrl)
+            .filter(item => item.directory !== candidate.directory)
+            .filter(item => item.activation === 'disabled')
+            .slice(0, 8)
+            // Each DISABLED sibling gets its OWN package-bound consent token
+            // (findings: "Sibling consent cannot complete" / "Sibling opt-in
+            // is rejected"): a token never enables a package other than the
+            // one it was minted for, so the client must be able to echo a
+            // sibling-bound token back on confirm.
+            .map(item => ({ item, directory: entries.find(e => e.directory === item.directory) }))
+            .map(async ({ item, directory }) => ({
+              ...item,
+              consentToken:
+                item.activation === 'disabled'
+                  ? issueConsentToken(tabId, item.id, await packageFingerprint(item, directory))
+                  : undefined,
+            })),
+        )
         // Tokens minted for alternatives the client may never offer would
         // linger until TTL expiry; acceptable (bounded, in-memory, single
         // use) and far cheaper than a callback channel for revocation.
@@ -521,6 +517,12 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
       // with a warn log so the migration can be measured. A PRESENT but
       // wrong token is never downgraded to legacy — a supplied token means
       // the caller claims the token protocol, so a bad one is tampering.
+      // SECURITY (round-3 finding: "External activation skips consent"):
+      // the tokenless grace path exists ONLY for BUILTIN packages — old
+      // extension builds never saw external (registry-installed) packages,
+      // so there is no legacy caller to keep working for them. Whether the
+      // requested package is EXTERNAL is decided below against the
+      // re-derived candidate (never the web-supplied id alone).
       if (!packageId || (!hasConsentToken && activeEnforcement() === 'strict')) {
         sendResponse({
           ok: false,
@@ -588,6 +590,26 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
+        // SECURITY (round-3 finding: "External activation skips consent"):
+        // the tokenless grace path is a compatibility shim for clients that
+        // predate consent tokens — those clients never knew about EXTERNAL
+        // packages, so a registry-installed package must ALWAYS present a
+        // valid consent token, even while builtin enables are still accepted
+        // tokenless in grace mode. Checked against the RE-DERIVED candidate
+        // (mount = `webmcp`), never the web-supplied id alone.
+        if (!hasConsentToken && candidate.mount !== 'builtin-webmcp') {
+          // eslint-disable-next-line no-console
+          console.warn('[PackageOptIn] tokenless enable of an EXTERNAL package refused (no legacy caller exists)', {
+            packageId,
+            timestamp: new Date().toISOString(),
+          })
+          sendResponse({
+            ok: false,
+            errorCode: 'CONSENT_REQUIRED',
+            error: 'packageId and a consent token from webmcp_package_optin_status are required.',
+          })
+          return false
+        }
         // Fail-closed token consumption happens only NOW, against the
         // RE-DERIVED candidate: the token must match the package the user
         // ACTUALLY saw in the modal — tab, id AND fingerprint (finding:
@@ -603,7 +625,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
             consentToken,
             tabId,
             packageId,
-            packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
+            await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
           )
         ) {
           sendResponse({
@@ -695,10 +717,15 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
             return false
           }
           const freshEntry = freshEntries.find(e => e.directory === candidate.directory && e.mount === candidate.mount)
-          if (
-            !freshEntry ||
-            packageFingerprint(candidate, freshEntry) !== packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
-          ) {
+          // Fingerprint EACH entry against its OWN manifest/sources (round-3
+          // finding: "Replacement bypasses fresh consent check"): the
+          // manifest portion of the digest comes from the ENTRY passed in,
+          // so a replacement that changed tool names or URL rules (while
+          // keeping paths + source bytes) now yields a different fingerprint
+          // and the old consent is rejected instead of arming it.
+          const freshFingerprint = freshEntry ? await packageFingerprint(candidate, freshEntry) : null
+          const oldFingerprint = await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
+          if (freshFingerprint === null || freshFingerprint !== oldFingerprint) {
             enableFailure('PACKAGE_MISMATCH', 'The package changed while enabling; nothing was enabled.')
             return false
           }
