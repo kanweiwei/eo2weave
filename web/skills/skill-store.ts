@@ -8,6 +8,7 @@
 // ============================================================
 
 import {
+  deleteUserSkillDir,
   previewUserSkillZip,
   importUserSkillZip,
   type ZipSkillPreview,
@@ -148,10 +149,20 @@ export function getInstalledDirNames(): Set<string> {
  *
  * Returns the number of files written. Throws on error.
  *
+ * Robustness:
+ *   - The download (headers + body stream) is bounded by DOWNLOAD_TIMEOUT_MS
+ *     so a stalled connection can't leave the caller in "installing"
+ *     forever — on expiry the fetch is aborted and an error is thrown.
+ *   - If the ZIP import fails mid-write, any partially written skill
+ *     directory is removed so the skill never looks "installed" while
+ *     being unusable.
+ *
  * Progress messages are intentionally in English by default (this helper is
  * i18n-agnostic — it has no access to useT). Callers that care about UX
  * should pass their own `onProgress` to translate messages before display.
  */
+export const DOWNLOAD_TIMEOUT_MS = 60_000
+
 export async function installSkillFromUrl(
   zipUrl: string,
   onProgress?: (p: InstallProgress) => void,
@@ -161,56 +172,89 @@ export async function installSkillFromUrl(
 
   report({ phase: 'fetching', message: 'Downloading…' })
 
-  const resp = await fetch(zipUrl, { credentials: 'omit' })
-  if (!resp.ok) {
-    throw new Error(`Download failed: HTTP ${resp.status}`)
-  }
-  if (!resp.body) {
-    throw new Error('Download failed: empty response')
-  }
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
+  let resp: Response
+  try {
+    resp = await fetch(zipUrl, { credentials: 'omit', signal: controller.signal })
+    if (!resp.ok) {
+      throw new Error(`Download failed: HTTP ${resp.status}`)
+    }
+    if (!resp.body) {
+      throw new Error('Download failed: empty response')
+    }
 
-  const contentLength = Number(resp.headers.get('content-length') ?? 0)
-  const blob = await streamToBlob(resp, contentLength, (loaded, total) => {
-    onProgress?.({
-      phase: 'fetching',
-      message: `Downloading… (${formatBytes(loaded)} / ${formatBytes(total || contentLength)})`,
-      bytesLoaded: loaded,
-      bytesTotal: total || contentLength,
+    const contentLength = Number(resp.headers.get('content-length') ?? 0)
+    const blob = await streamToBlob(resp, contentLength, controller.signal, (loaded, total) => {
+      onProgress?.({
+        phase: 'fetching',
+        message: `Downloading… (${formatBytes(loaded)} / ${formatBytes(total || contentLength)})`,
+        bytesLoaded: loaded,
+        bytesTotal: total || contentLength,
+      })
     })
-  })
+    clearTimeout(timeoutId)
 
-  // Wrap as File (previewUserSkillZip expects File)
-  const filename = zipUrl.split('/').pop() ?? 'skill.zip'
-  const file = new File([blob], filename, { type: 'application/zip' })
+    // Wrap as File (previewUserSkillZip expects File)
+    const filename = zipUrl.split('/').pop() ?? 'skill.zip'
+    const file = new File([blob], filename, { type: 'application/zip' })
 
-  report({ phase: 'previewing', message: 'Validating…' })
-  const preview = await previewUserSkillZip(file)
+    report({ phase: 'previewing', message: 'Validating…' })
+    const preview = await previewUserSkillZip(file)
 
-  report({ phase: 'importing', message: 'Installing…' })
-  const count = await importUserSkillZip(preview)
+    report({ phase: 'importing', message: 'Installing…' })
+    try {
+      const count = await importUserSkillZip(preview)
 
-  // Find manifest entry (best effort — caller may not have it)
-  const manifest: SkillStoreEntry = {
-    id: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
-    name: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
-    dirName: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
-    description: '',
-    category: '',
-    tags: [],
-    version: '',
-    zipUrl,
+      // Find manifest entry (best effort — caller may not have it)
+      const manifest: SkillStoreEntry = {
+        id: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
+        name: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
+        dirName: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
+        description: '',
+        category: '',
+        tags: [],
+        version: '',
+        zipUrl,
+      }
+
+      report({ phase: 'done', message: `Installed ${count} files` })
+      return { count, manifest }
+    } catch (e) {
+      // Mid-write failure: remove the partial directory so scanInstalledDirNames
+      // does not report the skill as installed.
+      const dirNames = preview.isBundle
+        ? (preview.skills ?? []).map((s) => s.dirName)
+        : preview.skill
+          ? [preview.skill.dirName]
+          : []
+      for (const dirName of dirNames) {
+        try {
+          await deleteUserSkillDir(dirName)
+        } catch (cleanupErr) {
+          console.warn('[SkillStore] Failed to clean up partial skill install:', dirName, cleanupErr)
+        }
+      }
+      throw e
+    }
+  } catch (e) {
+    clearTimeout(timeoutId)
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('Download timed out — please check your connection and retry')
+    }
+    throw e
   }
-
-  report({ phase: 'done', message: `Installed ${count} files` })
-  return { count, manifest }
 }
 
 /**
  * Stream a Response body to a Blob with progress reporting.
+ * Aborts (and rejects) when the caller's timeout signal fires, so a stalled
+ * stream cannot hang the install pipeline.
  */
 async function streamToBlob(
   resp: Response,
   total: number,
+  signal: AbortSignal,
   onProgress: (loaded: number, total: number) => void,
 ): Promise<Blob> {
   if (!resp.body) return new Blob()
@@ -219,13 +263,26 @@ async function streamToBlob(
   const chunks: Uint8Array[] = []
   let loaded = 0
 
-  // eslint-disable-next-line no-constant-condition -- reader.read() loop with an explicit break on done
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(value)
-    loaded += value.length
-    onProgress(loaded, total)
+  const abortListener = () => {
+    void reader.cancel()
+  }
+  signal.addEventListener('abort', abortListener, { once: true })
+
+  try {
+    // eslint-disable-next-line no-constant-condition -- reader.read() loop with an explicit break on done
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      loaded += value.length
+      onProgress(loaded, total)
+    }
+  } finally {
+    signal.removeEventListener('abort', abortListener)
+  }
+
+  if (signal.aborted) {
+    throw new DOMException('The operation was aborted.', 'AbortError')
   }
 
   return new Blob(chunks)
