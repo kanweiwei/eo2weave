@@ -37,9 +37,13 @@ vi.mock('@/skills/skill-store', () => ({
 }))
 
 const refreshUserSkillsMock = vi.fn(async () => {})
+const getSkillsMock = vi.fn(() => [] as Array<{ id: string; source: string }>)
 
 vi.mock('@/skills/skill-manager', () => ({
-  getSkillManager: () => ({ refreshUserSkills: refreshUserSkillsMock }),
+  getSkillManager: () => ({
+    refreshUserSkills: refreshUserSkillsMock,
+    getSkills: getSkillsMock,
+  }),
 }))
 
 const checkAiReadinessMock = vi.fn()
@@ -138,14 +142,16 @@ describe('SkillInstallPage (issue #126)', () => {
     projectState.activeProjectId = 'proj-1'
     projectState.projects = []
     fetchSkillStoreManifestMock.mockResolvedValue({ skills: [ENTRY] })
-    // First scan happens at load (not installed yet); the second scan is
-    // runInstall's post-registration verification — the skill is present.
-    let scanCount = 0
-    scanInstalledDirNamesMock.mockImplementation(async () => {
-      scanCount += 1
-      return scanCount >= 2 ? new Set([ENTRY.dirName]) : new Set<string>()
-    })
+    // The installed-dir scan runs at load (not installed yet).
+    scanInstalledDirNamesMock.mockResolvedValue(new Set<string>())
     installSkillFromUrlMock.mockResolvedValue({ count: 4, manifest: ENTRY })
+    // After install, refreshUserSkills registers the skill — the page
+    // verifies registration against getSkills() before navigating.
+    refreshUserSkillsMock.mockImplementation(async () => {
+      getSkillsMock.mockReturnValue([
+        { id: `user:${ENTRY.dirName}`, source: 'user' },
+      ])
+    })
     checkAiReadinessMock.mockResolvedValue({ ready: true, creditExhausted: false })
     searchParamsMock.mockReturnValue(new URLSearchParams('skill=cw-legal-evidence-chain'))
   })
@@ -173,6 +179,15 @@ describe('SkillInstallPage (issue #126)', () => {
   })
 
   it('happy path: details → Install (user click) → refreshUserSkills → navigate with prefill', async () => {
+    // Deferred installer: the page must NOT start registration or navigate
+    // until installSkillFromUrl actually resolves (a real download takes
+    // time — an un-awaited call would navigate with the skill missing).
+    let resolveInstall!: () => void
+    installSkillFromUrlMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveInstall = () => resolve({ count: 4, manifest: ENTRY })
+      }),
+    )
     render(<SkillInstallPage />)
     // Details render first.
     await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
@@ -182,6 +197,11 @@ describe('SkillInstallPage (issue #126)', () => {
     await waitFor(() => {
       expect(installSkillFromUrlMock).toHaveBeenCalledWith('/skills/cw-legal-evidence-chain.zip', expect.any(Function))
     })
+    // While the download is pending, the page must neither register nor navigate.
+    expect(refreshUserSkillsMock).not.toHaveBeenCalled()
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+
+    resolveInstall()
     // Slash command registers immediately after install.
     await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
     // Navigates to the most recent conversation (lastAccessedAt: 99).
@@ -194,6 +214,16 @@ describe('SkillInstallPage (issue #126)', () => {
       mentionedAgentIds: [],
       selectedFiles: [],
     })
+    // Ordering: installation MUST be awaited before registration — refresh
+    // may only start after the installer promise resolved.
+    expect(refreshUserSkillsMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      installSkillFromUrlMock.mock.invocationCallOrder[0],
+    )
+    // Ordering: registration MUST complete before navigation — otherwise a
+    // visitor arrives at the conversation before the slash command is ready.
+    expect(refreshUserSkillsMock.mock.invocationCallOrder[0]).toBeLessThan(
+      routerReplaceMock.mock.invocationCallOrder[0],
+    )
     // Ordering: the draft write MUST precede router.replace — otherwise a
     // visitor can arrive at the conversation without the prefill (the
     // mocked router does not unmount the page, so "eventually" checks
@@ -211,6 +241,20 @@ describe('SkillInstallPage (issue #126)', () => {
     await waitFor(() => expect(screen.getByText('Download timed out')).toBeInTheDocument())
     // Back on the details view with a retry-able button.
     expect(screen.getByText('skillInstall.installButton')).toBeInTheDocument()
+  })
+
+  it('treats an unregistered skill as a failed install (no navigation with a dead slash command)', async () => {
+    // refreshUserSkills "succeeds" but the scan failed silently — the skill
+    // never shows up in getSkills(), so the page must abort with the
+    // registration error instead of navigating.
+    refreshUserSkillsMock.mockImplementation(async () => {
+      getSkillsMock.mockReturnValue([])
+    })
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(screen.getByText('skillInstall.registerFailed')).toBeInTheDocument())
+    expect(routerReplaceMock).not.toHaveBeenCalled()
   })
 
   it('zero-credit readiness shows the hint in the details view instead of navigating', async () => {
