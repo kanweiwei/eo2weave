@@ -413,12 +413,20 @@ function groupBodyIsAmbiguousAlternation(pattern: string, bodyStart: number, bod
   branches.push(pattern.slice(start, bodyEnd))
   if (body.canMatchEmpty || branches.some(branch => branch === '')) return true
   const firstLiterals = branches.map(branch => literalFirstChar(branch))
-  // Any two branches sharing a first character overlap.
+  // Finding: "URL matching stalls" — when a branch's first-character set is
+  // UNKNOWN (it starts with a character class, a negated class, `.`, or an
+  // escaped class like `\w`), it can start with ANY character, so it may
+  // overlap every other branch: `([a-z]+|[0-9]+)*` passed the old check
+  // (null === null never compared equal) and backtracked combinatorially.
+  // Only branches whose first literals are BOTH known may be compared at
+  // all; an unknown first set on either side means the branches are treated
+  // as OVERLAPPING (conservative reject — fail closed).
   for (let a = 0; a < firstLiterals.length; a += 1) {
     for (let b = a + 1; b < firstLiterals.length; b += 1) {
       const fa = firstLiterals[a]
       const fb = firstLiterals[b]
-      if (fa !== null && fb !== null && fa === fb) return true
+      if (fa === null || fb === null) return true // unknown first set — assume overlap
+      if (fa === fb) return true // same first literal — the branches overlap
     }
   }
   return false

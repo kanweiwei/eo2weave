@@ -95,9 +95,17 @@ function runExclusively<T>(packageId: string, step: () => Promise<T>): Promise<T
   const previous = leaseQueues.get(packageId) ?? Promise.resolve()
   const gate = previous.catch(() => {}).then(step)
   leaseQueues.set(packageId, gate)
-  void gate.finally(() => {
-    if (leaseQueues.get(packageId) === gate) leaseQueues.delete(packageId)
-  })
+  // Finding: "Lease failures cause unhandled rejections" — `gate` itself
+  // rejects when `step` throws, and `gate.finally(...)` returns a NEW
+  // promise that inherits that rejection; `void`-ing it left an unhandled
+  // rejection even when the caller handled the step's failure. Chain
+  // `catch` FIRST so the cleanup chain never carries a rejection, then run
+  // the queue-entry cleanup on the (always-fulfilled) caught chain.
+  void gate
+    .catch(() => {})
+    .finally(() => {
+      if (leaseQueues.get(packageId) === gate) leaseQueues.delete(packageId)
+    })
   return gate
 }
 

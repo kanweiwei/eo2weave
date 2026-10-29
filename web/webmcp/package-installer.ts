@@ -365,6 +365,13 @@ async function withInstallerLock<T>(
       .catch(() => {})
   }, LOCK_HEARTBEAT_MS)
   const transaction = fn(controller.signal)
+  // Finding: "Lock releases before writes stop" — when the race below is
+  // won by the LEASE LOSS, the `finally` path must NOT hand the lock to the
+  // next owner while the losing transaction is still running: its remaining
+  // steps would mutate the package under the NEW owner's lease and two
+  // transactions would interleave. Track the transaction's settlement and
+  // hold the release until `settled` resolves (it never rejects — both
+  // outcomes are wrapped values).
   const settled = transaction.then(
     result => ({ ok: true as const, result }),
     (error: unknown) => ({ ok: false as const, error }),
@@ -393,6 +400,13 @@ async function withInstallerLock<T>(
     throw error
   } finally {
     clearInterval(heartbeat)
+    // Finding: "Lock releases before writes stop" — WAIT for the losing
+    // transaction to settle BEFORE releasing: the local gate (and with it
+    // the bridge lease) must not pass to the next owner while the aborted
+    // transaction is still between `await`ed steps. `settled` never rejects
+    // (both outcomes are wrapped), so this await cannot mask the thrown
+    // error above.
+    await settled.catch(() => {})
     await lockBridge(packageId, 'release', owner).catch(() => {})
     release()
   }
@@ -424,15 +438,23 @@ async function swapPackageIntoPlace(
   const backup = `.${id}.previous`
   const hasRename = typeof provider.rename === 'function'
   let backupPreserved = false
-  // The lease must still be ours BEFORE the first destructive step
-  // (finding: "Lost lease does not stop mutations").
-  if (lockSignal.aborted) {
-    throw new PackageInstallError(
-      `The install of ${id} was aborted: the package lock was lost mid-transaction`,
-      'LOCK_LOST',
-    )
+  // FENCING (finding: "Lock releases before writes stop"): every DESTRUCTIVE
+  // storage step below (the pre-swap recovery/cleanup removes and each
+  // remove/copy in the no-rename swap) checks the lease signal FIRST, so a
+  // step that STARTS after the lease was lost never executes — a stale
+  // transaction must not mutate the package directory the NEW owner now
+  // holds the lease for. Each check surfaces LOCK_LOST through the lock
+  // wrapper, keeping the error codes stable.
+  const throwIfLeaseLost = (): void => {
+    if (lockSignal.aborted) {
+      throw new PackageInstallError(
+        `The install of ${id} was aborted: the package lock was lost mid-transaction`,
+        'LOCK_LOST',
+      )
+    }
   }
   try {
+    throwIfLeaseLost()
     await removeMissingOk(provider, staging)
     // SECURITY (critical, "Retry deletes last good package"; round 3:
     // "Retry deletes the last backup"): a PRIOR failed replacement may have
@@ -458,9 +480,11 @@ async function swapPackageIntoPlace(
       )
     }
     if (!liveExists && backupExists) {
+      throwIfLeaseLost() // fence: do not recover/clear the backup after lease loss
       try {
         await copyTree(provider, backup, id)
         // Recovered — the backup is now redundant.
+        throwIfLeaseLost() // fence the backup cleanup against lease loss
         await removeMissingOk(provider, backup)
       } catch {
         // Recovery failed: keep the backup and proceed WITHOUT deleting it
@@ -473,6 +497,7 @@ async function swapPackageIntoPlace(
         )
       }
     }
+    throwIfLeaseLost() // fence: the backup clear is destructive
     await removeMissingOk(provider, backup)
     // Guard the WRITE LOOP (finding: "Lost lease does not stop mutations"):
     // every staged write checks the lease signal first, so a transaction
@@ -554,18 +579,29 @@ async function swapPackageIntoPlace(
         )
       }
       try {
+        throwIfLeaseLost() // fence: removing the live tree is destructive
         await removeMissingOk(provider, id)
         try {
+          throwIfLeaseLost() // fence: the staged copy-in is destructive
           await copyTree(provider, staging, id)
         } catch (copyError) {
+          // A LEASE-LOST abort is not a copy failure: do NOT run the
+          // destructive rollback (remove + restore) for it — the transaction
+          // stops here and the lock wrapper surfaces LOCK_LOST. The finally
+          // block below still clears the staging dir; `backupPreserved`
+          // stays false so the redundant backup copy is cleaned too.
+          if (lockSignal.aborted) throw copyError
           if (!hadOld) {
             // First install: nothing to restore — remove the PARTIAL live
             // directory so the settings UI never reports a half package
             // (finding: "Failed first install leaves partial package").
+            throwIfLeaseLost() // fence the cleanup writes against lease loss
             await removeMissingOk(provider, id).catch(() => {})
           } else {
+            throwIfLeaseLost() // fence the rollback writes against lease loss
             await removeMissingOk(provider, id).catch(() => {})
             try {
+              throwIfLeaseLost() // fence: the restore copy is destructive
               await copyTree(provider, backup, id)
             } catch (restoreError) {
               // The restore failed — same rule as the rename path: keep
@@ -580,8 +616,13 @@ async function swapPackageIntoPlace(
           throw copyError
         }
       } finally {
-        if (!backupPreserved) await removeMissingOk(provider, backup).catch(() => {})
+        // Fence the backup cleanup too: an aborted transaction must not
+        // remove the backup after the lease moved on (the new owner could be
+        // mid-restore from it). A lease-lost exit keeps `backupPreserved`
+        // false only via this guard — checked BEFORE the removal.
+        if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup).catch(() => {})
       }
+      throwIfLeaseLost() // fence the final redundant-backup clear
       await removeMissingOk(provider, backup)
     }
   } catch (error) {
@@ -592,9 +633,12 @@ async function swapPackageIntoPlace(
     // only cleaned when it is provably no longer needed (the swap
     // succeeded, or the rollback restored it): when restoration FAILED the
     // backup is the only remaining copy of the working package and MUST
-    // survive (finding: "Failed rollback deletes working package").
-    await removeMissingOk(provider, staging).catch(() => {})
-    if (!backupPreserved) await removeMissingOk(provider, backup).catch(() => {})
+    // survive (finding: "Failed rollback deletes working package"). Both
+    // cleanups are FENCED against lease loss (finding: "Lock releases
+    // before writes stop") — a stale transaction must not delete the new
+    // owner's backup.
+    if (!lockSignal.aborted) await removeMissingOk(provider, staging).catch(() => {})
+    if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup).catch(() => {})
   }
 }
 

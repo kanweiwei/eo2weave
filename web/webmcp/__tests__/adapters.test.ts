@@ -133,6 +133,15 @@ describe('URL matching', () => {
     '^https://example\\.com/(a|aa)(a|aa)b$', // overlapping prefixes
     '^https://example\\.com/(?:a|aa)(?:a|aa)b$', // non-capturing variant
     '^(x|)(y|)z$', // empty branches
+    // Round-7 finding ("URL matching stalls"): repeated ambiguous
+    // alternation groups whose branches start with CHARACTER CLASSES
+    // (`([a-z]+|[0-9]+)*` — firstLiterals null for class starts) were
+    // treated as non-overlapping, so a combinatorial-backtracking pattern
+    // passed validation. An UNKNOWN first-character set (class, negated
+    // class, `.`, or a class escape like `\w`) must be treated as
+    // OVERLAPPING — conservative reject.
+    '^([a-z]+|[0-9]+)*x$', // class-starting branches, repeated group
+    '^([^a]|.)+y$', // negated class + dot branches — same unknown-overlap hole
   ] as Array<string>)(
     'rejects the catastrophic-backtracking pattern %s',
     urlRegex => {
@@ -158,6 +167,10 @@ describe('URL matching', () => {
     ['bounded repeat over quantified body', '(a{1,2}){1,20}'],
     ['non-capturing double nested', '((a+)*)+'],
     ['lazy quantifier in group', '(a??)*'],
+    // Round-7 finding ("URL matching stalls"): branches starting with a
+    // CLASS ESCAPE (`\w`, `\d`) have an UNKNOWN first set — the pair must
+    // count as overlapping even though neither starts with a plain literal.
+    ['class-escape alternation branches', '(\\w|\\d)+y'],
   ] as Array<[string, string]>)('rejects the ReDoS shape %s (%s)', (_label, pattern) => {
     expect(hasNestedQuantifier(`^${pattern}$`)).toBe(true)
     expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex: `^${pattern}$` }] }, manifest.id))
@@ -175,6 +188,13 @@ describe('URL matching', () => {
     '^https://www\\.xiaohongshu\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$',
     '^https://x\\.com/(a+)/b(?:c+)$', // groups separated by a literal
     '^https://x\\.com/(a+)/b+$', // group, separator, quantified class
+    // Round-7 finding ("URL matching stalls"): the tightening of the
+    // alternation-overlap check must NOT reject the builtin-style shapes —
+    // groups with a KNOWN, disjoint first literal (`(?:movie|search)`,
+    // literal-prefixed branches) stay accepted.
+    '^https://example\\.com(?:/[^?#]*)?$', // bare quantified optional tail
+    '^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$', // douban shape
+    '^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$', // full Jmail manifest shape
   ] as Array<string>)('keeps accepting safe quantified-group patterns %s', urlRegex => {
     expect(hasNestedQuantifier(urlRegex)).toBe(false)
     // Finding: "Safe patterns are not validated" — a guard that merely

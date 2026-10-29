@@ -10,6 +10,10 @@ vi.mock('../../../browser-extension/entrypoints/webmcp/adapter-service', () => (
 // provider (finding: "Trusted writes can still be denied" — `code !==
 // 'EACCES'` also passes for EINVAL/EIO, i.e. a write the provider denied).
 const adapterWriteFile = vi.hoisted(() => vi.fn(async () => undefined))
+// Hoisted like `adapterWriteFile` so the readdir test can stub a KNOWN
+// listing and assert an untrusted read SUCCEEDS (finding: "VFS listing
+// rejection goes unnoticed").
+const adapterReaddir = vi.hoisted(() => vi.fn(async () => [] as Array<{ name: string; kind: string }>))
 vi.mock('../../../browser-extension/entrypoints/webmcp/provider-storage', () => ({
   // A PLAIN async function: `vi.resetAllMocks()` in beforeEach wipes
   // implementations set through vi.fn, which would make the provider
@@ -17,7 +21,7 @@ vi.mock('../../../browser-extension/entrypoints/webmcp/provider-storage', () => 
   getAdapterStorage: async () => ({
     readOnly: false,
     stat: vi.fn(),
-    readdir: vi.fn(),
+    readdir: adapterReaddir,
     readFile: vi.fn(),
     writeFile: adapterWriteFile,
     mkdir: vi.fn(),
@@ -161,8 +165,17 @@ it.each(['mkdir', 'remove'] as const)('blocks %s on the webmcp mount from untrus
 it('lets a TRUSTED page mutate the webmcp mount (reads stay open for everyone)', async () => {
   const listener = onMessage.mock.calls[0][0]
   // Read from an untrusted page: allowed (the page-facing VFS renders the
-  // file tree from reads). The read itself fails ENOENT-ish (no OPFS in
-  // tests) — the point is the GATE let it through (ok:false + code != EACCES).
+  // file tree from reads). Finding: "VFS listing rejection goes unnoticed" —
+  // `code !== 'EACCES'` also passed when the read failed with EINVAL, i.e.
+  // the gate never proved untrusted READS still succeed. The storage mock
+  // below returns a KNOWN directory listing, so this asserts the readdir
+  // actually SUCCEEDED with those entries (ok:true + entries), not merely
+  // that the gate let it through.
+  const knownEntries = [
+    { name: 'com.discord.main', kind: 'directory' },
+    { name: 'com.example.pkg', kind: 'directory' },
+  ]
+  vi.mocked(adapterReaddir).mockResolvedValueOnce(knownEntries)
   const readResult = await new Promise<Record<string, unknown>>((resolve) => {
     listener(
       { type: 'webmcp_provider_call', mount: 'webmcp', method: 'readdir', path: '' },
@@ -170,7 +183,8 @@ it('lets a TRUSTED page mutate the webmcp mount (reads stay open for everyone)',
       resolve
     )
   })
-  expect(readResult.code).not.toBe('EACCES')
+  expect(readResult).toEqual({ ok: true, value: knownEntries })
+  expect(adapterReaddir).toHaveBeenCalledWith('')
   // Write from a trusted app origin: allowed past the sender gate (the
   // settings installer writes the DISABLED default config). An
   // `activation: "enabled"` payload is separately refused by the consent
