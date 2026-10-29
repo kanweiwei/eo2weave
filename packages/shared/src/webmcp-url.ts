@@ -445,6 +445,86 @@ function adjacentGroupBodyIsAmbiguous(pattern: string, bodyStart: number, bodyEn
 }
 
 /**
+ * Overlap test for two ADJACENT top-level groups, the first of which starts
+ * with a quantified atom (round-5 finding: "Safe URL patterns are
+ * rejected"). The pair `(<quantified-leading>)(next)` is only dangerous
+ * when the boundary between them is AMBIGUOUS — i.e. both sides can claim
+ * the same characters. The decidable safe case: the previous group's LAST
+ * atom is a fixed literal (its quantified leading run is pinned to end on
+ * that character) and the next group's FIRST literal is fixed and
+ * different — `^(a+)(b)$`: the first group can only end on `a`, the second
+ * can only start with `b`, so no split point is ever revisited and the
+ * match stays linear. Everything else (equal literals, a class, an
+ * alternation, another quantified leading atom on either side) stays
+ * rejected — fail closed.
+ */
+function adjacentGroupsOverlap(pattern: string, previousStart: number, previousEnd: number, nextOpen: number): boolean {
+  const lastLiteral = literalLastChar(pattern, previousStart, previousEnd)
+  if (lastLiteral === null) return true // cannot prove the boundary decidable
+  const nextBodyStart = groupBodyStart(pattern, nextOpen)
+  const nextClose = matchingGroupClose(pattern, nextOpen)
+  if (nextClose === -1) return true // malformed — the RegExp ctor reports it; fail closed
+  const firstLiteral = literalFirstCharOf(pattern, nextBodyStart, nextClose)
+  if (firstLiteral === null) return true // class/alternation/quantified lead — assume overlap
+  return lastLiteral === firstLiteral
+}
+
+/** The LAST fixed single-character literal of a span, or null when the span's tail is not a plain literal. */
+function literalLastChar(pattern: string, from: number, until: number): string | null {
+  let i = until - 1
+  // A trailing quantifier belongs to the last atom; step over it (`+`, `*`, `?`, `{n,m}`, lazy `?`).
+  if (i >= from && isQuantifierChar(pattern[i])) {
+    if (pattern[i] === '{') {
+      const open = pattern.lastIndexOf('{', i)
+      if (open === -1) return null
+      i = open - 1
+    } else {
+      i -= 1
+    }
+    if (i >= from && pattern[i] === '?' && !isQuantifierChar(pattern[i - 1])) i -= 1
+  }
+  if (i < from) return null
+  const char = pattern[i]
+  if (char === ')') return null // group tail — not decidable here
+  if (char === ']') {
+    // A character class tail — the class COULD contain the next group's
+    // first char; undecidable without class parsing.
+    return null
+  }
+  if (char === '\\' && i - 1 >= from) return pattern[i - 1]
+  if (isQuantifierChar(char) || char === '(' || char === '|' || char === '[') return null
+  return char
+}
+
+/** Index of the `)` matching the `(` at `open`, honoring nesting/escapes/classes, or -1. */
+function matchingGroupClose(pattern: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < pattern.length; i += 1) {
+    const char = pattern[i]
+    if (char === '\\') { i += 1; continue }
+    if (char === '[') { i = classEnd(pattern, i) - 1; continue }
+    if (char === '(') depth += 1
+    else if (char === ')') {
+      depth -= 1
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/** Like `literalFirstChar` but bounded to an explicit span. */
+function literalFirstCharOf(pattern: string, from: number, until: number): string | null {
+  for (let i = from; i < until && i < pattern.length; i += 1) {
+    const char = pattern[i]
+    if (char === '\\') return pattern[i + 1] ?? null
+    if (char === '[') return null // class — treat as non-overlapping would be UNSAFE here; fail closed
+    if (char === '(' || char === '|' || char === ')' || isQuantifierChar(char)) return null
+    return char
+  }
+  return null
+}
+
+/**
  * Structural backtracking scan: every group followed by a quantifier gets
  * its body analyzed, and flat quantifier chains are rejected (see
  * `hasFlatQuantifierChain`). Groups that are not quantified are irrelevant
@@ -454,8 +534,13 @@ function adjacentGroupBodyIsAmbiguous(pattern: string, bodyStart: number, bodyEn
 export function hasNestedQuantifier(pattern: string): boolean {
   if (hasFlatQuantifierChain(pattern)) return true
   const opens: number[] = []
-  /** Set when the last closed top-level atom ended in a quantified atom. */
-  let pendingTrailingQuantified = false
+  /**
+   * Body span `[start, end)` of the last closed top-level group whose FIRST
+   * atom carries a quantifier, plus whether that span is still adjacent to
+   * the scan position (a literal atom between groups clears the adjacency).
+   * Used by the overlap-aware adjacency check below.
+   */
+  let quantifiedLeadingGroup: { start: number; end: number } | null = null
   /** Run of consecutive unquantified groups with ambiguous alternation bodies. */
   let ambiguousAlternationGroups = 0
   for (let i = 0; i < pattern.length; i += 1) {
@@ -466,12 +551,22 @@ export function hasNestedQuantifier(pattern: string): boolean {
       continue
     }
     if (char === '(') {
-      // A new group immediately after a group whose body starts with a
-      // quantified atom (`(a+)(a+)…`): the previous group's trailing
-      // quantifier and this group's leading quantifier split the same
-      // input span — reject (finding: "URL matching stalls on
-      // backtracking").
-      if (opens.length === 0 && pendingTrailingQuantified) return true
+      // A new group immediately after a group whose body STARTS with a
+      // quantified atom (`(a+)(a+)…`): the two quantifiers split the same
+      // input span BETWEEN the groups, which backtracks exponentially on a
+      // near-miss (finding: "URL matching stalls on backtracking") — BUT
+      // only when the groups can actually claim the same characters
+      // (round-5 finding: "Safe URL patterns are rejected"). `^(a+)(b)$`
+      // is safe: the first group's trailing run is all `a`s and the second
+      // group must start with `b`, so no split point is ever revisited.
+      // When the previous group's LAST literal and this group's FIRST
+      // literal are fixed and distinct, the boundary is decidable and the
+      // pattern stays allowed.
+      if (opens.length === 0 && quantifiedLeadingGroup) {
+        const previous = quantifiedLeadingGroup
+        quantifiedLeadingGroup = null
+        if (adjacentGroupsOverlap(pattern, previous.start, previous.end, i)) return true
+      }
       opens.push(i)
       continue
     }
@@ -482,13 +577,12 @@ export function hasNestedQuantifier(pattern: string): boolean {
         return true
       }
       // UNQUANTIFIED group: when its body STARTS with a quantified atom
-      // and the NEXT atom in the outer sequence is ALSO quantified
-      // (`(a+)(a+)…`), the two quantifiers split the same input span
-      // between them even without a wrapping quantifier (finding: "URL
-      // matching stalls on backtracking" — adjacent quantified groups,
+      // (`(a+)…`), remember the body span — the NEXT adjacent atom decides
+      // via the overlap check above whether the pair is dangerous (finding:
+      // "URL matching stalls on backtracking" — adjacent quantified groups,
       // which the group-free flat-chain scan cannot see).
       if (firstAtomQuantifiedEnd(pattern, groupBodyStart(pattern, open), i) !== -1) {
-        pendingTrailingQuantified = true
+        quantifiedLeadingGroup = { start: groupBodyStart(pattern, open), end: i }
       } else if (adjacentGroupBodyIsAmbiguous(pattern, groupBodyStart(pattern, open), i)) {
         // Round-3 finding ("Repeated alternatives evade ReDoS guard"): an
         // unquantified group whose body is an AMBIGUOUS alternation
@@ -496,20 +590,23 @@ export function hasNestedQuantifier(pattern: string): boolean {
         // check, yet each boundary multiplies the split points — measured
         // exponential on a near-miss input. Reject the shape outright;
         // legitimate URL patterns never chain ambiguous groups.
-        pendingTrailingQuantified = false
+        quantifiedLeadingGroup = null
         ambiguousAlternationGroups += 1
         if (ambiguousAlternationGroups >= 2) return true
       } else {
-        pendingTrailingQuantified = false
+        quantifiedLeadingGroup = null
         ambiguousAlternationGroups = 0
       }
       continue
     }
-    if (isQuantifierChar(char) && opens.length === 0 && pendingTrailingQuantified) {
-      // A quantified atom right after a group that itself ends quantified.
+    if (isQuantifierChar(char) && opens.length === 0 && quantifiedLeadingGroup) {
+      // A quantified atom right after a group that itself starts quantified
+      // (`(a+)b+`): the two quantifiers split the SAME span at an
+      // undecidable boundary (the atom can start wherever the group's run
+      // ends) — always ambiguous, reject without further analysis.
       return true
     }
-    if (!isQuantifierChar(char) && char !== '|') pendingTrailingQuantified = false
+    if (!isQuantifierChar(char) && char !== '|') quantifiedLeadingGroup = null
   }
   return false
 }
