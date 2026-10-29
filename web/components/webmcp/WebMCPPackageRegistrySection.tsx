@@ -195,8 +195,17 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
         signal: AbortSignal.timeout(REGISTRY_PREVIEW_TIMEOUT_MS),
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: unknown }
+      const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { id?: unknown; version?: unknown; tools?: unknown }
       if (!Array.isArray(data.tools)) throw new Error('The package manifest lists no tools')
+      // The count is only VERIFIED for the catalog entry the preview was
+      // requested for (round-5 finding: "Stale preview count appears
+      // verified"): a CDN or proxy serving a manifest of a DIFFERENT id or
+      // version must not have its tool count recorded under the current
+      // catalog version — it would be shown as verified in the card and the
+      // install confirmation for a package the user never previewed.
+      if (data.id !== pkgId || data.version !== version) {
+        throw new Error('The preview manifest does not match the catalog entry')
+      }
       const count = (data.tools as unknown[]).length
       // Record the count TOGETHER with the catalog version it was verified
       // for (round-3 finding: "Refresh shows stale tool count"): a catalog
@@ -384,9 +393,29 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
  * Expandable per-package tool list. Tool names/descriptions come from the
  * package's own manifest.json — fetched through the same raw base with the
  * registry client (read-only, no credentials).
+ *
+ * Every entry is validated BEFORE it reaches state (round-5 finding:
+ * "Malformed preview crashes settings"): the remote manifest is untrusted
+ * input, and a `null` or non-object entry used to be dereferenced during
+ * render, throwing and taking the whole settings section down. A manifest
+ * without well-formed tool entries renders the unavailable-preview
+ * fallback instead.
  */
+interface PreviewTool {
+  name: string
+  description: string
+}
+
+function isPreviewTool(value: unknown): value is PreviewTool {
+  return (
+    typeof value === 'object' && value !== null &&
+    typeof (value as PreviewTool).name === 'string' && (value as PreviewTool).name !== '' &&
+    typeof (value as PreviewTool).description === 'string'
+  )
+}
+
 function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg: RegistryManifestPackage }) {
-  const [tools, setTools] = useState<Array<{ name: string; description: string }> | null>(null)
+  const [tools, setTools] = useState<PreviewTool[] | null>(null)
 
   useEffect(() => {
     let disposed = false
@@ -398,8 +427,11 @@ function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg:
           signal: AbortSignal.timeout(REGISTRY_PREVIEW_TIMEOUT_MS),
         })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: Array<{ name: string; description: string }> }
-        if (!disposed) setTools(Array.isArray(data.tools) ? data.tools : [])
+        const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: unknown }
+        // Keep only well-formed entries; anything else (null, a number, a
+        // nameless object) makes the preview unavailable rather than crash.
+        const validated = Array.isArray(data.tools) ? data.tools.filter(isPreviewTool) : []
+        if (!disposed) setTools(validated)
       } catch {
         if (!disposed) setTools([])
       }
