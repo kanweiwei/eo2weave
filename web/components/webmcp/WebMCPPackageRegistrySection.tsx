@@ -38,6 +38,7 @@ import {
   removeRegistry,
   uninstallRegistryPackage,
 } from '@/webmcp/package-registry-store'
+import { ADAPTER_PAGE_MARKER } from '@creatorweave/shared/webmcp-adapter-protocol'
 import type { PackageRegistry, RegistryManifest, RegistryManifestPackage } from '@/webmcp/package-registry-client'
 
 interface WebMCPPackageRegistrySectionProps {
@@ -55,8 +56,19 @@ const REGISTRY_PREVIEW_TIMEOUT_MS = 30_000
  */
 async function readJsonCapped(response: Response, maxBytes: number): Promise<unknown> {
   if (typeof response.text === 'function') {
+    // A declared content-length over the cap rejects before any body read.
+    const declared = Number(response.headers?.get?.('content-length') ?? 0)
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+    }
     const text = await response.text()
-    if (text.length > maxBytes) throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+    // UTF-16 `length` under-counts multi-byte characters (CJK paths in
+    // skill names) — measure the actual UTF-8 byte size (finding: "Oversized
+    // previews exhaust memory").
+    const bytes = new TextEncoder().encode(text)
+    if (bytes.length > maxBytes) {
+      throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+    }
     return JSON.parse(text)
   }
   return response.json()
@@ -64,7 +76,9 @@ async function readJsonCapped(response: Response, maxBytes: number): Promise<unk
 
 function format(message: string, values: Record<string, string | number>): string {
   return Object.entries(values).reduce(
-    (text, [key, value]) => text.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value)),
+    // Function replacement: `$&`-style sequences in error text (URLs) would
+    // otherwise be expanded by String.replace.
+    (text, [key, value]) => text.replace(new RegExp(`\\{${key}\\}`, 'g'), () => String(value)),
     message,
   )
 }
@@ -363,17 +377,25 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   }, [refreshInstalled])
 
   useEffect(() => {
-    // The side-panel opt-in flow enables packages OUTSIDE this section (the
-    // background broadcasts `webmcp_packages_changed` after every catalog
-    // refresh). Without this listener the activation badge stays stale until
-    // an unrelated refresh or a remount (finding: "Activation badge stays
-    // stale"). Guarded: tests and non-extension embeds have no chrome.
-    if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage?.addListener) return
-    const listener = (message: { type?: string } | undefined) => {
-      if (message?.type === 'webmcp_packages_changed') void refreshInstalled()
+    // The side-panel opt-in flow enables packages OUTSIDE this section. The
+    // background announces every catalog change with `webmcp_packages_changed`
+    // to extension pages AND to tabs, where the webmcp.content relay
+    // rebroadcasts it as a `packages-changed` window event — page JS cannot
+    // receive chrome.runtime broadcasts directly, so the window event is the
+    // only channel that reaches this section (finding: "Activation badge
+    // stays stale"; the earlier chrome.runtime listener was dead code).
+    const listener = (event: MessageEvent) => {
+      const data = event.data as { [key: string]: unknown; kind?: unknown } | null
+      if (
+        event.source === window &&
+        data?.[ADAPTER_PAGE_MARKER] === true &&
+        data.kind === 'packages-changed'
+      ) {
+        void refreshInstalled()
+      }
     }
-    chrome.runtime.onMessage.addListener(listener)
-    return () => chrome.runtime.onMessage.removeListener(listener)
+    window.addEventListener('message', listener)
+    return () => window.removeEventListener('message', listener)
   }, [refreshInstalled])
 
   const handleAdd = async () => {

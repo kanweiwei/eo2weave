@@ -39,7 +39,7 @@ import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES, MAX
 import { getWebMCPBridge } from './bridge-client'
 
 export class PackageInstallError extends Error {
-  constructor(message: string, readonly code: 'SHA256_MISMATCH' | 'DOWNLOAD_FAILED' | 'INVALID_PACKAGE' | 'STORAGE_FAILED' | 'BUSY') {
+  constructor(message: string, readonly code: 'SHA256_MISMATCH' | 'DOWNLOAD_FAILED' | 'INVALID_PACKAGE' | 'STORAGE_FAILED' | 'BUSY' | 'LOCK_LOST') {
     super(message)
     this.name = 'PackageInstallError'
   }
@@ -277,7 +277,19 @@ async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Pr
       release()
     }
   }
-  const acquired = await bridge(packageId, 'acquire', undefined, 30_000)
+  let acquired: Awaited<ReturnType<typeof bridge>>
+  try {
+    acquired = await bridge(packageId, 'acquire', undefined, 30_000)
+  } catch (error) {
+    // A rejecting acquire (bridge interruption) must still release the
+    // local gate — otherwise every later call for this id waits forever
+    // (finding: "Failed lock request stalls future operations").
+    release()
+    throw new PackageInstallError(
+      `Package ${packageId} lock could not be acquired: ${error instanceof Error ? error.message : String(error)}`,
+      'LOCK_LOST',
+    )
+  }
   if (!acquired.ok || typeof acquired.owner !== 'string') {
     release()
     throw new PackageInstallError(
@@ -286,11 +298,31 @@ async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Pr
     )
   }
   const owner = acquired.owner
+  // SECURITY (finding: "Expired lock holders keep mutating"): a heartbeat
+  // reporting `ok:false` means the lease EXPIRED and another context took
+  // it — continuing the swap would mutate an unlocked package. Abort with
+  // a distinct error; the swap's own failure paths keep the mount usable.
+  let lockLost: string | null = null
   const heartbeat = setInterval(() => {
-    void bridge(packageId, 'heartbeat', owner).catch(() => {})
+    void bridge(packageId, 'heartbeat', owner)
+      .then(result => { if (!result?.ok) lockLost = `lock for ${packageId} was lost (lease expired)` })
+      .catch(() => {})
   }, LOCK_HEARTBEAT_MS)
   try {
-    return await fn()
+    const result = await fn()
+    if (lockLost !== null) {
+      throw new PackageInstallError(
+        `The install of ${packageId} completed but its lock was lost mid-transaction; re-run the operation`,
+        'LOCK_LOST',
+      )
+    }
+    return result
+  } catch (error) {
+    if (lockLost !== null && !(error instanceof PackageInstallError && error.code === 'LOCK_LOST')) {
+      // Surface the lock loss as the reason for the failure.
+      throw new PackageInstallError(`Operation on ${packageId} failed: ${lockLost}`, 'LOCK_LOST')
+    }
+    throw error
   } finally {
     clearInterval(heartbeat)
     await bridge(packageId, 'release', owner).catch(() => {})
@@ -325,6 +357,30 @@ async function swapPackageIntoPlace(
   let backupPreserved = false
   try {
     await removeMissingOk(provider, staging)
+    // SECURITY (critical, "Retry deletes last good package"): a PRIOR
+    // failed replacement may have left `backup` behind holding the ONLY
+    // surviving copy of the package (restoration failed there). If the live
+    // directory is ALSO gone, this backup is not redundant state — it is a
+    // recoverable install. Restore it before proceeding, so the retry can
+    // never delete the last good copy; if the live tree exists, the backup
+    // is genuinely stale and safe to clear below.
+    const liveExists = await pathExists(provider, id)
+    if (!liveExists && (await pathExists(provider, backup))) {
+      try {
+        await copyTree(provider, backup, id)
+        // Recovered — the backup is now redundant.
+        await removeMissingOk(provider, backup)
+      } catch {
+        // Recovery failed: keep the backup and proceed WITHOUT deleting it
+        // (the swap paths below tolerate its presence; the finally block
+        // must not clear it either).
+        backupPreserved = true
+        throw new PackageInstallError(
+          `Found a preserved backup of ${id} but could not restore it; the backup was kept at ${backup}`,
+          'STORAGE_FAILED',
+        )
+      }
+    }
     await removeMissingOk(provider, backup)
     try {
       await provider.mkdir(staging, { recursive: true })
@@ -426,6 +482,18 @@ async function swapPackageIntoPlace(
     // survive (finding: "Failed rollback deletes working package").
     await removeMissingOk(provider, staging).catch(() => {})
     if (!backupPreserved) await removeMissingOk(provider, backup).catch(() => {})
+  }
+}
+
+/** True when the path exists, tolerating absence in both error shapes. */
+async function pathExists(provider: FsProvider, path: string): Promise<boolean> {
+  try {
+    await provider.stat(path)
+    return true
+  } catch (error) {
+    const e = error as { code?: string; name?: string }
+    if (e.code === 'ENOENT' || e.name === 'NotFoundError') return false
+    return true // treat unknown stat errors as existing: do NOT risk deleting
   }
 }
 

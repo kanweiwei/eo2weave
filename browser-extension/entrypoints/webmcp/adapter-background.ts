@@ -1,3 +1,4 @@
+import { normalizeProviderPath } from '@creatorweave/fs-provider'
 import { getExtensionSkillStorage } from './skill-resources'
 import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { validateAdapterDirectory } from './adapter-validation'
@@ -112,26 +113,41 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       // package through the raw provider transport — enabling happens
       // EXCLUSIVELY through the #102 opt-in consent flow (token-bound,
       // tab-bound, fingerprint-checked in the background) and through the
-      // extension management page (`webmcp_packages_set_config`, gated to
-      // the extension's own pages). The settings installer only writes the
-      // DISABLED default config, so rejecting an `activation: "enabled"`
-      // config.json write here blocks no legitimate caller.
+      // extension management page (`webmcp_packages_set_config`, which is
+      // routed through the background's own in-process handler, never this
+      // message branch). The settings installer only writes the DISABLED
+      // default config, so rejecting an `activation: "enabled"` config.json
+      // write here blocks no legitimate caller. The path check uses the
+      // NORMALIZED form: raw paths like `pkg/config.json/` (trailing slash)
+      // or `pkg/./config.json` normalize to the same file the handler will
+      // write, and checking the raw string let those shapes bypass the
+      // guard (finding: "Trailing slash bypasses activation guard").
       if (
         String(message.mount ?? 'webmcp') === 'webmcp' &&
         String(message.method) === 'writeFile' &&
-        typeof message.path === 'string' &&
-        (message.path === 'config.json' || message.path.endsWith('/config.json')) &&
-        typeof message.content === 'string'
+        typeof message.path === 'string'
       ) {
+        let normalizedPath = ''
         try {
-          const parsed = JSON.parse(atob(message.content)) as { activation?: unknown }
-          if (parsed && parsed.activation === 'enabled') {
-            respond({ ok: false, code: 'EACCES', error: 'Package activation requires the opt-in consent flow' })
-            return false
-          }
+          normalizedPath = normalizeProviderPath(message.path)
         } catch {
-          // Not valid JSON — not an activation write; the catalog validates
-          // config files when it reads them.
+          respond({ ok: false, code: 'EINVAL', error: 'Invalid storage path' })
+          return false
+        }
+        if (
+          (normalizedPath === 'config.json' || normalizedPath.endsWith('/config.json')) &&
+          typeof message.content === 'string'
+        ) {
+          try {
+            const parsed = JSON.parse(atob(message.content)) as { activation?: unknown }
+            if (parsed && parsed.activation === 'enabled') {
+              respond({ ok: false, code: 'EACCES', error: 'Package activation requires the opt-in consent flow' })
+              return false
+            }
+          } catch {
+            // Not valid JSON — not an activation write; the catalog validates
+            // config files when it reads them.
+          }
         }
       }
       void (message.mount === 'extension-skills' ? skillCall : message.mount === 'builtin-webmcp' ? builtinCall : providerCall)(message).then(respond)

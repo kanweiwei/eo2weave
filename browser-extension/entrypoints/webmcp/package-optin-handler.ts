@@ -60,6 +60,7 @@ import { readWebMCPCatalog, readWebMCPCatalogDetailed } from './package-reposito
 import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
 import { serializeWebMCPConfig, parseWebMCPConfig } from '@creatorweave/shared/webmcp-config'
 import { getAdapterStorage } from './provider-storage'
+import { withPackageLock } from './package-lock'
 
 export interface PackageOptInStatus {
   ok: boolean
@@ -657,40 +658,56 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // are gone as "enabled". For builtin packages the config lives in
         // chrome.storage.local, not the package directory, so there is
         // nothing to resurrect.
-        if (candidate.mount !== 'builtin-webmcp') {
-          const provider = await getAdapterStorage()
-          try {
-            await provider.stat(`${candidate.directory}/manifest.json`)
-          } catch {
-            sendResponse({
-              ok: false,
-              errorCode: 'PACKAGE_UNINSTALLED',
-              error: 'The package was removed while enabling; nothing was enabled.',
-            })
+        // SECURITY (finding: "Replacement receives old consent", round 3):
+        // presence check + fresh-fingerprint + activation write must be
+        // ATOMIC with respect to install/uninstall transactions. "Fresh" is
+        // not "atomic": a swap landing between the re-read and the write
+        // still armed a replacement. Hold the SAME cross-context lease the
+        // installer takes, so a replacement cannot land mid-enable.
+        // The enable is executed INSIDE the lease below; failures inside
+        // respond and return false through the lock wrapper's callback.
+        const enableFailure = (errorCode: string, error: string) => {
+          sendResponse({ ok: false, errorCode, error })
+        }
+        const enableResult = await withPackageLock(candidate.directory, async (): Promise<boolean> => {
+          if (candidate.mount !== 'builtin-webmcp') {
+            const provider = await getAdapterStorage()
+            try {
+              await provider.stat(`${candidate.directory}/manifest.json`)
+            } catch {
+              enableFailure('PACKAGE_UNINSTALLED', 'The package was removed while enabling; nothing was enabled.')
+              return false
+            }
+          }
+          // Re-check the package CONTENT under the lock (finding:
+          // "Replacement receives old consent"): the fingerprint in the
+          // token was validated against the catalog read ABOVE, but an
+          // install replacing the package between that read and this write
+          // would receive the OLD consent. Re-read the catalog fresh and
+          // recompute the fingerprint from the live entry; a change rejects
+          // with PACKAGE_MISMATCH instead of arming the replacement.
+          const [freshEntries, { userMountComplete: freshMountComplete }] = await readWebMCPCatalogDetailed()
+          // An incomplete fresh read can hide a user-mounted duplicate of a
+          // builtin candidate (finding: "Incomplete fresh catalog permits
+          // enable") — refuse rather than enable into a conflict.
+          if (!freshMountComplete) {
+            enableFailure('PACKAGE_CONFLICT', 'User packages could not be listed while enabling; nothing was enabled.')
             return false
           }
-        }
-        // Re-check the package CONTENT immediately before the write
-        // (finding: "Replacement receives old consent"): the fingerprint in
-        // the token was validated against the catalog read ABOVE, but an
-        // install replacing the package between that read and this write
-        // would receive the OLD consent. Re-read the catalog fresh and
-        // recompute the fingerprint from the live entry; a change rejects
-        // with PACKAGE_MISMATCH instead of arming the replacement.
-        const [freshEntries] = await readWebMCPCatalogDetailed()
-        const freshEntry = freshEntries.find(e => e.directory === candidate.directory && e.mount === candidate.mount)
-        if (
-          !freshEntry ||
-          packageFingerprint(candidate, freshEntry) !== packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
-        ) {
-          sendResponse({
-            ok: false,
-            errorCode: 'PACKAGE_MISMATCH',
-            error: 'The package changed while enabling; nothing was enabled.',
-          })
+          const freshEntry = freshEntries.find(e => e.directory === candidate.directory && e.mount === candidate.mount)
+          if (
+            !freshEntry ||
+            packageFingerprint(candidate, freshEntry) !== packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
+          ) {
+            enableFailure('PACKAGE_MISMATCH', 'The package changed while enabling; nothing was enabled.')
+            return false
+          }
+          await writePackageActivation(candidate.mount, candidate.directory)
+          return true
+        })
+        if (!enableResult) {
           return false
         }
-        await writePackageActivation(candidate.mount, candidate.directory)
         // Reload FIRST, then verify, then respond (finding: "Disabled package
         // reported enabled"): a disable that commits after our enable write
         // must be OBSERVED before success is reported, and the reload must

@@ -32,6 +32,24 @@ interface SequenceAnalysis {
   alternation: boolean
 }
 
+/**
+ * Scan past a character class starting at `pattern[open]` (the `[`).
+ * Returns the index just past the closing `]`, honoring `\]` escapes —
+ * ending at the FIRST unescaped `]` (finding: "Escaped classes bypass
+ * ReDoS guard": `[a\]x]+` used to scan as `[a\]`, leaving the trailing
+ * `x]+` misparsed as top-level atoms).
+ */
+function classEnd(pattern: string, open: number): number {
+  let i = open + 1
+  while (i < pattern.length) {
+    const c = pattern[i]
+    if (c === '\\') { i += 2; continue }
+    if (c === ']') return i + 1
+    i += 1
+  }
+  return pattern.length // unterminated class — treat as consuming the rest
+}
+
 function isQuantifierChar(char: string | undefined): boolean {
   return char === '*' || char === '+' || char === '?' || char === '{'
 }
@@ -84,8 +102,7 @@ function analyzeSequence(pattern: string, from: number, until: number): Sequence
       continue
     }
     if (char === '[') {
-      const close = pattern.indexOf(']', i + 1)
-      i = close === -1 ? until : close + 1
+      i = classEnd(pattern, i)
       atoms.push(false)
       if (firstAtomEnd === -1) firstAtomEnd = i
       continue
@@ -185,19 +202,91 @@ function bodyIsDangerous(pattern: string, bodyStart: number, bodyEnd: number): b
 }
 
 /**
+ * Flat quantifier-chain scan: three or more ADJACENT quantified atoms
+ * (`a*a*a*`, `.*.*.*`, `(?:x)(?:y)(?:z)` all quantified back-to-back)
+ * whose operands all consume input give the engine factorial-split work —
+ * and such chains carry no groups, so the group-body scan below cannot see
+ * them (finding: "URL matching stalls on near-matches"). Legitimate URL
+ * patterns never chain quantified atoms back-to-back: quantified atoms in
+ * real patterns are separated by literal separators (`/v[0-9]+/`).
+ */
+function hasFlatQuantifierChain(pattern: string): boolean {
+  let depth = 0
+  // Streak of consecutive QUANTIFIED atoms at the top level. An atom that
+  // ends WITHOUT a quantifier resets it (real separators anchor the match);
+  // an alternation resets it too. `a*a*a*` -> 3 -> rejected;
+  // `/v[0-9]+/x+` -> 1,1 (separated) -> allowed.
+  let run = 0
+  let pendingAtom = false
+  let prevAtomQuantified = true
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i]
+    if (char === '\\') { i += 1; pendingAtom = true; continue }
+    if (char === '[') {
+      i = classEnd(pattern, i) - 1
+      pendingAtom = true
+      continue
+    }
+    if (char === '(') {
+      if (pendingAtom && !prevAtomQuantified) run = 0
+      depth += 1
+      pendingAtom = false
+      prevAtomQuantified = true
+      continue
+    }
+    if (char === ')') {
+      depth -= 1
+      pendingAtom = depth === 0
+      continue
+    }
+    if (char === '|') {
+      if (depth === 0) run = 0
+      pendingAtom = false
+      prevAtomQuantified = true
+      continue
+    }
+    if (isQuantifierChar(char) && depth === 0) {
+      if (char === '{') {
+        const close = pattern.indexOf('}', i)
+        if (close === -1 || !/^\d+(,\d*)?$/.test(pattern.slice(i + 1, close))) {
+          pendingAtom = true
+          continue
+        }
+        i = close
+      }
+      if (pattern[i + 1] === '?') i += 1
+      run += 1
+      prevAtomQuantified = true
+      if (run >= 3) return true
+      continue
+    }
+    if (isQuantifierChar(char)) { i += 1; continue } // quantifier inside a group
+    // Plain character STARTS a new atom: if the previous atom ended without
+    // a quantifier, the streak breaks.
+    if (pendingAtom && !prevAtomQuantified) run = 0
+    pendingAtom = true
+    prevAtomQuantified = false
+  }
+  // Trailing atom that ended without a quantifier.
+  if (pendingAtom && !prevAtomQuantified) run = 0
+  return false
+}
+
+/**
  * Structural backtracking scan: every group followed by a quantifier gets
- * its body analyzed. Groups that are not quantified are irrelevant (their
- * body runs once); a quantified group with a fixed, non-empty,
+ * its body analyzed, and flat quantifier chains are rejected (see
+ * `hasFlatQuantifierChain`). Groups that are not quantified are irrelevant
+ * (their body runs once); a quantified group with a fixed, non-empty,
  * non-alternating body — `(?:/[^?#]*)?` — stays allowed.
  */
 export function hasNestedQuantifier(pattern: string): boolean {
+  if (hasFlatQuantifierChain(pattern)) return true
   const opens: number[] = []
   for (let i = 0; i < pattern.length; i += 1) {
     const char = pattern[i]
     if (char === '\\') { i += 1; continue }
     if (char === '[') {
-      const close = pattern.indexOf(']', i + 1)
-      if (close !== -1) i = close
+      i = classEnd(pattern, i)
       continue
     }
     if (char === '(') {

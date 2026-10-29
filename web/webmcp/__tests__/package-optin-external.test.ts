@@ -116,7 +116,17 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
       alarms: { create: vi.fn(), getAll: vi.fn(async () => []), clear: vi.fn() },
       // The user-mount enable bounces a sentinel through storage.local so the
       // adapter background's onChanged listener refreshes the catalog.
-      storage: { local: { set: vi.fn(async () => {}), remove: vi.fn(async () => {}) } },
+      // storage.local backs the cross-context package lease (the enable
+      // path now holds the lease while writing); a real map lets the lock
+      // acquire/heartbeat/release cycle run for real in tests.
+      storage: { local: (() => {
+        const data = new Map<string, unknown>()
+        return {
+          get: vi.fn(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {})),
+          set: vi.fn(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) }),
+          remove: vi.fn(async (key: string) => { data.delete(key) }),
+        }
+      })() },
     })
     vi.mocked(readWebMCPCatalog).mockResolvedValue([externalEntry()])
     vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[externalEntry()], { userMountComplete: true }])
@@ -336,8 +346,12 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
     expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'PACKAGE_UNINSTALLED' })
     // The orphaned config.json was removed — no phantom package remains.
     await expect(userStorage.readFile(enablePath)).rejects.toThrow()
-    // The sentinel bounce never fired (the write did not stick).
-    expect(chrome.storage.local.set).not.toHaveBeenCalled()
+    // The sentinel bounce never fired (the write did not stick). The
+    // cross-context lock legitimately writes its own lease keys through
+    // storage.local — only the SENTINEL must stay absent.
+    const sentinelWrites = (chrome.storage.local.set as ReturnType<typeof vi.fn>).mock.calls
+      .filter((call: unknown[]) => Object.keys(call[0] ?? {}).some(k => k.startsWith('webmcp_user_package_config_')))
+    expect(sentinelWrites).toEqual([])
   })
 
   it('rejects a consent token minted for ANOTHER package (protocol identical across mounts)', async () => {

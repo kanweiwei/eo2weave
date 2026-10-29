@@ -179,6 +179,16 @@ describe('createPackageOptInHandler', () => {
     alarmClear.mockResolvedValue(undefined)
     vi.stubGlobal('chrome', {
       tabs: { get, reload },
+      // The enable path holds the cross-context package lease while writing
+      // (chrome.storage.local-backed); a real map keeps the lock working.
+      storage: { local: (() => {
+        const data = new Map<string, unknown>()
+        return {
+          get: vi.fn(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {})),
+          set: vi.fn(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) }),
+          remove: vi.fn(async (key: string) => { data.delete(key) }),
+        }
+      })() },
       // Recovery reloads are scheduled as DURABLE alarms (finding: "Reload
       // test leaves retry timers running") — no setTimeout chains to leak
       // into later tests; the stub records the scheduling instead.

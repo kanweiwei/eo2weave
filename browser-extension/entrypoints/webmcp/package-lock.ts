@@ -89,13 +89,18 @@ async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEO
   }
 }
 
-/** Extend OUR lease (heartbeat). Never resurrects a stolen lease. */
-async function heartbeatLease(packageId: string, owner: string): Promise<void> {
+/**
+ * Extend OUR lease (heartbeat). Never resurrects a stolen lease; returns
+ * FALSE when the lease is no longer ours so the holder can ABORT the
+ * transaction instead of mutating an unlocked package (finding: "Expired
+ * lock holders keep mutating").
+ */
+async function heartbeatLease(packageId: string, owner: string): Promise<boolean> {
   const key = lockKey(packageId)
   const stored = readLease((await chrome.storage.local.get(key))[key])
-  if (stored?.owner === owner) {
-    await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
-  }
+  if (stored?.owner !== owner) return false
+  await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
+  return true
 }
 
 /** Release the lease only if we still own it. */
@@ -143,10 +148,13 @@ export async function bridgeAcquirePackageLock(packageId: string, timeoutMs?: nu
   return owner === null ? { ok: false, code: 'EBUSY' } : { ok: true, owner }
 }
 
-/** Heartbeat a bridge-held lease. */
+/**
+ * Heartbeat a bridge-held lease. `ok:false` means the lease was LOST
+ * (expired and stolen) — the caller must abort its transaction.
+ */
 export async function bridgeHeartbeatPackageLock(packageId: string, owner: string): Promise<{ ok: boolean }> {
-  await heartbeatLease(packageId, owner)
-  return { ok: true }
+  const alive = await heartbeatLease(packageId, owner)
+  return { ok: alive }
 }
 
 /** Release a bridge-held lease (owner-verified). */
