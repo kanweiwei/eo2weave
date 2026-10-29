@@ -433,6 +433,20 @@ describe('getPendingPackagePrompt', () => {
     const result = await getPendingPackagePrompt()
     expect(result?.applicable).toBe(true)
   })
+
+  it('does not cache legacy-only when the legacy probe transiently fails WITHOUT the new method', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const checkStatus = vi.fn().mockRejectedValue(new Error('service worker asleep'))
+    setAgentWeb({ recipeCheckStatus: checkStatus })
+
+    // Legacy probe fails transiently → retryable, verdict NOT committed.
+    expect(await getPendingPackagePrompt()).toEqual({ applicable: false, retryable: true })
+
+    // The legacy bridge recovers → the prompt appears.
+    setAgentWeb({ recipeCheckStatus: vi.fn().mockResolvedValue(legacyStatus()) })
+    const result = await getPendingPackagePrompt()
+    expect(result?.applicable).toBe(true)
+  })
 })
 
 describe('dismissPackagePrompt (concurrency-safe storage)', () => {
@@ -692,6 +706,88 @@ describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
       await vi.advanceTimersByTimeAsync(4_000)
       expect(await retry).toMatchObject({ ok: true, reloaded: true })
       expect(recipeEnable).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('catches a SYNCHRONOUS bridge throw so the modal is never left submitting', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      setAgentWeb({
+        recipeEnable: () => {
+          throw new Error('bridge is gone')
+        },
+      })
+      const result = await enableLegacyRecipeAndReload('world.jmail.messages')
+      expect(result.ok).toBe(false)
+      expect(result.errorCode).toBe('ENABLE_FAILED')
+      expect(result.error).toContain('bridge is gone')
+      expect(consoleError).toHaveBeenCalled()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('does not inherit another binding\'s in-flight enable (different bound tab)', async () => {
+    vi.useFakeTimers()
+    try {
+      let call = 0
+      const recipeEnable = vi.fn(
+        () =>
+          new Promise<{ ok?: boolean; reloaded?: boolean }>(resolve => {
+            call += 1
+            // Tab A's call lands after its client timeout; tab B's call is
+            // quick.
+            setTimeout(() => resolve({ ok: true, reloaded: true }), call === 1 ? 12_000 : 500)
+          }),
+      )
+      setAgentWeb({ recipeEnable })
+
+      // Tab A starts an enable…
+      const first = enableLegacyRecipeAndReload('world.jmail.messages')
+      await vi.advanceTimersByTimeAsync(8_100)
+      expect(await first).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
+
+      // …and the side panel is re-bound to tab B: tab B must NOT await
+      // tab A's call (it would report another tab's enable as its own).
+      getSidePanelBindingIdMock.mockReturnValue('another-binding')
+      const second = enableLegacyRecipeAndReload('world.jmail.messages')
+      // The binding lookup is an async import, so the bridge call lands on
+      // a later microtask — flush microtasks WITHOUT advancing the clock.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(recipeEnable).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(600)
+      expect(await second).toMatchObject({ ok: true, reloaded: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets a retry start a fresh enable when the previous call never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const recipeEnable = vi.fn(
+        () =>
+          new Promise<{ ok?: boolean; reloaded?: boolean }>(() => {
+            // Never settles — a hung bridge.
+          }),
+      )
+      setAgentWeb({ recipeEnable })
+      const pending = enableLegacyRecipeAndReload('world.jmail.messages')
+      await vi.advanceTimersByTimeAsync(8_100)
+      expect(await pending).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
+
+      // The hung entry is dropped after the timeout, so the next attempt
+      // issues a fresh enable instead of awaiting the dead call forever.
+      await vi.advanceTimersByTimeAsync(8_100)
+      const retry = enableLegacyRecipeAndReload('world.jmail.messages')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(recipeEnable).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(8_100)
+      expect(await retry).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
     } finally {
       vi.useRealTimers()
     }
