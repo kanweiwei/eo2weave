@@ -145,13 +145,26 @@ describe('SkillInstallPage (issue #126)', () => {
     // The installed-dir scan runs at load (not installed yet).
     scanInstalledDirNamesMock.mockResolvedValue(new Set<string>())
     installSkillFromUrlMock.mockResolvedValue({ count: 4, manifest: ENTRY })
-    // After install, refreshUserSkills registers the skill — the page
-    // verifies registration against getSkills() before navigating.
-    refreshUserSkillsMock.mockImplementation(async () => {
-      getSkillsMock.mockReturnValue([
-        { id: `user:${ENTRY.dirName}`, source: 'user' },
-      ])
-    })
+    // Deferred registration: refreshUserSkills must return a PENDING promise
+    // first and only then resolve — so call-ORDER assertions below verify
+    // the page awaits completion (a missing `await` would navigate before
+    // the registration resolved and fail these tests). The skill becomes
+    // registered at RESOLUTION time, not when the mock is called.
+    let resolveRefresh!: () => void
+    refreshUserSkillsMock.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRefresh = () => {
+            getSkillsMock.mockReturnValue([
+              { id: `user:${ENTRY.dirName}`, source: 'user' },
+            ])
+            resolve()
+          }
+        }),
+    )
+    // Expose the resolver for tests that drive the flow manually.
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh =
+      () => resolveRefresh()
     checkAiReadinessMock.mockResolvedValue({ ready: true, creditExhausted: false })
     searchParamsMock.mockReturnValue(new URLSearchParams('skill=cw-legal-evidence-chain'))
   })
@@ -161,7 +174,7 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('skillInstall.errorTitle')).toBeInTheDocument())
     expect(screen.getByText('skillInstall.notFound')).toBeInTheDocument()
-    expect(screen.getByText('skillInstall.openSkillManager')).toBeInTheDocument()
+    expect(screen.getByText('skillInstall.openProjectsHome')).toBeInTheDocument()
   })
 
   it('missing skill param shows the missing-param error (no manifest fetch)', async () => {
@@ -178,10 +191,12 @@ describe('SkillInstallPage (issue #126)', () => {
     expect(screen.getByText('skillInstall.retry')).toBeInTheDocument()
   })
 
-  it('happy path: details → Install (user click) → refreshUserSkills → navigate with prefill', async () => {
-    // Deferred installer: the page must NOT start registration or navigate
-    // until installSkillFromUrl actually resolves (a real download takes
-    // time — an un-awaited call would navigate with the skill missing).
+  it('happy path: details → Install (user click) → refreshUserSkills resolves → navigate with prefill', async () => {
+    // Both async steps are deferred: the installer and the registration
+    // return PENDING promises and are resolved explicitly below. A page
+    // that omits an `await` would register/navigate while these are still
+    // pending — the assertions verify that navigation happens only after
+    // each promise actually resolved.
     let resolveInstall!: () => void
     installSkillFromUrlMock.mockReturnValue(
       new Promise((resolve) => {
@@ -202,8 +217,13 @@ describe('SkillInstallPage (issue #126)', () => {
     expect(routerReplaceMock).not.toHaveBeenCalled()
 
     resolveInstall()
-    // Slash command registers immediately after install.
+    // Registration starts only after the installer resolved — and is still
+    // pending here: navigation must NOT have happened yet.
     await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+
+    // Complete the registration; navigation may only follow resolution.
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     // Navigates to the most recent conversation (lastAccessedAt: 99).
     await waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1/workspaces/recent-conv')
@@ -219,8 +239,9 @@ describe('SkillInstallPage (issue #126)', () => {
     expect(refreshUserSkillsMock.mock.invocationCallOrder[0]).toBeGreaterThan(
       installSkillFromUrlMock.mock.invocationCallOrder[0],
     )
-    // Ordering: registration MUST complete before navigation — otherwise a
-    // visitor arrives at the conversation before the slash command is ready.
+    // Ordering: registration MUST complete before navigation — with the
+    // pending-then-resolved mock above, a missing `await` would navigate
+    // while refreshUserSkills is still pending and fail this check.
     expect(refreshUserSkillsMock.mock.invocationCallOrder[0]).toBeLessThan(
       routerReplaceMock.mock.invocationCallOrder[0],
     )
@@ -245,8 +266,8 @@ describe('SkillInstallPage (issue #126)', () => {
 
   it('treats an unregistered skill as a failed install (no navigation with a dead slash command)', async () => {
     // refreshUserSkills "succeeds" but the scan failed silently — the skill
-    // never shows up in getSkills(), so the page must abort with the
-    // registration error instead of navigating.
+    // never shows up in getSkills() (also at resolution time), so the page
+    // must abort with the registration error instead of navigating.
     refreshUserSkillsMock.mockImplementation(async () => {
       getSkillsMock.mockReturnValue([])
     })
@@ -262,6 +283,10 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
     fireEvent.click(screen.getByText('skillInstall.installButton'))
+    // Install completes, then registration resolves (the mock is
+    // pending-then-resolved — see beforeEach).
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     await waitFor(() => expect(screen.getByText('skillInstall.creditExhausted')).toBeInTheDocument())
     expect(routerReplaceMock).not.toHaveBeenCalled()
     // A follow-up start proceeds to the conversation.
@@ -277,6 +302,10 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
     fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    // Registration is pending — navigation must wait for it to resolve.
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     await waitFor(() => expect(setActiveProjectMock).toHaveBeenCalledWith('auto-default'))
     await waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith('/projects/auto-default/workspaces/recent-conv')
@@ -294,6 +323,8 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
     fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     await waitFor(() => {
       expect(saveDraftMock).toHaveBeenCalledWith('recent-conv', {
         text: '/cw-legal-evidence-chain\nmy unsent question',
@@ -326,6 +357,8 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
     fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     await waitFor(() => {
       expect(saveDraftMock).toHaveBeenCalledWith(
         'recent-conv',
