@@ -122,6 +122,34 @@ interface ProjectState {
 // projects that are themselves being deleted).
 let projectDeletionRebindChain: Promise<void> = Promise.resolve()
 
+// In-memory retry list for OPFS workspace-data deletions that failed AFTER
+// the DB row was already committed. Best-effort DEFERRED cleanup only —
+// deliberately NOT persisted (storage-light rule): at that point the data is
+// unreferenced, so a failed cleanup leaves orphaned files, never data loss.
+// Dropped on page reload by design.
+const pendingOpfsProjectDeletions = new Set<string>()
+
+async function tryDeleteOpfsProject(projectId: string): Promise<boolean> {
+  try {
+    const pm = await ProjectManager.create()
+    await pm.deleteProject(projectId)
+    return true
+  } catch (error) {
+    console.warn('[ProjectStore] Failed to delete OPFS project directory (will retry):', projectId, error)
+    return false
+  }
+}
+
+async function flushPendingOpfsProjectDeletions(): Promise<void> {
+  if (pendingOpfsProjectDeletions.size === 0) return
+  for (const id of [...pendingOpfsProjectDeletions]) {
+    // eslint-disable-next-line no-await-in-loop -- sequential retries keep OPFS contention predictable
+    if (await tryDeleteOpfsProject(id)) {
+      pendingOpfsProjectDeletions.delete(id)
+    }
+  }
+}
+
 /**
  * localStorage key for tracking whether we've already auto-created a default
  * project for this browser.
@@ -548,14 +576,20 @@ export const useProjectStore = create<ProjectState>()(
               // The project row is removed inside the same section: a queued
               // overlapping deletion re-reads the table only after this row is
               // gone, so it can never select THIS project as its successor.
-              // Delete OPFS project directory (workspaces, agents, etc.)
-              try {
-                const pm = await ProjectManager.create()
-                await pm.deleteProject(projectId)
-              } catch (err) {
-                console.warn('[ProjectStore] Failed to delete OPFS project directory:', err)
-              }
               await repo.deleteProject(projectId)
+
+              // ── OPFS workspace-data cleanup — AFTER the DB commit ──
+              // Deliberately deferred and best-effort: the row is gone, so the
+              // OPFS data is unreferenced — a failed cleanup leaves orphaned
+              // files, NOT data loss. Deleting it BEFORE the commit (the old
+              // order) destroyed workspace files on a failed deletion that the
+              // rollback path could not restore. Failures are logged and
+              // queued in an in-memory retry list (not persisted — storage-
+              // light rule); the next successful deletion flushes the queue.
+              if (!(await tryDeleteOpfsProject(projectId))) {
+                pendingOpfsProjectDeletions.add(projectId)
+              }
+              await flushPendingOpfsProjectDeletions()
             } catch (err) {
               // Roll back the rebinds the deletion depended on. Row deletion
               // has not committed (or it failed with the rebinds already
@@ -620,7 +654,27 @@ export const useProjectStore = create<ProjectState>()(
 
                 await useConversationContextStore.getState().refreshWorkspaces()
               } catch (repairError) {
+                // The deletion HAS committed — never rethrow. Repair the
+                // in-memory pointer defensively before returning success:
+                // without this the active pointer stays on the deleted id
+                // (refreshProjects() re-syncs the LIST but not the pointer),
+                // so the UI keeps a project that no longer exists.
                 console.error('[ProjectStore] Post-delete active-pointer repair failed (deletion committed):', repairError)
+                const fallbackId = (await repo.findAllProjects().catch(() => [] as Project[]))
+                  .find((p) => p.id !== projectId)?.id || ''
+                set({ activeProjectId: fallbackId })
+                // Re-sync dependent workspace state for the fallback pointer.
+                try {
+                  const { useConversationContextStore } = await import('@/store/conversation-context.store')
+                  useConversationContextStore.setState({
+                    activeWorkspaceId: null,
+                    workspaces: [],
+                    initialized: false,
+                  })
+                  await useConversationContextStore.getState().refreshWorkspaces()
+                } catch (refreshError) {
+                  console.warn('[ProjectStore] Failed to refresh workspaces after failed repair:', refreshError)
+                }
               }
             }
           })
