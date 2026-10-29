@@ -46,8 +46,10 @@ import {
 import { useT } from '@/i18n'
 import {
   dismissPackagePrompt,
+  enableLegacyRecipeAndReload,
   enablePackageAndReload,
   type PackageOptInInfo,
+  type PackageOptInEnableResult,
 } from '@/agent/sidepanel-package-prompt'
 
 /**
@@ -77,9 +79,17 @@ function toolIcon(toolName: string): LucideIcon {
 export interface PackageOptInModalProps {
   packageInfo: PackageOptInInfo
   onClose: () => void
+  /**
+   * True when the prompt came from the LEGACY (pre-#102) recipe protocol
+   * (issue #113): the confirm path then calls `recipeEnable` WITHOUT a
+   * consent token — the old protocol has none (its background re-validates
+   * the binding + tab itself, the protocol-level analog of grace mode).
+   * Toasts, dismissal cooldown and close behavior stay identical.
+   */
+  legacy?: boolean
 }
 
-export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalProps) {
+export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptInModalProps) {
   const t = useT()
   const [submitting, setSubmitting] = useState(false)
   const [showTools, setShowTools] = useState(false)
@@ -93,33 +103,51 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
 
   const Icon = packageIcon(packageInfo.id)
   const tools = packageInfo.tools ?? []
+  // Legacy (pre-#102) payloads carry a tool COUNT but no per-tool list, so
+  // `tools` is empty there. Disclose the real count instead of "0 tools":
+  // the summary falls back to the package-wide count, and (with no list to
+  // split against) the additional-tools note must NOT claim the tools are
+  // on other origins.
+  const disclosedToolCount =
+    tools.length > 0
+      ? tools.length
+      : typeof packageInfo.totalTools === 'number'
+        ? packageInfo.totalTools
+        : 0
 
   const handleConfirm = async () => {
     setSubmitting(true)
     setLateNotice(null)
     setErrorMessage(null)
+    // Legacy prompts (pre-#102 extension, issue #113) enable through the old
+    // recipe bridge with NO consent token; the same result shape keeps the
+    // timeout / reload-failure / failure handling below shared verbatim.
+    const runEnable = (): Promise<PackageOptInEnableResult> =>
+      legacy
+        ? enableLegacyRecipeAndReload(packageInfo.id)
+        : enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
+            if (late.ok) {
+              // Findings "Late success hides reload failure" / "Enabled package
+              // skips page reload": a late ok with reloaded:false means the tools
+              // are NOT active — direct the user to reload manually instead of
+              // claiming plain success.
+              setErrorMessage(null)
+              if (late.reloaded === false) {
+                setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
+              } else {
+                setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+              }
+            }
+            // A late FAILURE stays silent: the modal already showed the failure
+            // path and the user can retry or close; re-toasting an error after the
+            // fact would only nag.
+          })
     // The 8s timeout may fire while the bridge call is still in flight; the
     // late-completion callback corrects the picture (success / manual-reload
     // notice) instead of leaving the user with an error while the package
     // enables silently. On TIMEOUT the modal stays OPEN, so this callback can
     // actually reach the user (finding: "Late success appears as failure").
-    const result = await enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
-      if (late.ok) {
-        // Findings "Late success hides reload failure" / "Enabled package
-        // skips page reload": a late ok with reloaded:false means the tools
-        // are NOT active — direct the user to reload manually instead of
-        // claiming plain success.
-        setErrorMessage(null)
-        if (late.reloaded === false) {
-          setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
-        } else {
-          setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
-        }
-      }
-      // A late FAILURE stays silent: the modal already showed the failure
-      // path and the user can retry or close; re-toasting an error after the
-      // fact would only nag.
-    })
+    const result = await runEnable()
     setSubmitting(false)
     if (result.ok) {
       if (result.reloaded === false) {
@@ -234,7 +262,7 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <p className="text-sm leading-relaxed text-foreground">
-            {t('sidePanelPackage.description', { count: tools.length })}
+            {t('sidePanelPackage.description', { count: disclosedToolCount })}
           </p>
 
           {/* Package card */}
@@ -325,7 +353,7 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
             </p>
           )}
 
-          {typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
+          {tools.length > 0 && typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
             <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
               {t('sidePanelPackage.additionalToolsNote', {
                 count: packageInfo.totalTools - tools.length,
