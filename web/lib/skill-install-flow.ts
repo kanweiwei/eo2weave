@@ -44,7 +44,15 @@ export interface AiReadinessResult {
  */
 export async function checkAiReadiness(): Promise<AiReadinessResult> {
   if (ENABLE_LLM_GATEWAY && isLLMGatewayConfigured()) {
-    const token = await getValidAccessToken(getLLMGatewayBaseURL(), getLLMGatewayClientId())
+    // The token lookup itself can throw (storage not ready, corrupted token
+    // cache) — treat that as "no gateway token" and keep evaluating the
+    // remaining credential branches instead of aborting readiness.
+    let token: string | null = null
+    try {
+      token = await getValidAccessToken(getLLMGatewayBaseURL(), getLLMGatewayClientId())
+    } catch {
+      token = null
+    }
     if (token) {
       let creditExhausted = false
       try {
@@ -104,6 +112,23 @@ export function pickConversationTarget(
 }
 
 // ── Input prefill ───────────────────────────────────────────────────
+
+/**
+ * Merge the skill prefill into any unsent draft the target conversation
+ * already holds: existing text is preserved below the command, and a
+ * re-click (draft already starts with the command) is idempotent instead
+ * of stacking duplicate commands.
+ */
+export function mergePrefillText(
+  existingText: string | null | undefined,
+  prefill: string,
+): string {
+  const trimmed = (existingText ?? '').trim()
+  if (!trimmed) return prefill
+  const command = prefill.split(/\s+/)[0] ?? prefill
+  if (trimmed.startsWith(command)) return trimmed
+  return `${prefill}\n${trimmed}`
+}
 
 /**
  * Build the prefill text: `/{skill-name}` slash command (explicit skill
