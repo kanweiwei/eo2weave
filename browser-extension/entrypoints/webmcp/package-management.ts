@@ -29,8 +29,8 @@ export function createPackageManagement(
       // torn, or in the wrong activation state.
       if (message.type === 'webmcp_packages_delete') {
         if (entry.mount !== 'webmcp' || entry.access !== 'read-write') throw new FsError('EROFS', 'Built-in packages cannot be deleted')
-        return await withPackageLock(entry.directory, async () =>
-          writeUser({ method: 'remove', path: entry.directory, recursive: true }),
+        return await withPackageLock(entry.directory, async signal =>
+          writeUser({ method: 'remove', path: entry.directory, recursive: true, signal }),
         )
       }
       const config = parseWebMCPConfig(message.config)
@@ -39,16 +39,21 @@ export function createPackageManagement(
       if (entry.access === 'read-only') {
         // Builtin overrides live in chrome.storage.local under the directory
         // name — same lease key, so builtin and user operations on one
-        // package serialize against each other too.
-        return await withPackageLock(entry.directory, async () => {
+        // package serialize against each other too. The builtin write is a
+        // single atomic storage call — nothing to interleave, but an aborted
+        // transaction still fails instead of reporting success (finding:
+        // "Lost lease does not stop mutations").
+        return await withPackageLock(entry.directory, async signal => {
+          if (signal.aborted) throw new FsError('EACCES', 'The package lease was lost mid-transaction')
           await setBuiltinConfig(entry.directory, config)
           // The configuration commit succeeded; do not report a failed write if route refresh fails.
           await changed().catch(error => console.warn('[WebMCP catalog]', error))
           return { ok: true }
         })
       }
-      return await withPackageLock(entry.directory, async () => {
-        const result = await writeUser({ method: 'writeFile', path: `${entry.directory}/config.json`, content: btoa(serializeWebMCPConfig(config)) })
+      return await withPackageLock(entry.directory, async signal => {
+        if (signal.aborted) throw new FsError('EACCES', 'The package lease was lost mid-transaction')
+        const result = await writeUser({ method: 'writeFile', path: `${entry.directory}/config.json`, content: btoa(serializeWebMCPConfig(config)), signal })
         if (!result.ok) return result
         return { ok: true }
       })

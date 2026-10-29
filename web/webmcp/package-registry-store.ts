@@ -24,9 +24,9 @@ import {
   type PackageRegistry,
   type RegistryManifest,
   type RegistryManifestPackage,
-} from './package-registry-client'
-import { installPackage, uninstallPackage } from './package-installer'
-import { getWebMCPBridge } from './bridge-client'
+} from '@/webmcp/package-registry-client'
+import { installPackage, uninstallPackage } from '@/webmcp/package-installer'
+import { getWebMCPBridge } from '@/webmcp/bridge-client'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
 
@@ -44,13 +44,13 @@ interface StoredRegistry {
  * silently vanishing (finding: "Registry addition disappears in private
  * mode").
  *
- * The mirror is OPERATION-BASED, not snapshot-based (findings: "Concurrent
- * registry additions disappear" / "Removed registry reappears"): it records
- * additions and removals SEPARATELY and replays them over the persisted
- * list on every read. A snapshot union would re-add entries another tab
- * removed (the persisted list still contains them) and overwrite a peer
- * tab's concurrent addition with a stale snapshot; replaying the deltas
- * keeps both orders correct:
+ * The mirror is DELTA-BASED (findings: "Concurrent registry additions
+ * disappear" / "Removed registry reappears"): it records only the entries
+ * THIS SESSION actually added (`sessionAdded`) and the manifest URLs it
+ * removed (`sessionRemoved`), and replays the deltas over the persisted
+ * list on every read. Storing the whole merged list would re-add entries a
+ * peer tab removed after our last write; storing only the delta keeps a
+ * removed entry removed:
  *   - read = persisted list, minus session removals, plus session additions;
  *   - write = the merged list (so persistence also converges).
  */
@@ -69,17 +69,7 @@ function storageAvailable(): boolean {
 }
 
 function loadStoredRegistries(): StoredRegistry[] {
-  const fromStorage = (): StoredRegistry[] => {
-    try {
-      const raw = localStorage.getItem(REGISTRIES_STORAGE_KEY)
-      if (!raw) return []
-      const parsed: unknown = JSON.parse(raw)
-      return Array.isArray(parsed) ? (parsed as StoredRegistry[]) : []
-    } catch {
-      return []
-    }
-  }
-  const persisted = fromStorage()
+  const persisted = readPersistedRegistries()
   if (!sessionAdded && !sessionRemoved) return persisted
   const removed = sessionRemoved ?? new Set<string>()
   const added = sessionAdded ?? []
@@ -91,8 +81,13 @@ function loadStoredRegistries(): StoredRegistry[] {
   return [...byUrl.values()]
 }
 
+/**
+ * Write the merged list WITHOUT touching the session deltas: `sessionAdded`
+ * stays exactly the entries this session added (round-5 finding: "Removed
+ * registries reappear" — copying the whole merged list in made the next
+ * merge replay entries a peer tab had removed, resurrecting them).
+ */
 function saveStoredRegistries(registries: StoredRegistry[]): boolean {
-  sessionAdded = registries
   try {
     localStorage.setItem(REGISTRIES_STORAGE_KEY, JSON.stringify(registries))
     return true
@@ -101,6 +96,18 @@ function saveStoredRegistries(registries: StoredRegistry[]): boolean {
     // keeps the list usable for this tab; report the persistence gap so the
     // UI can tell the user the registry will not survive a reload.
     return false
+  }
+}
+
+/** The raw persisted list, WITHOUT the session deltas replayed. */
+function readPersistedRegistries(): StoredRegistry[] {
+  try {
+    const raw = localStorage.getItem(REGISTRIES_STORAGE_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as StoredRegistry[]) : []
+  } catch {
+    return []
   }
 }
 
@@ -125,12 +132,13 @@ export function registriesPersisted(): boolean {
 /**
  * Parse a loose registry URL and persist it. Throws on unparseable input
  * (the raw `Error` message from `parseRegistryInput` is user-presentable).
- * The addition is MERGED against the latest persisted list (fresh read just
- * before the write), so two settings tabs adding different registries
- * concurrently do not overwrite each other (finding: "Concurrent registry
- * additions are lost"). The session records the addition as a DELTA so a
- * failed persistence write still keeps it visible, and a peer tab's later
- * read of the persisted list cannot resurrect it in THIS tab's view.
+ * The addition is MERGED against a FRESH persisted read taken immediately
+ * before the write (round-5 finding: "Concurrent registry edits overwrite
+ * each other"): two settings tabs editing the list concurrently each merge
+ * into what is actually stored at write time, so the second write no longer
+ * discards the first tab's edit with a stale full-list snapshot. The session
+ * records the addition as a DELTA so a failed persistence write still keeps
+ * it visible.
  */
 export function addRegistry(input: string): PackageRegistry {
   const registry = parseRegistryInput(input)
@@ -139,9 +147,11 @@ export function addRegistry(input: string): PackageRegistry {
   // the write below fails (private mode).
   sessionAdded = [...(sessionAdded ?? []).filter(entry => entry.manifestUrl !== stored.manifestUrl), stored]
   sessionRemoved?.delete(stored.manifestUrl)
-  const fresh = loadStoredRegistries().filter(entry => entry.manifestUrl !== registry.manifestUrl)
-  fresh.push(stored)
-  lastWritePersisted = saveStoredRegistries(fresh)
+  // Merge into the CURRENTLY persisted list, not the last snapshot this tab
+  // wrote: a peer tab's concurrent addition (or removal) is preserved.
+  const merged = readPersistedRegistries().filter(entry => entry.manifestUrl !== stored.manifestUrl)
+  merged.push(stored)
+  lastWritePersisted = saveStoredRegistries(merged)
   return registry
 }
 
@@ -150,12 +160,14 @@ export function addRegistry(input: string): PackageRegistry {
  * The removal is recorded as a session DELTA (finding: "Removed registry
  * reappears"): even when the persistence write fails and the persisted list
  * still contains the entry, later reads of THIS session exclude it instead
- * of resurrecting it from storage.
+ * of resurrecting it from storage. The write merges against a FRESH
+ * persisted read so a peer tab's concurrent edit survives ours (round-5
+ * finding: "Concurrent registry edits overwrite each other").
  */
 export function removeRegistry(manifestUrl: string): void {
   sessionRemoved = new Set([...(sessionRemoved ?? []), manifestUrl])
   sessionAdded = (sessionAdded ?? []).filter(entry => entry.manifestUrl !== manifestUrl)
-  lastWritePersisted = saveStoredRegistries(loadStoredRegistries())
+  lastWritePersisted = saveStoredRegistries(readPersistedRegistries().filter(entry => entry.manifestUrl !== manifestUrl))
   invalidateRegistryCache()
 }
 
@@ -331,12 +343,17 @@ export async function installRegistryPackage(
     )
   }
   const provider = await providerRegistry.get('webmcp')
-  const result = await installPackage(registry, pkg, provider, undefined, async () => {
+  const result = await installPackage(registry, pkg, provider, undefined, async lockSignal => {
     // Runs while the installer holds the per-package cross-context lock.
     // `findPackageIdCollision` already allows the one legitimate shape
     // (the same package re-installed over itself), so ANY non-null result
     // here is a conflict that appeared or became visible after the
-    // unlocked check — reject before anything is written.
+    // unlocked check — reject before anything is written. A lease lost
+    // mid-check aborts the transaction the same way (finding: "Lost lease
+    // does not stop mutations").
+    if (lockSignal.aborted) {
+      throw new Error(`The install of ${pkg.id} was aborted: the package lock was lost mid-transaction`)
+    }
     const underLock = await findPackageIdCollision(pkg.id)
     if (underLock) {
       throw new Error(

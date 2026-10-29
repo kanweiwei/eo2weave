@@ -127,8 +127,20 @@ async function releaseLease(packageId: string, owner: string): Promise<void> {
   }
 }
 
-/** Run `fn` while holding the cross-context lock for one package id. */
-export async function withPackageLock<T>(packageId: string, fn: () => Promise<T>): Promise<T> {
+/**
+ * Run `fn` while holding the cross-context lock for one package id.
+ *
+ * `fn` receives the transaction's {@link AbortSignal}: it must check
+ * `signal.aborted` between WRITE steps and stop (ideally roll back) instead
+ * of continuing to mutate the package once the lease is gone (finding:
+ * "Lost lease does not stop mutations"). The wrapper still fails the whole
+ * call with `LOCK_LOST` when the heartbeat reports loss — even if `fn` had
+ * already finished.
+ */
+export async function withPackageLock<T>(
+  packageId: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const owner = await acquireLease(packageId)
   if (owner === null) {
     throw Object.assign(new Error(`Package ${packageId} is busy: another operation is in progress`), { code: 'EBUSY' })
@@ -147,9 +159,31 @@ export async function withPackageLock<T>(packageId: string, fn: () => Promise<T>
   }, HEARTBEAT_INTERVAL_MS)
   let lockLost = false
   controller.signal.addEventListener('abort', () => { lockLost = true })
+  // Transaction-internal cancellation (finding: "Lost lease does not stop
+  // mutations"): `fn` receives this signal and checks it between WRITE
+  // steps. Raising it here means a transaction that loses its lease stops
+  // mutating the package at its very next write instead of finishing under
+  // the new owner's lease.
+  const loser = fn(controller.signal)
+  void loser.catch(() => {}) // never an unhandled rejection while racing
+  const winner = loser.then(result => ({ ok: true as const, result }), (error: unknown) => ({ ok: false as const, error }))
+  const lost = new Promise<{ ok: false; error: unknown }>(resolve => {
+    controller.signal.addEventListener('abort', () => {
+      resolve({
+        ok: false,
+        error: Object.assign(new Error('The package transaction was aborted: the lease was lost mid-transaction'), {
+          code: 'LOCK_LOST',
+        }),
+      })
+    })
+  })
   try {
-    const result = await fn()
+    const outcome = await Promise.race([winner, lost])
+    if (!outcome.ok) throw outcome.error
+    const { result } = outcome
     if (lockLost) {
+      // `fn` finished right as the lease was lost — the writes are the new
+      // owner's problem now, but the caller must not see a silent success.
       throw Object.assign(
         new Error(`The lease for ${packageId} was lost mid-transaction; re-run the operation`),
         { code: 'LOCK_LOST' },

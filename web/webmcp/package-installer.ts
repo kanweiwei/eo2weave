@@ -34,9 +34,9 @@ import type {
   PackageRegistry,
   RegistryManifest,
   RegistryManifestPackage,
-} from './package-registry-client'
-import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES, MAX_REGISTRY_MANIFEST_BYTES, REGISTRY_FETCH_TIMEOUT_MS, registryFileUrl } from './package-registry-client'
-import { getWebMCPBridge } from './bridge-client'
+} from '@/webmcp/package-registry-client'
+import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES, MAX_REGISTRY_MANIFEST_BYTES, REGISTRY_FETCH_TIMEOUT_MS, registryFileUrl } from '@/webmcp/package-registry-client'
+import { getWebMCPBridge } from '@/webmcp/bridge-client'
 
 export class PackageInstallError extends Error {
   constructor(message: string, readonly code: 'SHA256_MISMATCH' | 'DOWNLOAD_FAILED' | 'INVALID_PACKAGE' | 'STORAGE_FAILED' | 'BUSY' | 'LOCK_LOST') {
@@ -136,7 +136,7 @@ export async function installPackage(
    * first installs pass the unlocked check, serialize on the lock, and the
    * loser now rejects instead of silently replacing the winner.
    */
-  underLock?: () => Promise<void>,
+  underLock?: (lockSignal: AbortSignal) => Promise<void>,
 ): Promise<{ filesWritten: number }> {
   const fetchImpl = options?.fetchImpl ?? fetch
   const id = pkg.id
@@ -252,9 +252,9 @@ export async function installPackage(
   // chrome.storage (via the bridge) so every context sees it; the in-process
   // mutex below keeps concurrent callers in THIS context queued instead of
   // fighting over the lease with retry backoff.
-  return withInstallerLock(id, async () => {
-    if (underLock) await underLock()
-    await swapPackageIntoPlace(id, staged, provider)
+  return withInstallerLock(id, async lockSignal => {
+    if (underLock) await underLock(lockSignal)
+    await swapPackageIntoPlace(id, staged, provider, lockSignal)
     return { filesWritten: staged.length }
   })
 }
@@ -271,7 +271,10 @@ const packageLocks = new Map<string, Promise<unknown>>()
 
 const LOCK_HEARTBEAT_MS = 5_000
 
-async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Promise<T> {
+async function withInstallerLock<T>(
+  packageId: string,
+  fn: (lockSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const previous = packageLocks.get(packageId) ?? Promise.resolve()
   let releaseLocal!: () => void
   const gate = new Promise<void>(resolve => { releaseLocal = resolve })
@@ -290,8 +293,11 @@ async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Pr
   const bridge = getWebMCPBridge()?.webMCPPackageLock
   if (!bridge) {
     // No extension bridge — the in-process mutex is all we can coordinate.
+    // The transaction still gets a signal (it simply never aborts: there is
+    // no lease to lose), so `fn` keeps a single shape in both modes.
+    const controller = new AbortController()
     try {
-      return await fn()
+      return await fn(controller.signal)
     } finally {
       release()
     }
@@ -320,18 +326,38 @@ async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Pr
   // SECURITY (finding: "Install continues after lease loss", round 3): a
   // heartbeat reporting `ok:false` means the lease EXPIRED and another
   // context owns the package now — continuing the swap would mutate an
-  // unowned package. Record the loss AND race it against the transaction:
-  // `Promise.race` does not cancel `fn`, but the swap's remaining writes
-  // check the flag and bail at the next step, and the loss is always
-  // surfaced as a LOCK_LOST failure instead of a silent success.
+  // unowned package. Record the loss, ABORT the transaction's signal (its
+  // write loop checks it before every write and stops instead of racing the
+  // new owner — round-5 finding: "Lost lease does not stop mutations"), and
+  // race the abort against the transaction so the loss is surfaced as a
+  // LOCK_LOST failure instead of a silent success even when `fn` had
+  // already finished.
+  const controller = new AbortController()
   let lockLost: string | null = null
   const heartbeat = setInterval(() => {
     void bridge(packageId, 'heartbeat', owner)
-      .then(result => { if (!result?.ok) lockLost = `lock for ${packageId} was lost (lease expired)` })
+      .then(result => {
+        if (!result?.ok) {
+          lockLost = `lock for ${packageId} was lost (lease expired)`
+          controller.abort()
+        }
+      })
       .catch(() => {})
   }, LOCK_HEARTBEAT_MS)
+  const transaction = fn(controller.signal)
+  const settled = transaction.then(
+    result => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  )
+  const lost = new Promise<{ ok: false; error: unknown }>(resolve => {
+    controller.signal.addEventListener('abort', () => {
+      resolve({ ok: false, error: new PackageInstallError(`Operation on ${packageId} failed: ${lockLost}`, 'LOCK_LOST') })
+    })
+  })
   try {
-    const result = await fn()
+    const outcome = await Promise.race([settled, lost])
+    if (!outcome.ok) throw outcome.error
+    const { result } = outcome
     if (lockLost !== null) {
       throw new PackageInstallError(
         `The install of ${packageId} completed but its lock was lost mid-transaction; re-run the operation`,
@@ -361,6 +387,7 @@ async function swapPackageIntoPlace(
   id: string,
   staged: Array<{ path: string; bytes: Uint8Array }>,
   provider: FsProvider,
+  lockSignal: AbortSignal,
 ): Promise<void> {
   // The replacement is written into a staging directory FIRST and only
   // swapped into place after EVERY write succeeded, so a failed write
@@ -377,6 +404,14 @@ async function swapPackageIntoPlace(
   const backup = `.${id}.previous`
   const hasRename = typeof provider.rename === 'function'
   let backupPreserved = false
+  // The lease must still be ours BEFORE the first destructive step
+  // (finding: "Lost lease does not stop mutations").
+  if (lockSignal.aborted) {
+    throw new PackageInstallError(
+      `The install of ${id} was aborted: the package lock was lost mid-transaction`,
+      'LOCK_LOST',
+    )
+  }
   try {
     await removeMissingOk(provider, staging)
     // SECURITY (critical, "Retry deletes last good package"; round 3:
@@ -419,12 +454,24 @@ async function swapPackageIntoPlace(
       }
     }
     await removeMissingOk(provider, backup)
+    // Guard the WRITE LOOP (finding: "Lost lease does not stop mutations"):
+    // every staged write checks the lease signal first, so a transaction
+    // whose lease expired stops writing before the next file instead of
+    // finishing a swap the new lock owner is already racing. The failure
+    // surfaces as LOCK_LOST through the lock wrapper.
     try {
       await provider.mkdir(staging, { recursive: true })
       for (const file of staged) {
+        if (lockSignal.aborted) {
+          throw new PackageInstallError(
+            `The install of ${id} was aborted: the package lock was lost mid-transaction`,
+            'LOCK_LOST',
+          )
+        }
         await provider.writeFile(`${staging}/${file.path}`, file.bytes)
       }
     } catch (error) {
+      if (error instanceof PackageInstallError) throw error
       throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
     // All writes landed — swap the new tree in.
@@ -590,7 +637,16 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
   } catch {
     throw new PackageInstallError(`Invalid package id: ${packageId}`, 'INVALID_PACKAGE')
   }
-  await withInstallerLock(packageId, async () => {
+  await withInstallerLock(packageId, async lockSignal => {
+    // Stop before mutating once the lease is gone (finding: "Lost lease
+    // does not stop mutations") — a removal executed under the NEW owner's
+    // lease would delete the package it just installed.
+    if (lockSignal.aborted) {
+      throw new PackageInstallError(
+        `The removal of ${packageId} was aborted: the package lock was lost mid-transaction`,
+        'LOCK_LOST',
+      )
+    }
     try {
       await removeMissingOk(provider, packageId)
     } catch (error) {
@@ -621,7 +677,7 @@ export async function fetchRegistryManifestCapped(
     }
     const bytes = await readBodyCapped(response, MAX_REGISTRY_MANIFEST_BYTES)
     const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
-    const { validateRegistryManifest } = await import('./package-registry-client')
+    const { validateRegistryManifest } = await import('@/webmcp/package-registry-client')
     return validateRegistryManifest(parsed)
   } catch (error) {
     if (controller.signal.aborted) {

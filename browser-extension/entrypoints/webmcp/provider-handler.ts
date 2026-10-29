@@ -4,6 +4,11 @@ import { FsError, normalizeProviderPath, type FsProvider } from '@creatorweave/f
 export function createProviderHandler(storage: () => Promise<FsProvider>, changed: () => Promise<void>) {
   let mutations: Promise<unknown> = Promise.resolve()
   return async (message: Record<string, unknown>) => {
+    // A caller holding a package lease can pass an AbortSignal; once the
+    // lease is lost the signal aborts and the mutation is refused BEFORE it
+    // touches storage (finding: "Lost lease does not stop mutations").
+    const signal = message.signal as AbortSignal | undefined
+    if (signal?.aborted) throw new FsError('EACCES', 'The operation was aborted: the package lease was lost')
     const run = async () => {
       if (typeof message.path !== 'string') throw new FsError('EINVAL', 'Missing path')
       const path = normalizeProviderPath(message.path)
