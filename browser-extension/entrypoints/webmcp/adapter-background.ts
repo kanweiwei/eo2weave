@@ -192,12 +192,22 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       if (!packageId || packageId.includes('/')) { respond({ ok: false, code: 'EINVAL', error: 'Invalid package id' }); return false }
       if (action === 'acquire') {
         const timeoutMs = typeof message.timeoutMs === 'number' && Number.isFinite(message.timeoutMs) ? Math.min(Math.max(message.timeoutMs, 0), 60_000) : undefined
-        void bridgeAcquirePackageLock(packageId, timeoutMs).then(respond)
+        // A rejecting acquire must still send a response — an unhandled
+        // rejection leaves the page's `sendResponse` promise pending until
+        // the message channel closes, so the caller times out instead of
+        // failing fast (finding: "Rejected lock acquire never responds").
+        void bridgeAcquirePackageLock(packageId, timeoutMs).then(respond, (error: unknown) => respond({ ok: false, code: 'ELOCK', error: error instanceof Error ? error.message : String(error) }))
         return true
       }
       if (!owner) { respond({ ok: false, code: 'EINVAL', error: 'Missing lock owner' }); return false }
-      if (action === 'heartbeat') { void bridgeHeartbeatPackageLock(packageId, owner).then(respond); return true }
-      if (action === 'release') { void bridgeReleasePackageLock(packageId, owner).then(respond); return true }
+      if (action === 'heartbeat') {
+        void bridgeHeartbeatPackageLock(packageId, owner).then(respond, (error: unknown) => respond({ ok: false, code: 'ELOCK', error: error instanceof Error ? error.message : String(error) }))
+        return true
+      }
+      if (action === 'release') {
+        void bridgeReleasePackageLock(packageId, owner).then(respond, (error: unknown) => respond({ ok: false, code: 'ELOCK', error: error instanceof Error ? error.message : String(error) }))
+        return true
+      }
       respond({ ok: false, code: 'EINVAL', error: 'Unknown lock action' })
       return false
     }

@@ -121,7 +121,7 @@ async function readPackageActivation(
 export const USER_PACKAGE_CONFIG_SENTINEL_PREFIX = 'webmcp_user_package_config_'
 
 /** Enable a package on EITHER mount (see `readPackageActivation` for the split). */
-async function writePackageActivation(mount: string, directory: string): Promise<void> {
+async function writePackageActivation(mount: string, directory: string, signal?: AbortSignal): Promise<void> {
   if (mount === 'builtin-webmcp') {
     // The builtin override write touches chrome.storage.local, whose
     // onChanged listener in the adapter background triggers a catalog
@@ -130,6 +130,11 @@ async function writePackageActivation(mount: string, directory: string): Promise
     return
   }
   const provider = await getAdapterStorage()
+  // A lease lost while the provider bridge was being resolved must stop the
+  // transaction BEFORE any mutation (finding: "Lost lease does not stop
+  // mutations") — the caller fences its own steps, this is the backstop
+  // inside the write itself.
+  if (signal?.aborted) throw Object.assign(new Error('Package lease lost during enable'), { code: 'LOCK_LOST' })
   // Race guard (finding: "Uninstall leaves a phantom package"): between the
   // caller's presence check and the write below an uninstall can remove the
   // package directory — and the provider CREATES missing parent directories
@@ -144,6 +149,10 @@ async function writePackageActivation(mount: string, directory: string): Promise
   } catch {
     throw Object.assign(new Error('Package directory vanished before enable'), { code: 'PACKAGE_UNINSTALLED' })
   }
+  // Recheck the lease AFTER the presence stat: an abort landing while the
+  // stat was pending must stop the transaction here, before the write
+  // (finding: "Lost lease does not stop mutations").
+  if (signal?.aborted) throw Object.assign(new Error('Package lease lost during enable'), { code: 'LOCK_LOST' })
   const bytes = new TextEncoder().encode(serializeWebMCPConfig({ activation: 'enabled' }))
   // Finding: "Lease-lost writes still execute" — the activation write is the
   // transaction's last mutation; a lease lost while earlier awaits (the
@@ -810,7 +819,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           // must not perform it (finding: "Lost lease does not stop
           // mutations").
           if (lockSignal.aborted) return lost()
-          await writePackageActivation(candidate.mount, candidate.directory)
+          await writePackageActivation(candidate.mount, candidate.directory, lockSignal)
           // Finding: "Enable reports failure after committing" — the sentinel
           // bounce is a NOTIFICATION, not part of the activation state: the
           // config write has already committed when it runs. A storage

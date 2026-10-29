@@ -301,6 +301,11 @@ async function withInstallerLock<T>(
     // (tests / standalone web) still gets the in-process mutex — there is
     // no other writer to lose a race against.
     if (bridge) {
+      // Release the local gate BEFORE throwing (finding: "Lock-unavailable
+      // branch leaks the gate"): a throw here skips the finally-path the
+      // normal flow uses, so without this release every later call for this
+      // package id waits forever on a chain nobody will resolve.
+      release()
       throw new PackageInstallError(
         `Package ${packageId} locking is unavailable in the connected extension; update the extension before installing.`,
         'LOCK_LOST',
