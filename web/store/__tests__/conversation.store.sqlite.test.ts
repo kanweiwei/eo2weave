@@ -1285,6 +1285,13 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('convert-me', { kind: 'direct' })
 
+      // vi.resetModules() clears the dynamic-import cache so EACH conversion
+      // test re-evaluates '@/store/folder-access.store' with ITS OWN
+      // doMock factory: vi.doUnmock alone removes the registration but not
+      // the cached module, so a later test would silently reuse the earlier
+      // mock's pickDirectory (and never exercise its own expectation).
+      vi.resetModules()
+
       const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
       vi.doMock('@/store/folder-access.store', () => ({
         useFolderAccessStore: {
@@ -1309,6 +1316,11 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('convert-persist-fail', { kind: 'direct' })
 
+      // Fresh module registry: without this, the dynamic import could return
+      // the FIRST test's cached folder-access mock and this test's
+      // pickDirectoryMock would never be exercised.
+      vi.resetModules()
+
       const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
       vi.doMock('@/store/folder-access.store', () => ({
         useFolderAccessStore: {
@@ -1331,6 +1343,13 @@ describe('conversation.store.sqlite tool-call routing', () => {
     it('convertDirectToProject does not change the kind when folder authorization fails', async () => {
       const store = useConversationStore.getState()
       const conv = store.createNew('convert-cancelled', { kind: 'direct' })
+
+      // Fresh module registry: this test is the reason the reset matters —
+      // its mock resolves pickDirectory to FALSE, but a stale cached module
+      // from an earlier test (resolving true) would make the conversion
+      // pass authorization and update the kind, failing the assertions
+      // below for the wrong reason.
+      vi.resetModules()
 
       const pickDirectoryMock = vi.fn(() => Promise.resolve(false))
       vi.doMock('@/store/folder-access.store', () => ({

@@ -304,4 +304,66 @@ describe('project.store deleteProject host rebind', () => {
     expect(useProjectStore.getState().activeProjectId).toBe('p-a')
     expect(agentSetActiveProjectMock).toHaveBeenCalledWith('p-a')
   })
+
+  it('rebind failure mid-deleteProject restores original workspace assignments', async () => {
+    // Finding: when the SECOND rebind (or the row deletion) failed, the
+    // already-rebound workspaces stayed assigned to the successor project
+    // even though the deletion aborted — the caller saw failure while the
+    // store held half-applied rebinds. Every successful rebind must be
+    // rolled back to its ORIGINAL project id on failure.
+    useProjectStore.setState({ activeProjectId: '', projects: [project('p-a'), project('p-b')] } as never)
+    findAllProjectsMock.mockResolvedValue([project('p-a'), project('p-b')])
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([
+      { id: 'host-1', projectId: 'p-a' } as never,
+      { id: 'host-2', projectId: 'p-a' } as never,
+    ])
+    // First rebind succeeds, second fails — the rollback must restore BOTH.
+    updateWorkspaceMock.mockImplementation((async (ws: { id: string }) => {
+      if (ws.id === 'host-2') throw new Error('second rebind boom')
+    }) as never)
+
+    const ok = await useProjectStore.getState().deleteProject('p-a')
+
+    expect(ok).toBe(false)
+    expect(useProjectStore.getState().error).toContain('second rebind boom')
+    // Deletion never committed.
+    expect(deleteProjectMock).not.toHaveBeenCalled()
+    // Rollback: host-1 (successfully rebound to p-b) is restored to p-a.
+    const host1Restore = updateWorkspaceMock.mock.calls.find(
+      (c) => (c as unknown as [{ id: string; projectId: string }])[0].id === 'host-1' &&
+        (c as unknown as [{ id: string; projectId: string }])[0].projectId === 'p-a'
+    )
+    expect(host1Restore).toBeTruthy()
+  })
+
+  it('post-delete repair failure still returns success with a refreshed list', async () => {
+    // Finding: a throw in the active-pointer repair AFTER the row deletion
+    // committed made the caller see failure while the project was gone from
+    // SQLite — and the outer catch skipped refreshProjects, so the UI kept
+    // the deleted project. The repair must be non-fatal (deletion reports
+    // success) and the list must be refreshed from the repository.
+    const agentSetActiveProjectMock = vi.fn(async () => {
+      throw new Error('repair boom')
+    })
+    vi.doMock('@/store/agent.store', () => ({
+      useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
+    }))
+    vi.doMock('@/store/conversation-context.store', () => ({
+      useConversationContextStore: { getState: () => ({ refreshWorkspaces: vi.fn(async () => {}) }) },
+    }))
+
+    useProjectStore.setState({ activeProjectId: 'p-a', projects: [project('p-a'), project('p-b')] } as never)
+    findAllProjectsMock.mockResolvedValue([project('p-b')])
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
+
+    const ok = await useProjectStore.getState().deleteProject('p-a')
+
+    // Deletion committed → success, despite the repair crash.
+    expect(ok).toBe(true)
+    expect(deleteProjectMock).toHaveBeenCalledWith('p-a')
+    expect(useProjectStore.getState().error).toBeNull()
+    // The UI list was refreshed AFTER the deletion committed: it reflects
+    // the surviving projects, not the invocation-time snapshot.
+    expect(useProjectStore.getState().projects.map((p) => p.id)).toEqual(['p-b'])
+  })
 })
