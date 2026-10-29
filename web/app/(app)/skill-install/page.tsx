@@ -93,7 +93,14 @@ function SkillInstallView() {
     reset: resetGatewayLogin,
   } = useGatewayLogin()
 
+  // Monotonic request generation: when the `skill` query param changes
+  // (or a retry fires) while an earlier lookup is still pending, the stale
+  // completion must not overwrite the newer entry/phase state.
+  const loadGenerationRef = useRef(0)
+
   const loadEntry = useCallback(async () => {
+    const generation = ++loadGenerationRef.current
+    const isStale = () => generation !== loadGenerationRef.current
     setPhase('loading')
     setErrorKind('load-failed')
     setErrorMessage(null)
@@ -106,6 +113,7 @@ function SkillInstallView() {
     }
     try {
       const manifest = await fetchSkillStoreManifest()
+      if (isStale()) return
       const found = manifest.skills.find((s) => s.dirName === skillParam)
       if (!found) {
         setErrorKind('not-found')
@@ -113,10 +121,12 @@ function SkillInstallView() {
         return
       }
       const installed = await scanInstalledDirNames()
+      if (isStale()) return
       setEntry(found)
       setAlreadyInstalled(installed.has(found.dirName))
       setPhase('details')
     } catch (e) {
+      if (isStale()) return
       setErrorKind('load-failed')
       setErrorMessage(e instanceof Error ? e.message : String(e))
       setPhase('error')
@@ -169,8 +179,17 @@ function SkillInstallView() {
 
       // Workspace initialization (SQLite/OPFS load) runs in AppBootstrap
       // too — wait for it so pickConversationTarget sees existing history
-      // instead of creating a duplicate conversation.
-      await waitForCondition(() => useConversationContextStore.getState().initialized)
+      // instead of creating a duplicate conversation. On timeout the
+      // workspace list may be incomplete: abort to the details view with
+      // an error rather than navigating to a possibly blank conversation.
+      const contextReady = await waitForCondition(
+        () => useConversationContextStore.getState().initialized,
+      )
+      if (!contextReady) {
+        setErrorMessage(t('skillInstall.startFailed'))
+        setPhase('details')
+        return
+      }
 
       // Navigation target: most recent workspace, else a fresh conversation.
       // conversationId === workspaceId in this app, so createNew()'s id is
@@ -246,10 +265,14 @@ function SkillInstallView() {
         // Register the slash command immediately — refreshUserSkills()
         // rescans OPFS and re-syncs the slash-command registry.
         await getSkillManager().refreshUserSkills()
-        // The skill must be visible after registration; otherwise the
-        // prefilled slash command would have nothing behind it.
-        const registered = await scanInstalledDirNames()
-        if (!registered.has(entry.dirName)) {
+        // The skill must be REGISTERED (visible to the agent) after the
+        // refresh — a directory alone is not enough: refreshUserSkills()
+        // swallows scan failures, and a dir-only check would let the page
+        // navigate with a slash command that has nothing behind it.
+        const registered = getSkillManager()
+          .getSkills()
+          .some((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
+        if (!registered) {
           throw new Error(t('skillInstall.registerFailed'))
         }
         outcome = { alreadyInstalled: false }
@@ -267,16 +290,27 @@ function SkillInstallView() {
     }
   }, [alreadyInstalled, entry, runAiReadiness, t])
 
+  // Guard against overlapping Start attempts: while a readiness check /
+  // navigation is in flight, a second click (or double-click) must be a
+  // no-op — two concurrent continuations would each see an empty workspace
+  // list and create duplicate conversations.
+  const startingRef = useRef(false)
+
   // "Already installed" path skips straight past install + login checks
   // (the acceptance criteria: returning users are done in 2 clicks) — but
   // still runs readiness so a since-logged-out visitor gets the login step.
   const handleStart = useCallback(async () => {
-    if (!entry) return
-    if (!alreadyInstalled) {
-      await runInstall()
-      return
+    if (!entry || startingRef.current) return
+    startingRef.current = true
+    try {
+      if (!alreadyInstalled) {
+        await runInstall()
+        return
+      }
+      await runAiReadiness()
+    } finally {
+      startingRef.current = false
     }
-    await runAiReadiness()
   }, [alreadyInstalled, entry, runAiReadiness, runInstall])
 
   const handleLoginSuccess = useCallback(async () => {
