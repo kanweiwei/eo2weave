@@ -209,6 +209,7 @@ async function executePython(
 
     // Load browser-local secrets for every Python execution. Their values are
     // intentionally kept out of the agent tool schema, workspace files, and logs.
+    // In directMode this resolves to {} — see loadRuntimeSecrets.
     const runtimeSecrets = await loadRuntimeSecrets({ directMode })
 
     // Execute Python code
@@ -303,26 +304,21 @@ function redactPythonResult<T extends { stdout?: string; stderr?: string; error?
  * Load all browser-local secrets into an ephemeral map for the Pyodide worker.
  * The map is created per execution so additions, updates, and deletions in
  * Settings → Secret Manager take effect on the next Python tool call.
+ *
+ * In directMode (standalone chats) NOTHING is loaded — no project and no
+ * global secrets. The sandbox executes model-supplied code that untrusted
+ * conversation or fetched content can steer, so any injected value is one
+ * `pyfetch` away from exfiltration; output redaction cannot prevent an
+ * outbound transfer. This matches web_fetch's direct-mode behavior (secret
+ * templates stay unresolved there for the same reason).
  */
 async function loadRuntimeSecrets(options?: { directMode?: boolean }): Promise<Record<string, string>> {
+  if (options?.directMode) return {}
   try {
     const [{ getAllSecretNames, loadSecret }, { useProjectStore }] = await Promise.all([
       import('@/security/secret-store'),
       import('@/store/project.store'),
     ])
-    // Direct conversations have no folder authorization — loading the active
-    // project's secrets would let sandbox code exfiltrate them via fetch.
-    // Global-scoped secrets stay available (they are conversation-agnostic).
-    if (options?.directMode) {
-      const names = await getAllSecretNames(undefined)
-      const entries = await Promise.all(
-        names.map(async (name) => {
-          const value = await loadSecret('', name)
-          return value === null ? null : ([name, value] as const)
-        })
-      )
-      return Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry !== null))
-    }
     const projectId = useProjectStore.getState().activeProjectId
     // Even without an active project, global-scoped secrets are still useful.
     // getAllSecretNames(undefined) returns the global-only set.
