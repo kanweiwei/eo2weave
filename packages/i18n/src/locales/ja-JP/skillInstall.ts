@@ -14,6 +14,7 @@ export const skillInstall = {
     installing: "インストール中…",
     installDone: "インストール完了！",
     installFailed: "インストールに失敗しました",
+    keyStoreUnavailable: "保存されたAI認証情報を確認できませんでした（ストレージエラー）。もう一度お試しください。",
     registerFailed: "スキルはインストールされましたが、登録に失敗しました。再試行してください。",
     aiReady: "AI モデルの準備ができています",
     aiNotReady: "最後のステップ：Nutstore AI にログインするとスキルを実行できます",

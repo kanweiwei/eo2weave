@@ -143,11 +143,15 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
   })
 
-  it('key-store failure degrades to not-ready (never throws)', async () => {
+  it('key-store failure degrades to not-ready but flags the verdict as unproven', async () => {
     getValidAccessTokenMock.mockResolvedValue(null)
     getAllApiKeyProvidersMock.mockRejectedValue(new Error('storage not ready'))
 
-    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+    await expect(checkAiReadiness()).resolves.toEqual({
+      ready: false,
+      creditExhausted: false,
+      keyStoreUnavailable: true,
+    })
   })
 })
 

@@ -185,6 +185,72 @@ async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
 }
 
 /**
+ * Recover import backups staged by an import that never finished.
+ *
+ * `importUserSkillZip` removes an existing skill only after its previous
+ * content is staged under `.skills/.import-backups/<runId>/<dirName>/`. If
+ * the tab dies after the removal but before the import completes or rolls
+ * back, that in-process rollback never runs and the skill stays missing.
+ * This scans the backups root and restores every staged skill, then drops
+ * the consumed run directory, so a crashed import cannot leave a skill
+ * permanently absent.
+ *
+ * Called before scanning installed skills, so recovery lands in the
+ * manager cache on the same refresh. Best-effort: a recovery failure must
+ * not break the scan. (A concurrent import in ANOTHER tab is not fenced —
+ * same pre-existing limitation as the import itself.)
+ */
+async function recoverAbandonedImportBackups(): Promise<void> {
+  let backupsRoot: FileSystemDirectoryHandle
+  let userDir: FileSystemDirectoryHandle
+  try {
+    const opfsRoot = await navigator.storage.getDirectory()
+    const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
+    backupsRoot = await skillsDir.getDirectoryHandle(IMPORT_BACKUPS_DIR, { create: false })
+    // The user dir normally exists (the crashed import had removed a skill
+    // from it); create it if missing so restore always has a target.
+    userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+  } catch {
+    // No `.skills/.import-backups/` (or no skills root) — nothing abandoned.
+    return
+  }
+
+  // Snapshot run names first: removing entries during iteration would be
+  // fragile against the handle's async iterator.
+  const runIds: string[] = []
+  for await (const [name, entry] of backupsRoot.entries()) {
+    if (entry.kind === 'directory') runIds.push(name)
+  }
+
+  for (const runId of runIds) {
+    try {
+      const runDir = await backupsRoot.getDirectoryHandle(runId)
+      const stagedNames: string[] = []
+      for await (const [name, entry] of runDir.entries()) {
+        if (entry.kind === 'directory') stagedNames.push(name)
+      }
+      for (const dirName of stagedNames) {
+        const stagedDir = await runDir.getDirectoryHandle(dirName)
+        const files = await readStagedBackup(stagedDir)
+        if (Object.keys(files).length === 0) continue
+        await restoreUserSkillDir(userDir, dirName, files)
+        console.log(
+          `[UserSkillsScanner] Restored skill "${dirName}" from abandoned import backup (run ${runId}).`,
+        )
+      }
+      // Fully recovered (or empty) — drop the run directory.
+      await backupsRoot.removeEntry(runId, { recursive: true })
+    } catch (e) {
+      // Leave this run's backup in place — the next scan retries recovery.
+      console.warn(
+        `[UserSkillsScanner] Failed to recover abandoned import backup run ${runId}:`,
+        e,
+      )
+    }
+  }
+}
+
+/**
  * Scan `.skills/user/` for all SKILL.md files and their resources.
  *
  * Each subdirectory under `user/` is treated as a skill:
@@ -193,12 +259,23 @@ async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
  *   .skills/user/<skill-name>/references/*.md (optional)
  *   .skills/user/<skill-name>/assets/*        (optional)
  *
+ * Before scanning, abandoned import backups (left by an import whose tab
+ * died mid-write) are recovered, so restored skills are included in the
+ * same scan result.
+ *
  * @returns Parsed skills with source='user', resources, and any errors
  */
 export async function scanUserSkills(): Promise<UserSkillScanResult> {
   const skills: Skill[] = []
   const resources: SkillResource[] = []
   const errors: string[] = []
+
+  try {
+    await recoverAbandonedImportBackups()
+  } catch (e) {
+    // Recovery is best-effort — never block the scan on it.
+    console.warn('[UserSkillsScanner] Import-backup recovery failed:', e)
+  }
 
   const userDir = await getUserSkillsDir()
   if (!userDir) {
