@@ -134,6 +134,42 @@ export class ProjectRepository {
     })
   }
 
+  /**
+   * Atomically reassign every workspace of `projectId` to `nextProjectId`
+   * (empty string = "no project") and delete the project row, including its
+   * scoped API-key secrets — all inside ONE SQLite transaction.
+   *
+   * Performing the rebind as a single UPDATE inside the same transaction as
+   * the row deletion closes the partial-reassignment hole of the previous
+   * per-workspace `updateWorkspace` loop: if the tab or process dies between
+   * individual rebinds and the deletion, the old sequence left the project
+   * row alive with some workspaces already moved to the successor, and a
+   * retry (which only sees rows still pointing at the original project)
+   * could not undo the partial reassignment. Here a crash at any point rolls
+   * the rebind AND the deletion back together, so the operation is fully
+   * retryable.
+   */
+  async rebindWorkspacesAndDeleteProject(projectId: string, nextProjectId: string): Promise<void> {
+    const db = getSQLiteDB()
+    const secretPrefix = getProjectSecretStoragePrefix(projectId)
+    await db.transaction(async (tx) => {
+      // Single-statement rebind — no per-row round-trips, and the set of
+      // affected rows is exactly the rows matching the project at commit time
+      // (rows the per-row loop had already missed could survive a retry).
+      await tx.execute('UPDATE workspaces SET project_id = ? WHERE project_id = ?', [
+        nextProjectId,
+        projectId,
+      ])
+      // Secrets are encrypted API-key records scoped with this exact prefix.
+      // substr avoids SQL LIKE wildcard handling for encoded project IDs.
+      await tx.execute(
+        'DELETE FROM api_keys WHERE substr(provider, 1, ?) = ?',
+        [secretPrefix.length, secretPrefix]
+      )
+      await tx.execute('DELETE FROM projects WHERE id = ?', [projectId])
+    })
+  }
+
   // NOTE: The active_project singleton table was removed (PR-B: URL-driven active
   // project). The following methods are kept as no-ops / store-backed fallbacks
   // for backward-compatibility with callers that haven't been migrated yet.

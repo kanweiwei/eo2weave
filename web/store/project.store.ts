@@ -578,25 +578,24 @@ export const useProjectStore = create<ProjectState>()(
           .then(async () => {
             const remaining = await repo.findAllProjects()
             const nextProjectId = remaining.find((p) => p.id !== projectId)?.id || ''
-            const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
-            const workspaceRepo = getWorkspaceRepository()
-            const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
-            // Snapshot each row's ORIGINAL project id before rebinding: if a
-            // later rebind or the row deletion throws, the catch below
-            // restores every already-rebound workspace so a failed deletion
-            // never leaves workspaces assigned to the successor project.
-            const originalProjectIds = orphaned.map((ws) => ws.projectId ?? '')
-            const rebound: Array<{ id: string; projectId: string }> = []
             try {
-              for (const ws of orphaned) {
-                // eslint-disable-next-line no-await-in-loop -- sequential rebinds: a later row's successor selection must observe earlier rebinds
-                await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
-                rebound.push({ id: ws.id, projectId: nextProjectId })
-              }
-              // The project row is removed inside the same section: a queued
-              // overlapping deletion re-reads the table only after this row is
-              // gone, so it can never select THIS project as its successor.
-              await repo.deleteProject(projectId)
+              // The rebind and the deletion now share ONE SQLite transaction
+              // (rebindWorkspacesAndDeleteProject): a crash between the old
+              // per-row rebind loop and repo.deleteProject left the project
+              // row alive with some workspaces already reassigned to the
+              // successor — and a retry only saw rows still pointing at the
+              // original project, so the partial reassignment persisted. With
+              // the single-transaction form, a failure (or a dead tab /
+              // process) rolls the rebind AND the row deletion back together,
+              // so the whole deletion stays retryable. The in-memory
+              // rollback/`rebound` bookkeeping of the loop is gone with it:
+              // there is nothing left to restore by hand — a rejected
+              // transaction has already rolled back atomically, so the catch
+              // below only rethrows. The project row is removed inside the
+              // same section: a queued overlapping deletion re-reads the table
+              // only after this row is gone, so it can never select THIS
+              // project as its successor.
+              await repo.rebindWorkspacesAndDeleteProject(projectId, nextProjectId)
 
               // ── OPFS workspace-data cleanup — AFTER the DB commit ──
               // Deliberately deferred and best-effort: the row is gone, so the
@@ -611,20 +610,11 @@ export const useProjectStore = create<ProjectState>()(
               }
               await flushPendingOpfsProjectDeletions()
             } catch (err) {
-              // Roll back the rebinds the deletion depended on. Row deletion
-              // has not committed (or it failed with the rebinds already
-              // undone), so restoring the original assignments keeps
-              // workspaces pointing at the project whose deletion failed.
-              for (const ws of orphaned) {
-                const originalProjectId = originalProjectIds[orphaned.indexOf(ws)]
-                if (!rebound.some((r) => r.id === ws.id) || originalProjectId === nextProjectId) continue
-                try {
-                  // eslint-disable-next-line no-await-in-loop -- sequential restores
-                  await workspaceRepo.updateWorkspace({ ...ws, projectId: originalProjectId })
-                } catch (restoreErr) {
-                  console.error('[ProjectStore] Failed to restore workspace after failed deletion:', restoreErr)
-                }
-              }
+              // The transaction rolled back atomically (rebind + secret +
+              // row deletion undone together) — no manual restore of
+              // workspace assignments is needed or possible here. Rethrow so
+              // THIS caller observes the failure while the chain keeps
+              // draining for later deletions.
               throw err
             }
 
