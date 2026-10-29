@@ -10,9 +10,9 @@ import { useSettingsStore } from '@/store/settings.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { ExternalTrustCard } from '@/components/external-tools/ExternalTrustCard'
-import { WebMCPGlobalToggleCard } from './WebMCPGlobalToggleCard'
-import { WebMCPHostList } from './WebMCPHostList'
-import { WebMCPPackageRegistrySection } from './WebMCPPackageRegistrySection'
+import { WebMCPGlobalToggleCard } from '@/components/webmcp/WebMCPGlobalToggleCard'
+import { WebMCPHostList } from '@/components/webmcp/WebMCPHostList'
+import { WebMCPPackageRegistrySection } from '@/components/webmcp/WebMCPPackageRegistrySection'
 
 /**
  * WebMCP settings — global switches + read-only tool list.

@@ -24,7 +24,7 @@ vi.mock('@/vfs/provider-registry', () => ({
   },
 }))
 
-import { findPackageIdCollision, installRegistryPackage } from '../package-registry-store'
+import { findPackageIdCollision, installRegistryPackage } from '@/webmcp/package-registry-store'
 
 const MANIFEST = (id: string) => new TextEncoder().encode(JSON.stringify({ id, version: '1.0.0', description: '', tools: [] }))
 

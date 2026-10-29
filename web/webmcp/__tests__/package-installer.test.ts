@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { memoryProvider } from '@creatorweave/fs-provider/memory'
-import { installPackage, uninstallPackage, sha256Hex, PackageInstallError } from '../package-installer'
-import { registryFromManifestUrl, MAX_PACKAGE_FILES, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_TOTAL_BYTES } from '../package-registry-client'
-import type { RegistryManifestPackage } from '../package-registry-client'
+import { installPackage, uninstallPackage, sha256Hex, PackageInstallError } from '@/webmcp/package-installer'
+import { registryFromManifestUrl, MAX_PACKAGE_FILES, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_TOTAL_BYTES } from '@/webmcp/package-registry-client'
+import type { RegistryManifestPackage } from '@/webmcp/package-registry-client'
 
 const RAW = 'https://raw.githubusercontent.com/owner/repo/main'
 

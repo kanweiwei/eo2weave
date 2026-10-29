@@ -9,7 +9,7 @@ import {
   MAX_REGISTRY_PACKAGES,
   RegistryError,
   type RegistryManifest,
-} from '../package-registry-client'
+} from '@/webmcp/package-registry-client'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
