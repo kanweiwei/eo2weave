@@ -21,6 +21,7 @@ import {
   type InstallProgress,
   type SkillStoreEntry,
 } from '@/skills/skill-store'
+import { mergePrefillText } from '@/lib/skill-install-flow'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
@@ -131,20 +132,45 @@ function SkillInstallView() {
   const continueToConversation = useCallback(
     async (skillName: string) => {
       setPhase('starting')
+      setErrorMessage(null)
       // AppBootstrap owns project auto-default; wait for the project store
-      // to surface it instead of creating a project here (issue #126
-      // decision: duplicate creation conflicts).
-      const projectReady = await waitForCondition(
-        () => {
-          const s = useProjectStore.getState()
-          return s.initialized && !!s.activeProjectId
-        },
-      )
+      // to finish initializing instead of creating a project here (issue
+      // #126 decision: duplicate creation conflicts).
+      const projectReady = await waitForCondition(() => useProjectStore.getState().initialized)
       if (!projectReady) {
-        setPhase('details')
         setErrorMessage(t('skillInstall.startFailed'))
+        setPhase('details')
         return
       }
+
+      // initialize() leaves activeProjectId empty on purpose (it is
+      // URL-driven and only syncFromRoute on a project-scoped route sets
+      // it). /skill-install is never project-scoped, so a fresh visit
+      // would otherwise wait forever — select the first project (the
+      // first-visit auto-created default) ourselves.
+      let projectState = useProjectStore.getState()
+      if (!projectState.activeProjectId) {
+        const fallbackProject = projectState.projects[0]
+        if (fallbackProject) {
+          const switched = await projectState.setActiveProject(fallbackProject.id)
+          if (!switched) {
+            setErrorMessage(t('skillInstall.startFailed'))
+            setPhase('details')
+            return
+          }
+          projectState = useProjectStore.getState()
+        }
+      }
+      if (!projectState.activeProjectId) {
+        setErrorMessage(t('skillInstall.startFailed'))
+        setPhase('details')
+        return
+      }
+
+      // Workspace initialization (SQLite/OPFS load) runs in AppBootstrap
+      // too — wait for it so pickConversationTarget sees existing history
+      // instead of creating a duplicate conversation.
+      await waitForCondition(() => useConversationContextStore.getState().initialized)
 
       // Navigation target: most recent workspace, else a fresh conversation.
       // conversationId === workspaceId in this app, so createNew()'s id is
@@ -156,12 +182,14 @@ function SkillInstallView() {
 
       // Prefill: write the draft BEFORE navigating so ConversationView's
       // draft-restore effect (peekDraft → initialText → AgentRichInput)
-      // picks it up on mount.
+      // picks it up on mount. Merge into any unsent draft instead of
+      // clobbering it.
       const { useInputDraftStore } = await import('@/store/input-draft.store')
+      const existingDraft = useInputDraftStore.getState().peekDraft(target.id)
       useInputDraftStore.getState().saveDraft(target.id, {
-        text: buildPrefillText(skillName, promptParam),
-        mentionedAgentIds: [],
-        selectedFiles: [],
+        text: mergePrefillText(existingDraft?.text, buildPrefillText(skillName, promptParam)),
+        mentionedAgentIds: existingDraft?.mentionedAgentIds ?? [],
+        selectedFiles: existingDraft?.selectedFiles ?? [],
       })
 
       router.replace(
@@ -171,14 +199,29 @@ function SkillInstallView() {
     [promptParam, router, t],
   )
 
+  // Set once a readiness check has completed — a follow-up Start click
+  // (shown after the zero-credit hint) proceeds straight to navigation.
+  const readinessDoneRef = useRef(false)
+
   // Step 3: AI readiness — automatic, skippable steps are skipped.
   const runAiReadiness = useCallback(async () => {
+    if (readinessDoneRef.current) {
+      await continueToConversation(entry?.name ?? entry?.dirName ?? '')
+      return
+    }
     try {
       const readiness = await checkAiReadiness()
+      readinessDoneRef.current = true
       if (readiness.ready) {
         setCreditExhausted(readiness.creditExhausted)
-        // 0 credit surfaces the "can't use yet" hint but still proceeds:
-        // the recharge card on the conversation is the actionable entry.
+        if (readiness.creditExhausted) {
+          // 0 credit: surface the "can't use yet" hint in the details view
+          // BEFORE navigating — navigating immediately would discard it.
+          // The next Start click proceeds (the recharge card on the
+          // conversation is the actionable entry).
+          setPhase('details')
+          return
+        }
         await continueToConversation(entry?.name ?? entry?.dirName ?? '')
         return
       }
@@ -186,6 +229,7 @@ function SkillInstallView() {
       setPhase('login')
     } catch (e) {
       console.error('[SkillInstall] readiness check failed:', e)
+      resetGatewayLogin()
       setPhase('login')
     }
   }, [continueToConversation, entry, resetGatewayLogin])
@@ -202,6 +246,12 @@ function SkillInstallView() {
         // Register the slash command immediately — refreshUserSkills()
         // rescans OPFS and re-syncs the slash-command registry.
         await getSkillManager().refreshUserSkills()
+        // The skill must be visible after registration; otherwise the
+        // prefilled slash command would have nothing behind it.
+        const registered = await scanInstalledDirNames()
+        if (!registered.has(entry.dirName)) {
+          throw new Error(t('skillInstall.registerFailed'))
+        }
         outcome = { alreadyInstalled: false }
       }
       setAlreadyInstalled(true)
@@ -210,12 +260,12 @@ function SkillInstallView() {
       void outcome
     } catch (e) {
       console.error('[SkillInstall] install failed:', e)
-      setInstallProgress({ phase: 'error', message: (e as Error).message })
+      setErrorMessage((e as Error).message || t('skillInstall.installFailed'))
       setPhase('details')
     } finally {
       installStartedRef.current = false
     }
-  }, [alreadyInstalled, entry, runAiReadiness])
+  }, [alreadyInstalled, entry, runAiReadiness, t])
 
   // "Already installed" path skips straight past install + login checks
   // (the acceptance criteria: returning users are done in 2 clicks) — but
@@ -318,6 +368,12 @@ function SkillInstallView() {
               ` · ${t('skillInstall.filesLabel', { count: entry.fileCount })}`}
           </p>
         </div>
+        {errorMessage && (
+          <div className="flex max-w-md items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
+            <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+            <p className="min-w-0 flex-1 break-words">{errorMessage}</p>
+          </div>
+        )}
         {creditExhausted && (
           <div className="flex max-w-md items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
             <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
