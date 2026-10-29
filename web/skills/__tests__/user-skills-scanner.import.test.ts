@@ -21,8 +21,8 @@ vi.mock('@/store/skills.store', () => ({
   useSkillsStore: { getState: () => ({ skills: [] }) },
 }))
 
-import { importUserSkillZip, previewUserSkillZip, ZIP_IMPORT_LIMITS } from '../user-skills-scanner'
-import { installSkillFromUrl } from '../skill-store'
+import { importUserSkillZip, previewUserSkillZip, ZIP_IMPORT_LIMITS } from '@/skills/user-skills-scanner'
+import { installSkillFromUrl } from '@/skills/skill-store'
 
 // ── In-memory OPFS test double ───────────────────────────────────────
 
@@ -69,7 +69,10 @@ const writeInstalled = (dirName: string, md: string): void => {
  * target path contains that substring — simulating a mid-bundle OPFS
  * failure on one specific skill.
  */
-function makeOpfsRoot(failWritesFor?: string): FileSystemDirectoryHandle {
+function makeOpfsRoot(
+  failWritesFor?: string,
+  failReadsFor?: string,
+): FileSystemDirectoryHandle {
   const fileHandle = (path: string, name: string, opts?: { create?: boolean }) => {
     const dir = dirOf(userRoot, path, opts?.create ?? false)
     if (!dir || !dir.files.has(name)) {
@@ -80,14 +83,19 @@ function makeOpfsRoot(failWritesFor?: string): FileSystemDirectoryHandle {
     return {
       kind: 'file',
       name,
-      getFile: async () => ({
-        arrayBuffer: async () =>
-          file.data.buffer.slice(
-            file.data.byteOffset,
-            file.data.byteOffset + file.data.byteLength,
-          ) as ArrayBuffer,
-        text: async () => new TextDecoder().decode(file.data),
-      }),
+      getFile: async () => {
+        if (failReadsFor && `${path}/${name}`.includes(failReadsFor)) {
+          throw new Error('PermissionDeniedError: read failed')
+        }
+        return {
+          arrayBuffer: async () =>
+            file.data.buffer.slice(
+              file.data.byteOffset,
+              file.data.byteOffset + file.data.byteLength,
+            ) as ArrayBuffer,
+          text: async () => new TextDecoder().decode(file.data),
+        }
+      },
       createWritable: async () => {
         const chunks: Uint8Array[] = []
         return {
@@ -229,6 +237,56 @@ describe('importUserSkillZip cleanup safety (issue #128)', () => {
     expect(count).toBe(1)
     expect(installed('x')).toBe(true)
     expect(contentOf('x', 'SKILL.md')).toBe('# X')
+    // No staging leftovers after a successful import.
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
+  })
+
+  it('aborts WITHOUT deleting the existing skill when the backup read fails (non-absence error)', async () => {
+    // Previously installed skill whose SKILL.md read fails (real error —
+    // NOT absence). The import must abort before removing anything.
+    writeInstalled('skill-a', '# Old A\nkeep me')
+    const raw = {
+      'b/skill-a/SKILL.md': new TextEncoder().encode('# New A'),
+    }
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => makeOpfsRoot(undefined, 'skill-a/SKILL.md'),
+    }
+
+    await expect(importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'b/skill-a/', 1),
+      _raw: raw,
+    })).rejects.toThrow(/read failed/)
+
+    // The existing skill must be untouched — no removal without a backup.
+    expect(installed('skill-a')).toBe(true)
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Old A\nkeep me')
+  })
+
+  it('stages backups durably under .skills/.import-backups during the import', async () => {
+    writeInstalled('skill-a', '# Old A\nkeep me')
+    const raw = {
+      'bundle/skill-a/SKILL.md': new TextEncoder().encode('# New A'),
+    }
+    // Fail the write of skill-a's own file: stage-1 backup must already
+    // have landed in .import-backups before the removal+write happened.
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => makeOpfsRoot('skill-a'),
+    }
+
+    await expect(importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'bundle/skill-a/', 1),
+      _raw: raw,
+    })).rejects.toThrow('OPFS write failed')
+
+    // After rollback, the backup staging is cleaned up...
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
+    // ...and the skill was restored from the staged backup (disk, not
+    // memory): content proves the restore path ran.
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Old A\nkeep me')
   })
 })
 
@@ -249,6 +307,19 @@ describe('previewUserSkillZip size caps (issue #128)', () => {
     expect(zipped.length).toBeLessThan(ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE)
     const bomb = new File([zipped], 'bomb.zip')
     await expect(previewUserSkillZip(bomb)).rejects.toThrow(/size limit|decompression bomb/i)
+  }, 30_000)
+
+  it('enforces the per-entry cap CUMULATIVELY across decoder chunks (not per chunk)', async () => {
+    // A single entry whose expanded size (10MB + 1KB) exceeds
+    // MAX_ENTRY_SIZE but whose every decoder chunk is small. Feeding the
+    // archive in 64KB chunks, the inflate decoder emits many chunks; a
+    // per-chunk check would pass every chunk and buffer the whole entry —
+    // the cumulative check must trip instead.
+    const entryData = new Uint8Array(ZIP_IMPORT_LIMITS.MAX_ENTRY_SIZE + 1024)
+    const zipped = zipSync({ 'a/SKILL.md': strToU8('hi'), 'a/big.bin': entryData })
+    expect(zipped.length).toBeLessThan(ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE)
+    const file = new File([zipped], 'chunky.zip')
+    await expect(previewUserSkillZip(file)).rejects.toThrow(/size limit|decompression bomb/i)
   }, 30_000)
 
   it('still previews a normal archive', async () => {
