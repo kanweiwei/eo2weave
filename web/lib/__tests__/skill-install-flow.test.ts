@@ -1,0 +1,195 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+// ── Mocks ────────────────────────────────────────────────────────────
+
+const { settingsState } = vi.hoisted(() => {
+  const settingsState = {
+    hasApiKey: false,
+  }
+  return { settingsState }
+})
+
+vi.mock('@/lib/deploy-region', () => ({
+  ENABLE_LLM_GATEWAY: true,
+  IS_CN_BUILD: true,
+}))
+
+const getValidAccessTokenMock = vi.fn<() => Promise<string | null>>()
+const fetchGatewayRateLimitsMock = vi.fn<() => Promise<{ available_credit: number }>>()
+
+vi.mock('@/agent/providers/llm-gateway-provider', () => ({
+  ENABLE_LLM_GATEWAY: true,
+  isLLMGatewayConfigured: () => true,
+  getLLMGatewayBaseURL: () => 'https://gateway.example',
+  getLLMGatewayClientId: () => 'client-1',
+  LLM_GATEWAY_API_KEY_ID: '__llm_gateway_token__',
+  fetchGatewayRateLimits: (...args: unknown[]) => fetchGatewayRateLimitsMock(...(args as [])),
+}))
+
+vi.mock('@/agent/providers/llm-gateway-auth', () => ({
+  getValidAccessToken: (...args: unknown[]) => getValidAccessTokenMock(...(args as [])),
+}))
+
+vi.mock('@/store/settings.store', () => ({
+  useSettingsStore: { getState: () => settingsState },
+}))
+
+const getAllApiKeyProvidersMock = vi.fn<() => Promise<string[]>>()
+
+vi.mock('@/security/api-key-store', () => ({
+  getAllApiKeyProviders: (...args: unknown[]) => getAllApiKeyProvidersMock(...(args as [])),
+}))
+
+import {
+  buildPrefillText,
+  checkAiReadiness,
+  pickConversationTarget,
+  waitForCondition,
+} from '../skill-install-flow'
+
+describe('checkAiReadiness (issue #126 login-detection branches)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    settingsState.hasApiKey = false
+    getAllApiKeyProvidersMock.mockResolvedValue([])
+  })
+
+  it('ready when the gateway has a valid access token (llm-gateway logged in)', async () => {
+    getValidAccessTokenMock.mockResolvedValue('tok-1')
+    fetchGatewayRateLimitsMock.mockResolvedValue({ available_credit: 100 })
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(getValidAccessTokenMock).toHaveBeenCalledWith('https://gateway.example', 'client-1')
+  })
+
+  it('flags creditExhausted when /v1/rate-limits reports 0 available credit', async () => {
+    getValidAccessTokenMock.mockResolvedValue('tok-1')
+    fetchGatewayRateLimitsMock.mockResolvedValue({ available_credit: 0 })
+
+    const result = await checkAiReadiness()
+    expect(result.ready).toBe(true)
+    expect(result.creditExhausted).toBe(true)
+  })
+
+  it('does NOT fail readiness when the quota probe throws (best-effort)', async () => {
+    getValidAccessTokenMock.mockResolvedValue('tok-1')
+    fetchGatewayRateLimitsMock.mockRejectedValue(new Error('401'))
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+  })
+
+  it('skips the gateway branch when no valid token (expired / never logged in)', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    // Current provider has a key → ready via branch 2.
+    settingsState.hasApiKey = true
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(fetchGatewayRateLimitsMock).not.toHaveBeenCalled()
+  })
+
+  it('ready when settings.store.hasApiKey is true (current provider key)', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.hasApiKey = true
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    // The gateway branch ran first (token null) but did NOT throw; the
+    // settings branch is what made it ready.
+    expect(fetchGatewayRateLimitsMock).not.toHaveBeenCalled()
+  })
+
+  it('ready when ANOTHER provider has a key in the api-key store', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['openai', '__llm_gateway_token__'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+  })
+
+  it('not ready when nothing is configured (triggers the inline login step)', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+
+  it('a gateway-token shadow alone does NOT count as another-provider key', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['__llm_gateway_token__'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+
+  it('key-store failure degrades to not-ready (never throws)', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockRejectedValue(new Error('storage not ready'))
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+})
+
+describe('pickConversationTarget (issue #126 navigation-target selection)', () => {
+  const createNew = vi.fn(() => ({ id: 'new-conv-1' }))
+
+  beforeEach(() => {
+    createNew.mockClear()
+  })
+
+  it('picks the MOST RECENT workspace by lastAccessedAt when history exists', () => {
+    const target = pickConversationTarget(
+      [
+        { id: 'old', lastAccessedAt: 1_000 },
+        { id: 'recent', lastAccessedAt: 5_000 },
+        { id: 'mid', lastAccessedAt: 3_000 },
+      ],
+      createNew,
+    )
+    expect(target).toEqual({ id: 'recent', created: false })
+    expect(createNew).not.toHaveBeenCalled()
+  })
+
+  it('treats missing lastAccessedAt as 0 (oldest)', () => {
+    const target = pickConversationTarget(
+      [
+        { id: 'no-ts' },
+        { id: 'with-ts', lastAccessedAt: 42 },
+      ],
+      createNew,
+    )
+    expect(target.id).toBe('with-ts')
+  })
+
+  it('createNew() when there is no history; its id is the navigation target', () => {
+    const target = pickConversationTarget([], createNew)
+    expect(target).toEqual({ id: 'new-conv-1', created: true })
+    expect(createNew).toHaveBeenCalledTimes(1)
+  })
+
+  it('createNew() when the list is non-empty but… empty arrays only — a single workspace is used directly', () => {
+    const target = pickConversationTarget([{ id: 'only', lastAccessedAt: 1 }], createNew)
+    expect(target).toEqual({ id: 'only', created: false })
+  })
+})
+
+describe('buildPrefillText (issue #126 input prefill)', () => {
+  it('bare slash command when no prompt param', () => {
+    expect(buildPrefillText('cw-legal-evidence-chain')).toBe('/cw-legal-evidence-chain')
+  })
+
+  it('appends the prompt suffix separated by one space', () => {
+    expect(buildPrefillText('cw-legal-evidence-chain', '整理本案证据链')).toBe(
+      '/cw-legal-evidence-chain 整理本案证据链',
+    )
+  })
+
+  it('trims whitespace-only prompts to the bare command', () => {
+    expect(buildPrefillText('my-skill', '   ')).toBe('/my-skill')
+  })
+})
+
+describe('waitForCondition', () => {
+  it('resolves true as soon as the predicate turns true', async () => {
+    let ready = false
+    setTimeout(() => { ready = true }, 50)
+    await expect(waitForCondition(() => ready, 2_000, 20)).resolves.toBe(true)
+  })
+
+  it('resolves false on timeout (caller falls back safely)', async () => {
+    await expect(waitForCondition(() => false, 150, 50)).resolves.toBe(false)
+  })
+})

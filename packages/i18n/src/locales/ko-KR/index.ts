@@ -37,6 +37,7 @@ import { sidePanelPackage } from './sidePanelPackage'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { skillInstall } from './skillInstall'
 import { extension } from './extension'
 
 export const koKR = {
@@ -99,4 +100,5 @@ export const koKR = {
   extension,
   tools,
   schedule,
+  skillInstall,
 } as const
