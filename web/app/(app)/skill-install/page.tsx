@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Copy,
   ExternalLink,
+  KeyRound,
   Loader2,
   Package,
   Wallet,
@@ -27,6 +28,7 @@ import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { checkAiReadiness, buildPrefillText, pickConversationTarget, waitForCondition } from '@/lib/skill-install-flow'
+import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import { projectWorkspacePath } from '@/lib/route-paths'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { useGatewayLogin } from '@/hooks/useGatewayLogin'
@@ -94,9 +96,11 @@ function SkillInstallView() {
   } = useGatewayLogin()
 
   // Monotonic request generation: when the `skill` query param changes
-  // (or a retry fires) while an earlier lookup is still pending, the stale
-  // completion must not overwrite the newer entry/phase state.
+  // (or a retry fires) while an earlier lookup/install/continuation is
+  // still pending, the stale completion must not overwrite the newer
+  // entry/phase state nor navigate for the OLD skill.
   const loadGenerationRef = useRef(0)
+  const currentGeneration = () => loadGenerationRef.current
 
   const loadEntry = useCallback(async () => {
     const generation = ++loadGenerationRef.current
@@ -141,12 +145,19 @@ function SkillInstallView() {
 
   const continueToConversation = useCallback(
     async (skillName: string) => {
+      // Capture the generation at entry — if the query param changed while
+      // this continuation was pending, its navigation must be dropped (it
+      // would send the visitor to a conversation pre-filled with the OLD
+      // skill's command).
+      const generation = currentGeneration()
+      const isStale = () => generation !== currentGeneration()
       setPhase('starting')
       setErrorMessage(null)
       // AppBootstrap owns project auto-default; wait for the project store
       // to finish initializing instead of creating a project here (issue
       // #126 decision: duplicate creation conflicts).
       const projectReady = await waitForCondition(() => useProjectStore.getState().initialized)
+      if (isStale()) return
       if (!projectReady) {
         setErrorMessage(t('skillInstall.startFailed'))
         setPhase('details')
@@ -163,6 +174,7 @@ function SkillInstallView() {
         const fallbackProject = projectState.projects[0]
         if (fallbackProject) {
           const switched = await projectState.setActiveProject(fallbackProject.id)
+          if (isStale()) return
           if (!switched) {
             setErrorMessage(t('skillInstall.startFailed'))
             setPhase('details')
@@ -185,6 +197,7 @@ function SkillInstallView() {
       const contextReady = await waitForCondition(
         () => useConversationContextStore.getState().initialized,
       )
+      if (isStale()) return
       if (!contextReady) {
         setErrorMessage(t('skillInstall.startFailed'))
         setPhase('details')
@@ -211,6 +224,9 @@ function SkillInstallView() {
         selectedFiles: existingDraft?.selectedFiles ?? [],
       })
 
+      // Final staleness gate immediately before navigation: a query change
+      // during the awaits above must cancel the OLD skill's navigation.
+      if (isStale()) return
       router.replace(
         projectWorkspacePath(useProjectStore.getState().activeProjectId, target.id),
       )
@@ -224,12 +240,16 @@ function SkillInstallView() {
 
   // Step 3: AI readiness — automatic, skippable steps are skipped.
   const runAiReadiness = useCallback(async () => {
+    // Gate on the CURRENT generation: a query change mid-install/readiness
+    // must stop the old skill's flow before it navigates.
     if (readinessDoneRef.current) {
+      if (currentGeneration() !== installGenerationRef.current) return
       await continueToConversation(entry?.name ?? entry?.dirName ?? '')
       return
     }
     try {
       const readiness = await checkAiReadiness()
+      if (currentGeneration() !== installGenerationRef.current) return
       readinessDoneRef.current = true
       if (readiness.ready) {
         setCreditExhausted(readiness.creditExhausted)
@@ -247,24 +267,36 @@ function SkillInstallView() {
       resetGatewayLogin()
       setPhase('login')
     } catch (e) {
+      if (currentGeneration() !== installGenerationRef.current) return
       console.error('[SkillInstall] readiness check failed:', e)
       resetGatewayLogin()
       setPhase('login')
     }
   }, [continueToConversation, entry, resetGatewayLogin])
 
+  // Generation of the entry runInstall started with — recorded when the
+  // install begins so a query change mid-install aborts the stale flow.
+  const installGenerationRef = useRef(0)
+
   // Step 2: install (user-clicked; idempotent).
   const runInstall = useCallback(async () => {
     if (!entry || installStartedRef.current) return
     installStartedRef.current = true
+    installGenerationRef.current = currentGeneration()
+    const installGeneration = installGenerationRef.current
+    const isStale = () => currentGeneration() !== installGeneration
     setPhase('installing')
     try {
       let outcome: InstallOutcome = { alreadyInstalled }
       if (!alreadyInstalled) {
         await installSkillFromUrl(entry.zipUrl, setInstallProgress)
+        // A query change during the download abandons the old skill's flow:
+        // never register, verify, or navigate for it.
+        if (isStale()) return
         // Register the slash command immediately — refreshUserSkills()
         // rescans OPFS and re-syncs the slash-command registry.
         await getSkillManager().refreshUserSkills()
+        if (isStale()) return
         // The skill must be REGISTERED (visible to the agent) after the
         // refresh — a directory alone is not enough: refreshUserSkills()
         // swallows scan failures, and a dir-only check would let the page
@@ -282,6 +314,7 @@ function SkillInstallView() {
       await runAiReadiness()
       void outcome
     } catch (e) {
+      if (isStale()) return
       console.error('[SkillInstall] install failed:', e)
       setErrorMessage((e as Error).message || t('skillInstall.installFailed'))
       setPhase('details')
@@ -307,6 +340,10 @@ function SkillInstallView() {
         await runInstall()
         return
       }
+      // Already-installed path: this click starts a fresh flow for the
+      // CURRENT entry — stamp its generation so the readiness/navigation
+      // gates below compare against this click, not an older install.
+      installGenerationRef.current = currentGeneration()
       await runAiReadiness()
     } finally {
       startingRef.current = false
@@ -370,7 +407,7 @@ function SkillInstallView() {
             onClick={() => router.replace('/projects')}
             className="flex h-9 items-center gap-2 rounded-md bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
           >
-            {t('skillInstall.openSkillManager')}
+            {t('skillInstall.openProjectsHome')}
           </button>
         </div>
       </Centered>
@@ -449,16 +486,44 @@ function SkillInstallView() {
   if (phase === 'login') {
     return (
       <Centered>
-        <p className="text-sm font-medium text-secondary">{t('skillInstall.aiNotReady')}</p>
-        <InlineGatewayLogin
-          authState={authState}
-          isRunning={isLoginRunning}
-          onLogin={() => void gatewayLogin()}
-          onSkip={() => void handleSkipLogin()}
-          onCopyCode={() => {
-            if (authState?.userCode) void navigator.clipboard.writeText(authState.userCode)
-          }}
-        />
+        <p className="text-sm font-medium text-secondary">
+          {ENABLE_LLM_GATEWAY
+            ? t('skillInstall.aiNotReady')
+            : t('skillInstall.aiGatewayUnavailable')}
+        </p>
+        {ENABLE_LLM_GATEWAY ? (
+          <InlineGatewayLogin
+            authState={authState}
+            isRunning={isLoginRunning}
+            onLogin={() => void gatewayLogin()}
+            onSkip={() => void handleSkipLogin()}
+            onCopyCode={() => {
+              if (authState?.userCode) void navigator.clipboard.writeText(authState.userCode)
+            }}
+          />
+        ) : (
+          // Gateway disabled on this build (e.g. international): the device-
+          // code login would always fail (no client id) — offer the app home
+          // instead (Settings → provider key is reachable from the top bar
+          // there), plus the same "skip" escape.
+          <div className="flex w-full max-w-sm flex-col items-center gap-3">
+            <button
+              type="button"
+              onClick={() => router.replace('/projects')}
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+            >
+              <KeyRound className="h-4 w-4" />
+              {t('skillInstall.aiOpenSettings')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSkipLogin()}
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-secondary"
+            >
+              {t('skillInstall.aiLater')}
+            </button>
+          </div>
+        )}
       </Centered>
     )
   }
