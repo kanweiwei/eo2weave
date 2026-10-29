@@ -20,6 +20,9 @@ const projectRepoMock = vi.hoisted(() => ({
   updateProject: vi.fn(),
   setActiveProject: vi.fn(async () => {}),
   clearActiveProject: vi.fn(async () => {}),
+  // Activation's existence checks: tests that exercise setActiveProject
+  // replace this with a live spy (default: never found).
+  findById: vi.fn(async () => null),
 }))
 
 const findAllWorkspacesByProjectIncludingDirectMock = vi.hoisted(() => vi.fn(async () => []))
@@ -47,11 +50,19 @@ vi.mock('@/opfs', () => ({ ProjectManager: ProjectManagerMock }))
 
 // Lazy imports inside deleteProject (only on the active-project branch —
 // these tests never make the deleted project active, but mock defensively).
+// setState is included because setActiveProject's step 1 also touches these
+// stores (the activation-overlapping-deletion test exercises that path).
 vi.mock('@/store/agent.store', () => ({
-  useAgentStore: { getState: () => ({ setActiveProject: vi.fn(async () => {}) }) },
+  useAgentStore: {
+    getState: () => ({ setActiveProject: vi.fn(async () => {}) }),
+    setState: vi.fn(),
+  },
 }))
 vi.mock('@/store/conversation-context.store', () => ({
-  useConversationContextStore: { getState: () => ({ refreshWorkspaces: vi.fn(async () => {}) }) },
+  useConversationContextStore: {
+    getState: () => ({ refreshWorkspaces: vi.fn(async () => {}) }),
+    setState: vi.fn(),
+  },
 }))
 
 import { useProjectStore } from '@/store/project.store'
@@ -245,6 +256,12 @@ describe('project.store deleteProject host rebind', () => {
     // serialized section instead.
     const agentSetActiveProjectMock = vi.fn(async () => {})
     const refreshWorkspacesMock = vi.fn(async () => {})
+    // Fresh module registry so THIS test's doMock factories are what the
+    // store's dynamic imports observe: a prior test already imported the
+    // dynamically-imported stores, and without the reset the cached module
+    // (and its EARLIER spies) would be reused here. (Same pattern as
+    // conversation.store.sqlite.test.ts's conversion tests.)
+    vi.resetModules()
     vi.doMock('@/store/agent.store', () => ({
       useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
     }))
@@ -283,6 +300,12 @@ describe('project.store deleteProject host rebind', () => {
 
   it('survivor deletion selects a remaining project as the new active, ignoring its invocation-time snapshot', async () => {
     const agentSetActiveProjectMock = vi.fn(async () => {})
+    // Fresh module registry: the previous test installed its own doMock
+    // factories and dynamically imported the mocked stores — without the
+    // reset this test's doMock would not take effect (cached module keeps
+    // the earlier spies) and the assertion below could pass or fail against
+    // the WRONG spy.
+    vi.resetModules()
     vi.doMock('@/store/agent.store', () => ({
       useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
     }))
@@ -345,6 +368,8 @@ describe('project.store deleteProject host rebind', () => {
     const agentSetActiveProjectMock = vi.fn(async () => {
       throw new Error('repair boom')
     })
+    // Fresh module registry — see the survivor-deletion test above.
+    vi.resetModules()
     vi.doMock('@/store/agent.store', () => ({
       useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
     }))
@@ -365,6 +390,105 @@ describe('project.store deleteProject host rebind', () => {
     // The UI list was refreshed AFTER the deletion committed: it reflects
     // the surviving projects, not the invocation-time snapshot.
     expect(useProjectStore.getState().projects.map((p) => p.id)).toEqual(['p-b'])
+  })
+
+  it('activation that overlaps a committed deletion does not republish the deleted id', async () => {
+    // Finding: setActiveProject passed its initial existence check, then
+    // paused during its awaits while deleteProject removed the row; when
+    // deletion read the OLD active pointer it skipped repair, and activation
+    // later published the deleted id into activeProjectId — the app stayed
+    // pointed at a project whose row was gone. The row must be revalidated
+    // immediately before the publish, and a vanished row must abort the
+    // activation (false + error), never republish the dead id.
+    let rowAlive = true
+    findAllProjectsMock.mockImplementation(async () =>
+      rowAlive ? [project('p-a'), project('p-b')] : [project('p-b')]
+    )
+    // findById reflects the live row existence (deletion removes it).
+    projectRepoMock.findById = vi.fn(async (id: string) =>
+      rowAlive ? project(id) : null
+    ) as never
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([
+      { id: 'host-1', projectId: 'p-a' } as never,
+    ])
+    // happy-dom has no navigator.storage, so bootstrapProjectOpfs would
+    // early-return; enable it so activation's OPFS bootstrap await hosts the
+    // interleaving (this test only — restored at the end). The stub dir
+    // handle is enough for ensureProject's getDirectoryHandle chain.
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => ({
+        getDirectoryHandle: async () => ({
+          getDirectoryHandle: async () => ({}),
+        }),
+      }),
+    }
+    // Suspend activation inside its OPFS bootstrap await — the window where
+    // the overlapping deleteProject commits and removes the row.
+    // (mockImplementationOnce REPLACES the base create for this call; the
+    // instance must still expose deleteProject for later flush paths.)
+    ProjectManagerMock.create.mockImplementationOnce(async () => ({
+      getOrCreateProjectById: async () => {
+        await useProjectStore.getState().deleteProject('p-a')
+      },
+      getProject: async () => null,
+      deleteProject: projectManagerDeleteMock,
+    }))
+    // The overlapping deletion must actually REMOVE the row: once the DB
+    // delete commits, both findAllProjects and findById observe it gone.
+    deleteProjectMock.mockImplementation((async () => {
+      rowAlive = false
+    }) as never)
+    // Fresh registry + own doMock factories: earlier tests in this file
+    // installed doMock factories WITHOUT setState for these stores and that
+    // registration persists until unmocked/reset — activation's step 1
+    // calls setState on both. folder-access is mocked because activation
+    // step 3 reaches it through the real agent.store chain, and its
+    // IndexedDB hydration never settles under the test-setup IDB mock.
+    vi.resetModules()
+    const activationAgentSetActiveMock = vi.fn(async () => {})
+    const activationRefreshWorkspacesMock = vi.fn(async () => {})
+    vi.doMock('@/store/agent.store', () => ({
+      useAgentStore: {
+        getState: () => ({ setActiveProject: activationAgentSetActiveMock }),
+        setState: vi.fn(),
+      },
+    }))
+    vi.doMock('@/store/conversation-context.store', () => ({
+      useConversationContextStore: {
+        getState: () => ({ refreshWorkspaces: activationRefreshWorkspacesMock }),
+        setState: vi.fn(),
+      },
+    }))
+    vi.doMock('@/store/folder-access.store', () => ({
+      useFolderAccessStore: {
+        getState: () => ({ setActiveProject: vi.fn(async () => {}) }),
+        setState: vi.fn(),
+      },
+    }))
+    vi.doMock('@/store/agents.store', () => ({
+      useAgentsStore: {
+        getState: () => ({
+          setProjectManager: vi.fn(),
+          initialize: vi.fn(async () => {}),
+        }),
+        setState: vi.fn(),
+      },
+    }))
+
+    // Order matters: activation starts first (passes its initial check),
+    // deletion queues behind it and commits during activation's awaits.
+    const activation = useProjectStore.getState().setActiveProject('p-a')
+
+    const ok = await activation
+    // Activation aborts instead of publishing the deleted id...
+    expect(ok).toBe(false)
+    expect(useProjectStore.getState().activeProjectId).not.toBe('p-a')
+    expect(useProjectStore.getState().error).toContain('Project not found: p-a')
+    // ...and the store list was re-synced from the repository (p-b survives).
+    expect(useProjectStore.getState().projects.map((p) => p.id)).toEqual(['p-b'])
+    // Drop the navigator.storage stub so later tests keep the happy-dom
+    // early-return behavior.
+    delete (navigator as unknown as { storage?: unknown }).storage
   })
 
   it('OPFS cleanup runs only AFTER the DB row deletion commits', async () => {
@@ -420,6 +544,8 @@ describe('project.store deleteProject host rebind', () => {
     })
     const refreshWorkspacesMock = vi.fn(async () => {})
     const contextSetStateMock = vi.fn()
+    // Fresh module registry — see the survivor-deletion test above.
+    vi.resetModules()
     vi.doMock('@/store/agent.store', () => ({
       useAgentStore: { getState: () => ({ setActiveProject: agentSetActiveProjectMock }) },
     }))

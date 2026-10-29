@@ -57,6 +57,35 @@ const ActionTooltip = ({
   </Tooltip>
 )
 
+/**
+ * The convert entry for a kind='direct' conversation: a small badge button
+ * that upgrades the standalone chat to a project conversation (folder
+ * authorization + kind flip via convertDirectToProject). Shared by BOTH
+ * route spaces so /chats/:id offers the same conversion entry as
+ * /projects/:projectId (desktop only — the mobile header has no room for
+ * the inline label and keeps the action in the more menu's reach via the
+ * conversation surface).
+ */
+const ConvertDirectChatBadge = () => {
+  const t = useT()
+  return (
+    <ActionTooltip label={t('topbar.directChat.convertTooltip')}>
+      <button
+        type="button"
+        data-testid="direct-chat-convert"
+        className="shrink-0 rounded-full border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300"
+        onClick={async () => {
+          const id = useConversationStore.getState().activeConversationId
+          if (!id) return
+          await useConversationStore.getState().convertDirectToProject(id)
+        }}
+      >
+        {t('conversation.directChat.badge')}
+      </button>
+    </ActionTooltip>
+  )
+}
+
 interface TopBarProps {
   onSkillsManagerOpen?: () => void
   onToolsPanelOpen?: () => void
@@ -207,7 +236,10 @@ export function TopBar({
           )}
           {routeSpace === 'chats' ? (
             // Standalone chats space: no project semantics — show the space
-            // name instead of a project switcher.
+            // name instead of a project switcher. The convert badge is still
+            // rendered here: a standalone chat opened in /chats/:id must keep
+            // its conversion entry (identical to the project-space branch),
+            // otherwise users in the chats route space have no convert UI.
             <div className="flex min-w-0 items-center gap-1">
               <span className="max-w-[200px] truncate rounded-md bg-muted px-2 py-1 text-xs text-secondary dark:bg-muted/50 dark:text-muted-foreground">
                 {t('topbar.standaloneChats.spaceName')}
@@ -225,6 +257,9 @@ export function TopBar({
                     </>
                   )}
                 </>
+              )}
+              {activeConversationIsDirect && (
+                <ConvertDirectChatBadge />
               )}
             </div>
           ) : (
@@ -250,20 +285,7 @@ export function TopBar({
                         </span>
                       </ActionTooltip>
                       {activeConversationIsDirect && (
-                        <ActionTooltip label={t('topbar.directChat.convertTooltip')}>
-                          <button
-                            type="button"
-                            data-testid="direct-chat-convert"
-                            className="shrink-0 rounded-full border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300"
-                            onClick={async () => {
-                              const id = useConversationStore.getState().activeConversationId
-                              if (!id) return
-                              await useConversationStore.getState().convertDirectToProject(id)
-                            }}
-                          >
-                            {t('conversation.directChat.badge')}
-                          </button>
-                        </ActionTooltip>
+                        <ConvertDirectChatBadge />
                       )}
                     </>
                   )}

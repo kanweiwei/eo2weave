@@ -7,6 +7,9 @@ import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { chatPath } from '@/lib/route-paths'
 
+/** Bounded wait for switchWorkspace (see Step 2 below for why). */
+const SWITCH_WAIT_TIMEOUT_MS = 30_000
+
 /**
  * useWorkspaceRouteSyncStandalone — URL → store sync for /chats/:chatId.
  *
@@ -105,11 +108,21 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
       // /projects route. The workspace store serializes concurrent switches
       // internally; the liveness re-check after the await drops stale
       // completions so a slow switch to chat A never lands after the user
-      // has already moved on to chat B.
+      // has already moved on to chat B. The wait is BOUNDED: switchWorkspace
+      // can stall without rejecting (e.g. SQLite/OPFS unresponsive) — an
+      // unbounded await would keep the route pinned on the previous chat's
+      // stores under the new URL. On timeout the sync bails to the same
+      // recoverable /chats redirect used for a rejected switch, instead of
+      // showing stale chat A under chat B's URL indefinitely.
       const ctxState = useConversationContextStore.getState()
       if (ctxState.activeWorkspaceId !== target) {
         try {
-          await ctxState.switchWorkspace(target)
+          await Promise.race([
+            ctxState.switchWorkspace(target),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`switchWorkspace timed out for ${target}`)), SWITCH_WAIT_TIMEOUT_MS)
+            ),
+          ])
         } catch (error) {
           if (allowRedirect && isLive()) {
             console.warn('[chatsSync] switchWorkspace failed, redirecting to /chats', { target, error })

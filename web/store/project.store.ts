@@ -364,6 +364,26 @@ export const useProjectStore = create<ProjectState>()(
           activeConversationId: null,
         })
 
+        // 1c. Revalidate the project row IMMEDIATELY before publishing the
+        //     active id: a deleteProject can commit between the initial
+        //     existence check above and this point (activation awaits OPFS
+        //     bootstrap and several store resets in between). If deletion
+        //     read the OLD active pointer and skipped repair, publishing the
+        //     deleted id here would strand the UI on a project whose row is
+        //     gone. The re-check and the publish in step 2 run in ONE
+        //     synchronous continuation (no await between them), so within
+        //     this tab a concurrent deletion cannot slip between the check
+        //     and the commit.
+        const stillExists = await repo.findById(projectId)
+        if (!stillExists) {
+          await get().refreshProjects()
+          set({
+            error: `Project not found: ${projectId}`,
+            isLoading: false,
+          })
+          return false
+        }
+
         // 2. Update activeProjectId (keep isLoading=true until workspaces loaded).
         //    CRITICAL: setting isLoading=false here would race with syncFromRoute
         //    in App.tsx — the effect subscribes to isLoading, and if it sees
