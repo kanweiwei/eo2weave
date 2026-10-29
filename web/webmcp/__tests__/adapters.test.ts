@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { validateManifest, validatePackage, validatePackageSnapshot, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
-import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
+import { matchesToolUrl, hasNestedQuantifier } from '@creatorweave/shared/webmcp-url'
 import { readPackage, readPackageCatalog } from '../adapters'
 import { manifest, source, pkg } from './fixtures'
 
@@ -119,6 +119,35 @@ describe('URL matching', () => {
         .toThrow(/nested quantifiers/i)
     },
   )
+  /**
+   * Structural-validator coverage: each of these shapes splits input
+   * ambiguity across two quantifiers (findings: "Hostile URL patterns stall
+   * matching" — repeated ambiguous alternations, bounded repeats over
+   * quantified bodies, nested groups with quantifiers spread across
+   * levels). The old partial regex missed several of them.
+   */
+  it.each([
+    ['nested plus', '(a+)+'],
+    ['nested star', '(a*)*'],
+    ['repeated ambiguous alternation', '(?:a|a)+'],
+    ['quantifier across group levels', '((a)*)+'],
+    ['overlapping alternation branches', '(a|aa)*'],
+    ['stacked quantified groups', '(x+x+)+y'],
+    ['bounded repeat over quantified body', '(a{1,2}){1,20}'],
+    ['non-capturing double nested', '((a+)*)+'],
+    ['lazy quantifier in group', '(a??)*'],
+  ] as Array<[string, string]>)('rejects the ReDoS shape %s (%s)', (_label, pattern) => {
+    expect(hasNestedQuantifier(`^${pattern}$`)).toBe(true)
+    expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex: `^${pattern}$` }] }, manifest.id))
+      .toThrow(/nested quantifiers/i)
+  })
+  it.each([
+    '^(https://example\\.com/articles)+(?:/[^?#]*)?$',
+    '^(https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?))(?:\\?[^#]*)?(?:#.*)?$',
+    '^(https://example\\.com)/(?:\\?[^#]*)?(?:#.*)?$|^^(https://other\\.test)/x$',
+  ])('keeps accepting safe quantified-group patterns %s', urlRegex => {
+    expect(hasNestedQuantifier(urlRegex)).toBe(false)
+  })
   it('keeps matching a normal pattern that merely uses a quantified group', () => {
     const urlRegex = '^https://example\\.com/articles(?:/[^?#]*)?$'
     expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id)).not.toThrow()

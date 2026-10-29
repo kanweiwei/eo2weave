@@ -2,7 +2,9 @@
  * WebMCP package installer — consumes a registry manifest (issue #117, Tier 1).
  *
  * Install flow (all-or-nothing):
- *   1. Download every file listed in `manifest.files` for ONE package.
+ *   1. Download every file listed in `manifest.files` for ONE package,
+ *      streaming with byte caps and an abort deadline that stays active
+ *      through body consumption.
  *   2. sha256-verify each download via Web Crypto — ALL files are verified
  *      BEFORE anything touches storage.
  *   3. Only then write the tree into the existing custom VFS mount
@@ -15,8 +17,10 @@
  *
  * Any verification failure aborts the install with NOTHING written (no
  * half-installed packages). Operations on one package id are serialized
- * with a per-package lock so overlapping install/uninstall calls cannot
- * interleave storage mutations.
+ * ACROSS CONTEXTS with the chrome.storage lease in `package-lock.ts` — a
+ * module-local mutex would leave the settings tab and the background free
+ * to interleave remove/mkdir/write sequences on the same directory — and
+ * additionally by a per-process lock inside each context.
  *
  * Uninstall removes the package's VFS directory. Activation for user-mount
  * packages lives in the package's own `config.json` inside the directory
@@ -28,12 +32,14 @@ import { normalizeProviderPath, type FsProvider } from '@creatorweave/fs-provide
 import { validateManifest, validatePackage } from '@creatorweave/shared/webmcp-adapter'
 import type {
   PackageRegistry,
+  RegistryManifest,
   RegistryManifestPackage,
 } from './package-registry-client'
-import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES, REGISTRY_FETCH_TIMEOUT_MS, registryFileUrl } from './package-registry-client'
+import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES, MAX_REGISTRY_MANIFEST_BYTES, REGISTRY_FETCH_TIMEOUT_MS, registryFileUrl } from './package-registry-client'
+import { getWebMCPBridge } from './bridge-client'
 
 export class PackageInstallError extends Error {
-  constructor(message: string, readonly code: 'SHA256_MISMATCH' | 'DOWNLOAD_FAILED' | 'INVALID_PACKAGE' | 'STORAGE_FAILED') {
+  constructor(message: string, readonly code: 'SHA256_MISMATCH' | 'DOWNLOAD_FAILED' | 'INVALID_PACKAGE' | 'STORAGE_FAILED' | 'BUSY') {
     super(message)
     this.name = 'PackageInstallError'
   }
@@ -49,37 +55,67 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return toHex(digest)
 }
 
+/**
+ * Stream a response body under a byte cap with the abort deadline STILL
+ * active. Buffering `arrayBuffer()` first would let a stalled connection
+ * hang forever (the timer was cleared once the headers arrived) and let an
+ * oversized body exhaust memory before the size check ever ran.
+ */
+async function readBodyCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = []
+  let total = 0
+  const reader = response.body?.getReader()
+  if (!reader) {
+    // No streaming body (old test doubles) — fall back to a buffered read.
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.length > maxBytes) throw new PackageInstallError(`Response body exceeds the limit (${maxBytes} bytes)`, 'INVALID_PACKAGE')
+    return bytes
+  }
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      void reader.cancel().catch(() => {})
+      throw new PackageInstallError(`Response body exceeds the limit (${maxBytes} bytes)`, 'INVALID_PACKAGE')
+    }
+    chunks.push(value)
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return merged
+}
+
 async function downloadFile(
   url: string,
-  expectedSha256: string,
   fetchImpl: typeof fetch,
   timeoutMs: number = REGISTRY_FETCH_TIMEOUT_MS,
 ): Promise<Uint8Array> {
   const controller = new AbortController()
+  // The deadline covers the WHOLE download — headers AND body. Clearing it
+  // before the body streamed let a hostile server stall the install forever.
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   let response: Response
   try {
     response = await fetchImpl(url, { credentials: 'omit', cache: 'no-cache', signal: controller.signal })
+    if (!response.ok) {
+      throw new PackageInstallError(`Download failed for ${url}: HTTP ${response.status}`, 'DOWNLOAD_FAILED')
+    }
+    // Byte cap enforced WHILE streaming, not after the body is in memory.
+    return await readBodyCapped(response, MAX_PACKAGE_FILE_BYTES)
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new PackageInstallError(`Download timed out after ${REGISTRY_FETCH_TIMEOUT_MS / 1000}s: ${url}`, 'DOWNLOAD_FAILED')
+      throw new PackageInstallError(`Download timed out after ${timeoutMs / 1000}s: ${url}`, 'DOWNLOAD_FAILED')
     }
+    if (error instanceof PackageInstallError) throw error
     throw new PackageInstallError(`Download failed for ${url}: ${error instanceof Error ? error.message : String(error)}`, 'DOWNLOAD_FAILED')
   } finally {
     clearTimeout(timer)
   }
-  if (!response.ok) {
-    throw new PackageInstallError(`Download failed for ${url}: HTTP ${response.status}`, 'DOWNLOAD_FAILED')
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  if (bytes.length > MAX_PACKAGE_FILE_BYTES) {
-    throw new PackageInstallError(`File ${url} is too large (${bytes.length} bytes; the limit is ${MAX_PACKAGE_FILE_BYTES})`, 'INVALID_PACKAGE')
-  }
-  const actual = await sha256Hex(bytes)
-  if (actual !== expectedSha256.toLowerCase()) {
-    throw new PackageInstallError(`Checksum mismatch for ${url}: expected ${expectedSha256}, got ${actual}`, 'SHA256_MISMATCH')
-  }
-  return bytes
 }
 
 /**
@@ -138,7 +174,11 @@ export async function installPackage(
       throw new PackageInstallError(`Package ${id} lists ${file.path} twice (aliased path)`, 'INVALID_PACKAGE')
     }
     seenPaths.add(relative)
-    const bytes = await downloadFile(url, file.sha256, fetchImpl, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS)
+    const bytes = await downloadFile(url, fetchImpl, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS)
+    const actual = await sha256Hex(bytes)
+    if (actual !== file.sha256.toLowerCase()) {
+      throw new PackageInstallError(`Checksum mismatch for ${url}: expected ${file.sha256}, got ${actual}`, 'SHA256_MISMATCH')
+    }
     totalBytes += bytes.length
     if (totalBytes > MAX_PACKAGE_TOTAL_BYTES) {
       throw new PackageInstallError(`Package ${id} exceeds the total size limit (${MAX_PACKAGE_TOTAL_BYTES} bytes)`, 'INVALID_PACKAGE')
@@ -187,95 +227,223 @@ export async function installPackage(
   if (configIndex >= 0) staged[configIndex] = { path: 'config.json', bytes: configBytes }
   else staged.push({ path: 'config.json', bytes: configBytes })
 
-  // Serialize all mutations of one package id: an install racing an
-  // uninstall/opt-in enable would otherwise interleave remove/mkdir/write
-  // and can leave the directory half-written. The lock is per process
-  // (settings tab / background worker); cross-context races are already
-  // serialized extension-side by the provider handler's mutation queue.
-  const release = await acquirePackageLock(id)
-  try {
-    // The replacement is written into a staging directory FIRST and only
-    // swapped into place after EVERY write succeeded, so a failed write
-    // never leaves the mount without a usable package:
-    //   - with `rename` (the in-memory/local provider): the staging tree is
-    //     renamed over the old one, and the old one is kept as a backup
-    //     until the swap succeeded (rollback on failure);
-    //   - without `rename` (the extension bridge exposes no rename): the
-    //     old tree is copied into a backup directory, the staging tree is
-    //     copied into place, and the backup is restored if anything fails.
-    // The staging/backup names are dot-prefixed: they are internal state,
-    // not packages, and the mount listings skip dot-directories.
-    const staging = `.${id}.installing`
-    const backup = `.${id}.previous`
-    const hasRename = typeof provider.rename === 'function'
+  // Serialize all mutations of one package id ACROSS CONTEXTS (settings tab,
+  // management page, background): an install racing an uninstall/opt-in
+  // enable would otherwise interleave remove/mkdir/write and can leave the
+  // directory half-written. The lease lives in the BACKGROUND's
+  // chrome.storage (via the bridge) so every context sees it; the in-process
+  // mutex below keeps concurrent callers in THIS context queued instead of
+  // fighting over the lease with retry backoff.
+  return withInstallerLock(id, async () => {
+    await swapPackageIntoPlace(id, staged, provider)
+    return { filesWritten: staged.length }
+  })
+}
+
+/**
+ * Cross-context lock for installer transactions. Uses the extension bridge's
+ * background-owned lease when available (production settings page); when the
+ * bridge is absent (tests, or a future standalone web deployment) it falls
+ * back to a plain in-process mutex — single-context serialization is then
+ * the best available, and the download/verify stages above remain
+ * all-or-nothing regardless.
+ */
+const packageLocks = new Map<string, Promise<unknown>>()
+
+const LOCK_HEARTBEAT_MS = 5_000
+
+async function withInstallerLock<T>(packageId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = packageLocks.get(packageId) ?? Promise.resolve()
+  let releaseLocal!: () => void
+  const gate = new Promise<void>(resolve => { releaseLocal = resolve })
+  const chained = previous.then(() => gate)
+  packageLocks.set(packageId, chained)
+  await previous
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    releaseLocal()
+    void chained.then(() => {
+      if (packageLocks.get(packageId) === chained) packageLocks.delete(packageId)
+    })
+  }
+  const bridge = getWebMCPBridge()?.webMCPPackageLock
+  if (!bridge) {
+    // No extension bridge — the in-process mutex is all we can coordinate.
     try {
-      await removeMissingOk(provider, staging)
-      await removeMissingOk(provider, backup)
-      try {
-        await provider.mkdir(staging, { recursive: true })
-        for (const file of staged) {
-          await provider.writeFile(`${staging}/${file.path}`, file.bytes)
-        }
-      } catch (error) {
-        throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
-      }
-      // All writes landed — swap the new tree in.
-      if (hasRename) {
-        try {
-          await provider.rename!(id, backup)
-        } catch (error) {
-          // No previous install — that is the normal first-install case.
-          const e = error as { code?: string; name?: string }
-          if (!(e.code === 'ENOENT' || e.name === 'NotFoundError')) throw error
-        }
-        try {
-          await provider.rename!(staging, id)
-        } catch (renameError) {
-          // Roll the old install back — the new tree failed to take over.
-          try { await provider.rename!(backup, id) } catch { /* both failed; report the original */ }
-          throw renameError
-        }
-        await removeMissingOk(provider, backup)
-      } else {
-        // No rename support: copy the old tree aside, copy the new tree in,
-        // and restore the copy if the swap fails.
-        const hadOld = await copyTree(provider, id, backup)
-        try {
-          await removeMissingOk(provider, id)
-          await copyTree(provider, staging, id)
-        } catch (swapError) {
-          if (hadOld) {
-            await removeMissingOk(provider, id).catch(() => {})
-            await copyTree(provider, backup, id).catch(() => {})
-          }
-          throw swapError
-        }
-        await removeMissingOk(provider, backup)
-      }
-    } catch (error) {
-      if (error instanceof PackageInstallError) throw error
-      throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+      return await fn()
     } finally {
-      // Never leak the staging or backup directories on any failure path.
-      await removeMissingOk(provider, staging).catch(() => {})
-      await removeMissingOk(provider, backup).catch(() => {})
+      release()
     }
+  }
+  const acquired = await bridge(packageId, 'acquire', undefined, 30_000)
+  if (!acquired.ok || typeof acquired.owner !== 'string') {
+    release()
+    throw new PackageInstallError(
+      `Package ${packageId} is busy: another install or removal is in progress`,
+      'BUSY',
+    )
+  }
+  const owner = acquired.owner
+  const heartbeat = setInterval(() => {
+    void bridge(packageId, 'heartbeat', owner).catch(() => {})
+  }, LOCK_HEARTBEAT_MS)
+  try {
+    return await fn()
   } finally {
+    clearInterval(heartbeat)
+    await bridge(packageId, 'release', owner).catch(() => {})
     release()
   }
-  return { filesWritten: staged.length }
+}
+
+/**
+ * The swap itself: stage the new tree, then move it over the old install.
+ * Every failure path keeps a usable package on the mount — see the inline
+ * comments for the backup-preservation rules.
+ */
+async function swapPackageIntoPlace(
+  id: string,
+  staged: Array<{ path: string; bytes: Uint8Array }>,
+  provider: FsProvider,
+): Promise<void> {
+  // The replacement is written into a staging directory FIRST and only
+  // swapped into place after EVERY write succeeded, so a failed write
+  // never leaves the mount without a usable package:
+  //   - with `rename` (the in-memory/local provider): the staging tree is
+  //     renamed over the old one, and the old one is kept as a backup
+  //     until the swap succeeded (rollback on failure);
+  //   - without `rename` (the extension bridge exposes no rename): the
+  //     old tree is copied into a backup directory, the staging tree is
+  //     copied into place, and the backup is restored if anything fails.
+  // The staging/backup names are dot-prefixed: they are internal state,
+  // not packages, and the mount listings skip dot-directories.
+  const staging = `.${id}.installing`
+  const backup = `.${id}.previous`
+  const hasRename = typeof provider.rename === 'function'
+  let backupPreserved = false
+  try {
+    await removeMissingOk(provider, staging)
+    await removeMissingOk(provider, backup)
+    try {
+      await provider.mkdir(staging, { recursive: true })
+      for (const file of staged) {
+        await provider.writeFile(`${staging}/${file.path}`, file.bytes)
+      }
+    } catch (error) {
+      throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+    }
+    // All writes landed — swap the new tree in.
+    if (hasRename) {
+      let hadOld = false
+      try {
+        await provider.rename!(id, backup)
+        hadOld = true
+      } catch (error) {
+        // No previous install — that is the normal first-install case.
+        const e = error as { code?: string; name?: string }
+        if (!(e.code === 'ENOENT' || e.name === 'NotFoundError')) throw error
+      }
+      try {
+        await provider.rename!(staging, id)
+      } catch (renameError) {
+        // Roll the old install back — the new tree failed to take over.
+        if (hadOld) {
+          try {
+            await provider.rename!(backup, id)
+          } catch {
+            // SECURITY (critical): restoration failed, so the backup now
+            // holds the ONLY copy of the previously working package.
+            // Preserving it beats deleting it: leave the backup directory
+            // in place and report the rollback failure — the next install
+            // of any package can still recover from it, and nothing the
+            // user had is destroyed.
+            backupPreserved = true
+            throw new PackageInstallError(
+              `Failed to write package ${id} to storage AND the previous install could not be restored; its backup was preserved at ${backup}`,
+              'STORAGE_FAILED',
+            )
+          }
+        }
+        throw renameError
+      }
+      await removeMissingOk(provider, backup)
+    } else {
+      // No rename support: copy the old tree aside, copy the new tree in,
+      // and restore the copy if the swap fails.
+      let hadOld: boolean
+      try {
+        hadOld = await copyTree(provider, id, backup)
+      } catch (error) {
+        // A backup that cannot be LISTED is a backup that cannot be
+        // trusted (finding: "Backup failure loses old package") — abort
+        // BEFORE the live tree is removed, so the old package stays.
+        throw new PackageInstallError(
+          `Failed to back up package ${id} before replacement: ${error instanceof Error ? error.message : String(error)}`,
+          'STORAGE_FAILED',
+        )
+      }
+      try {
+        await removeMissingOk(provider, id)
+        try {
+          await copyTree(provider, staging, id)
+        } catch (copyError) {
+          if (!hadOld) {
+            // First install: nothing to restore — remove the PARTIAL live
+            // directory so the settings UI never reports a half package
+            // (finding: "Failed first install leaves partial package").
+            await removeMissingOk(provider, id).catch(() => {})
+          } else {
+            await removeMissingOk(provider, id).catch(() => {})
+            try {
+              await copyTree(provider, backup, id)
+            } catch (restoreError) {
+              // The restore failed — same rule as the rename path: keep
+              // the backup (it is the last good copy) and say so.
+              backupPreserved = true
+              throw new PackageInstallError(
+                `Failed to write package ${id} to storage AND the previous install could not be restored; its backup was preserved at ${backup}`,
+                'STORAGE_FAILED',
+              )
+            }
+          }
+          throw copyError
+        }
+      } finally {
+        if (!backupPreserved) await removeMissingOk(provider, backup).catch(() => {})
+      }
+      await removeMissingOk(provider, backup)
+    }
+  } catch (error) {
+    if (error instanceof PackageInstallError) throw error
+    throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+  } finally {
+    // Never leak the staging directory on any failure path. The BACKUP is
+    // only cleaned when it is provably no longer needed (the swap
+    // succeeded, or the rollback restored it): when restoration FAILED the
+    // backup is the only remaining copy of the working package and MUST
+    // survive (finding: "Failed rollback deletes working package").
+    await removeMissingOk(provider, staging).catch(() => {})
+    if (!backupPreserved) await removeMissingOk(provider, backup).catch(() => {})
+  }
 }
 
 /**
  * Copy a directory tree inside the provider (the extension bridge exposes no
- * rename). Returns false when the source does not exist.
+ * rename). Returns false when the source does not exist. A readdir that
+ * fails for any OTHER reason throws — treating a listing error as "absent
+ * source" would silently skip the backup and let a later failure delete the
+ * only copy (finding: "Backup failure loses old package").
  */
 async function copyTree(provider: FsProvider, from: string, to: string): Promise<boolean> {
   let entries: Array<{ name: string; kind: string }>
   try {
     entries = await provider.readdir(from)
-  } catch {
-    return false
+  } catch (error) {
+    const e = error as { code?: string; name?: string }
+    if (e.code === 'ENOENT' || e.name === 'NotFoundError') return false
+    throw error
   }
   await provider.mkdir(to, { recursive: true })
   for (const entry of entries) {
@@ -288,33 +456,6 @@ async function copyTree(provider: FsProvider, from: string, to: string): Promise
     }
   }
   return true
-}
-
-/**
- * Per-package operation locks. Installs, uninstalls and activation writes
- * for the same package id are serialized so overlapping operations cannot
- * interleave directory removal and file writes.
- */
-const packageLocks = new Map<string, Promise<unknown>>()
-
-async function acquirePackageLock(id: string): Promise<() => void> {
-  const previous = packageLocks.get(id) ?? Promise.resolve()
-  let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
-  const chained = previous.then(() => gate)
-  packageLocks.set(id, chained)
-  await previous
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    release()
-    // Drop the map entry once this lock holder has drained, so the map does
-    // not grow with every id ever installed.
-    void chained.then(() => {
-      if (packageLocks.get(id) === chained) packageLocks.delete(id)
-    })
-  }
 }
 
 /**
@@ -335,7 +476,8 @@ async function removeMissingOk(provider: FsProvider, path: string): Promise<void
 /**
  * Remove an installed package: delete its directory on the custom mount.
  * The activation override (config.json) lives inside the directory, so it is
- * cleared by the same removal.
+ * cleared by the same removal. Serialized with the SAME cross-context lock
+ * as install (finding: "Concurrent package operations corrupt installs").
  */
 export async function uninstallPackage(packageId: string, provider: FsProvider): Promise<void> {
   try {
@@ -343,17 +485,46 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
   } catch {
     throw new PackageInstallError(`Invalid package id: ${packageId}`, 'INVALID_PACKAGE')
   }
-  // Same per-package lock as install: an uninstall racing an install must
-  // not remove the directory the installer is writing.
-  const release = await acquirePackageLock(packageId)
-  try {
-    await removeMissingOk(provider, packageId)
-  } catch (error) {
-    throw new PackageInstallError(`Failed to remove package ${packageId}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
-  } finally {
-    release()
-  }
+  await withInstallerLock(packageId, async () => {
+    try {
+      await removeMissingOk(provider, packageId)
+    } catch (error) {
+      throw new PackageInstallError(`Failed to remove package ${packageId}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+    }
+  })
 }
 
 /** Enabling is exclusively the #102 opt-in flow's job — the installer never activates. */
 export const INSTALLER_DEFAULT_CONFIG = { activation: 'disabled' as const }
+
+/**
+ * Fetch + validate a registry manifest under the same streaming byte cap as
+ * package files (finding: "Registry bodies hang or exhaust memory") — a
+ * hostile registry cannot stall the settings page or balloon its memory.
+ */
+export async function fetchRegistryManifestCapped(
+  registry: PackageRegistry,
+  fetchImpl: typeof fetch,
+  timeoutMs: number = REGISTRY_FETCH_TIMEOUT_MS,
+): Promise<RegistryManifest> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(registry.manifestUrl, { credentials: 'omit', cache: 'no-cache', signal: controller.signal })
+    if (!response.ok) {
+      throw new PackageInstallError(`Download failed for ${registry.manifestUrl}: HTTP ${response.status}`, 'DOWNLOAD_FAILED')
+    }
+    const bytes = await readBodyCapped(response, MAX_REGISTRY_MANIFEST_BYTES)
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
+    const { validateRegistryManifest } = await import('./package-registry-client')
+    return validateRegistryManifest(parsed)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new PackageInstallError(`Registry request timed out after ${timeoutMs / 1000}s: ${registry.manifestUrl}`, 'DOWNLOAD_FAILED')
+    }
+    if (error instanceof PackageInstallError) throw error
+    throw new PackageInstallError(`Registry manifest could not be loaded: ${error instanceof Error ? error.message : String(error)}`, 'INVALID_PACKAGE')
+  } finally {
+    clearTimeout(timer)
+  }
+}

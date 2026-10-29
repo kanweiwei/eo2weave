@@ -70,6 +70,22 @@ describe('parseRegistryInput — loose URL forms', () => {
     expect(registry.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/nightly/sub/dir/manifest.json')
   })
 
+  it('parses a SLASHED branch so the manifest and file URLs resolve (raw-host ref resolution)', () => {
+    // A branch `feature/registry` is indistinguishable from branch `feature`
+    // + directory `registry` by URL shape (finding: "Slash in branch breaks
+    // registry URL"). The manifest URL keeps the FULL tail - identical under
+    // either split - and raw.githubusercontent.com resolves ref-paths
+    // greedily against existing refs, so catalog AND repo-relative file
+    // URLs stay valid for slashed branches.
+    const tree = parseRegistryInput('https://github.com/owner/repo/tree/feature/registry')
+    expect(tree.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/feature/registry/manifest.json')
+    expect(registryFileUrl(tree, 'packages/com.x/f.js'))
+      .toBe('https://raw.githubusercontent.com/owner/repo/feature/packages/com.x/f.js')
+
+    const raw = parseRegistryInput('https://raw.githubusercontent.com/owner/repo/feature/registry/manifest.json')
+    expect(raw.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/feature/registry/manifest.json')
+  })
+
   it('anchors a deep raw URL at the repo root for files, subdirectory for the manifest', () => {
     const registry = parseRegistryInput('https://raw.githubusercontent.com/owner/repo/dev/packages/manifest.json')
     expect(registry.rawBase).toBe('https://raw.githubusercontent.com/owner/repo/dev')
@@ -119,6 +135,47 @@ describe('fetchRegistryManifest — resource limits', () => {
       })
     }) as typeof fetch
     await expect(fetchRegistryManifest(registry, { fetchImpl: hanging, timeoutMs: 25 }))
+      .rejects.toThrow(/timed out/i)
+  })
+
+  it('rejects a manifest body larger than the byte cap WHILE streaming', async () => {
+    const registry = registryFromManifestUrl('https://raw.githubusercontent.com/o/big/main/manifest.json')
+    // A server that sends a body far beyond the cap: the streamed read must
+    // abort early instead of buffering it all.
+    const huge: typeof fetch = (async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => {
+          let sent = 0
+          return {
+            read: async () => {
+              if (sent >= 8) return { done: true, value: undefined }
+              sent += 1
+              return { done: false, value: new Uint8Array(1024 * 1024).fill(0x61) }
+            },
+            cancel: async () => {},
+          }
+        },
+      },
+    } as unknown as Response))
+    await expect(fetchRegistryManifest(registry, { fetchImpl: huge }))
+      .rejects.toThrow(/size limit/i)
+  })
+
+  it('aborts a server that stalls AFTER the headers (deadline covers the body)', async () => {
+    const registry = registryFromManifestUrl('https://raw.githubusercontent.com/o/stall/main/manifest.json')
+    const stallAfterHeaders: typeof fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal
+      return {
+        ok: true,
+        status: 200,
+        body: { getReader: () => ({ read: () => new Promise<{ done: boolean; value?: Uint8Array }>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        }) }) },
+      } as unknown as Response
+    }) as typeof fetch
+    await expect(fetchRegistryManifest(registry, { fetchImpl: stallAfterHeaders, timeoutMs: 25 }))
       .rejects.toThrow(/timed out/i)
   })
 })

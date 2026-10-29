@@ -151,4 +151,11 @@ export interface WebMCPBridge {
     transferId: string
     savedPath: string
   }) => Promise<{ ok: boolean; transferId?: string; error?: string }>
+  /** Cross-context package-transaction lock (extension ≥ this build only). */
+  webMCPPackageLock?: (
+    packageId: string,
+    action: 'acquire' | 'heartbeat' | 'release',
+    owner?: string,
+    timeoutMs?: number,
+  ) => Promise<{ ok: boolean; owner?: string; code?: string; error?: string }>
 }

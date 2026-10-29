@@ -247,6 +247,99 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('rejects a token bound to a package whose SOURCE changed (fingerprint covers workflow bytes)', async () => {
+    // Finding: "Changed packages reuse old consent" — the fingerprint is
+    // bound to more than manifest version + tool names/paths: the ACTUAL
+    // source bytes and the urlRegex rules. A repackage with the same
+    // version/names but a changed workflow source must not reuse consent.
+    await seedInstalledPackage(userStorage)
+    const token = await mintToken()
+    const swappedSource = externalEntry({
+      package: {
+        manifest: DISCORD_MANIFEST,
+        sources: { 'workflows/read_messages.js': `${READ_ONLY_SOURCE} // tampered` },
+      },
+    })
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([swappedSource])
+    vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[swappedSource], { userMountComplete: true }])
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
+    expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'CONSENT_REQUIRED' })
+    // The stale consent never reached the config: the package is still
+    // disabled and the tampered source's tools stay off.
+    const stored = JSON.parse(new TextDecoder().decode(await userStorage.readFile(enablePath)))
+    expect(stored).toEqual({ activation: 'disabled' })
+  })
+
+  it('rejects the enable when the package was REPLACED between the fingerprint check and the write', async () => {
+    // Finding: "Replacement receives old consent" — a fresh catalog read
+    // right before the activation write recomputes the fingerprint; a
+    // replacement installed after the main check must not receive the old
+    // consent (PACKAGE_MISMATCH), and nothing is written.
+    await seedInstalledPackage(userStorage)
+    const token = await mintToken()
+    const replacedManifest = {
+      ...DISCORD_MANIFEST,
+      version: '9.9.9',
+    }
+    const replacedEntry = externalEntry({
+      package: {
+        manifest: replacedManifest,
+        sources: { 'workflows/read_messages.js': READ_ONLY_SOURCE },
+      },
+    })
+    // The FIRST detailed read (token check) still sees the original; the
+    // SECOND (pre-write re-check) sees the replacement.
+    vi.mocked(readWebMCPCatalogDetailed)
+      .mockResolvedValueOnce([[externalEntry()], { userMountComplete: true }])
+      .mockResolvedValueOnce([[replacedEntry], { userMountComplete: true }])
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
+    expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'PACKAGE_MISMATCH' })
+    // The stale consent never reached the config.
+    const stored = JSON.parse(new TextDecoder().decode(await userStorage.readFile(enablePath)))
+    expect(stored).toEqual({ activation: 'disabled' })
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('cleans up an orphaned config.json when an uninstall removes the directory during the enable write', async () => {
+    // Finding: "Uninstall leaves a phantom package" — the provider recreates
+    // missing parents for config.json, so a write racing an uninstall must
+    // roll the orphaned file back instead of leaving a directory holding
+    // ONLY activation state.
+    await seedInstalledPackage(userStorage)
+    const token = await mintToken()
+    // The manifest exists for the call-site's presence stat and the write
+    // path's pre-write stat, but is GONE for the post-write re-stat — as if
+    // an uninstall removed the directory right after our config.json write.
+    const wrapped = await userStorage
+    let manifestStats = 0
+    userStorage = {
+      ...wrapped,
+      stat: async (path: string) => {
+        if (path === 'com.discord.main/manifest.json') {
+          manifestStats += 1
+          if (manifestStats >= 3) {
+            const err = new Error('not found')
+            ;(err as { code?: string }).code = 'ENOENT'
+            throw err
+          }
+        }
+        return wrapped.stat(path)
+      },
+    } as typeof wrapped
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
+    expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'PACKAGE_UNINSTALLED' })
+    // The orphaned config.json was removed — no phantom package remains.
+    await expect(userStorage.readFile(enablePath)).rejects.toThrow()
+    // The sentinel bounce never fired (the write did not stick).
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
+  })
+
   it('rejects a consent token minted for ANOTHER package (protocol identical across mounts)', async () => {
     const other = externalEntry({
       directory: 'com.other.pkg',

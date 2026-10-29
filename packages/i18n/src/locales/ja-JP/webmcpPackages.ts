@@ -35,5 +35,13 @@ export const webmcpPackages = {
   confirmInstallConfirm: "インストール",
   confirmInstallCancel: "キャンセル",
   actionFailed: "操作に失敗しました：{error}",
+  errorUnreachable: "パッケージレジストリに接続できません。URL とネットワーク接続を確認してください。",
+  errorNotFound: "パッケージレジストリまたはマニフェストが見つかりません（404）。",
+  errorTimeout: "レジストリへのリクエストがタイムアウトしました。再試行してください。",
+  errorTooLarge: "レジストリの応答がサイズ制限を超えました。",
+  errorBusy: "別のインストールまたは削除が実行中です。しばらくしてから再試行してください。",
+  errorCollision: "このパッケージは既存のパッケージと競合しています。{detail}",
+  errorGeneric: "操作に失敗しました。{detail}",
+  addSessionOnly: "{label} はこのセッションのみに追加されました——ブラウザストレージが利用できないため、再読み込みするとリストから消えます。",
   dismissError: "閉じる",
 }

@@ -35,5 +35,13 @@ export const webmcpPackages = {
   confirmInstallConfirm: "安装",
   confirmInstallCancel: "取消",
   actionFailed: "操作失败：{error}",
+  errorUnreachable: "无法连接包仓库，请检查地址和网络连接。",
+  errorNotFound: "未找到包仓库或包清单（404）。",
+  errorTimeout: "包仓库请求超时，请重试。",
+  errorTooLarge: "包仓库响应超出大小限制。",
+  errorBusy: "已有安装或移除操作正在进行，请稍后再试。",
+  errorCollision: "该包与现有包冲突。{detail}",
+  errorGeneric: "操作失败。{detail}",
+  addSessionOnly: "{label} 仅在本次会话内生效——浏览器存储不可用，刷新后列表将丢失。",
   dismissError: "关闭",
 }

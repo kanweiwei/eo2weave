@@ -35,5 +35,13 @@ export const webmcpPackages = {
   confirmInstallConfirm: "Install",
   confirmInstallCancel: "Cancel",
   actionFailed: "Operation failed: {error}",
+  errorUnreachable: "Could not reach the package registry. Check the URL and your connection.",
+  errorNotFound: "The registry or package manifest was not found (404).",
+  errorTimeout: "The registry request timed out. Try again.",
+  errorTooLarge: "The registry response exceeded the size limit.",
+  errorBusy: "Another install or removal is already running. Try again in a moment.",
+  errorCollision: "This package conflicts with an existing one. {detail}",
+  errorGeneric: "The operation failed. {detail}",
+  addSessionOnly: "{label} was added for this session only — browser storage is unavailable, so the list will not survive a reload.",
   dismissError: "Dismiss",
 }

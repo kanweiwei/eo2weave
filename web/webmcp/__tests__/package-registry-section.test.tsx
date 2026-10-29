@@ -23,7 +23,7 @@ const store = vi.hoisted(() => ({
 
 vi.mock('@/webmcp/package-registry-store', () => store)
 
-import { WebMCPPackageRegistrySection } from '../../components/webmcp/WebMCPPackageRegistrySection'
+import { WebMCPPackageRegistrySection } from '@/components/webmcp/WebMCPPackageRegistrySection'
 
 const REGISTRY = {
   rawBase: 'https://raw.githubusercontent.com/owner/repo/main',

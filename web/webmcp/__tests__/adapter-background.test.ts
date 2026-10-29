@@ -80,6 +80,91 @@ it('routes the extension skill mount through the background transport', async ()
 })
 
 /**
+ * SECURITY (finding: "Websites bypass package consent"): the all-sites
+ * content relay lets ANY page reach `webmcp_provider_call`, so a mutating
+ * operation on the writable `webmcp` mount (e.g. writing `activation:
+ * enabled` into an installed package's config.json) must require a trusted
+ * CreatorWeave sender. Read operations stay open for the page-facing VFS.
+ */
+it('blocks MUTATING provider calls on the webmcp mount from untrusted pages', () => {
+  const listener = onMessage.mock.calls[0][0]
+  const respond = vi.fn()
+  const accepted = listener(
+    {
+      type: 'webmcp_provider_call',
+      mount: 'webmcp',
+      method: 'writeFile',
+      path: 'com.hostile.pkg/config.json',
+      content: btoa(JSON.stringify({ activation: 'enabled' })),
+    },
+    { id: 'test', url: 'https://evil.example/page' },
+    respond
+  )
+  expect(accepted).toBe(false)
+  expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EACCES' }))
+})
+
+it.each(['mkdir', 'remove'] as const)('blocks %s on the webmcp mount from untrusted pages too', method => {
+  const listener = onMessage.mock.calls[0][0]
+  const respond = vi.fn()
+  listener(
+    { type: 'webmcp_provider_call', mount: 'webmcp', method, path: 'com.hostile.pkg' },
+    { id: 'test', url: 'https://evil.example/page' },
+    respond
+  )
+  expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EACCES' }))
+})
+
+it('lets a TRUSTED page mutate the webmcp mount (reads stay open for everyone)', async () => {
+  const listener = onMessage.mock.calls[0][0]
+  // Read from an untrusted page: allowed (the page-facing VFS renders the
+  // file tree from reads). The read itself fails ENOENT-ish (no OPFS in
+  // tests) — the point is the GATE let it through (ok:false + code != EACCES).
+  const readResult = await new Promise<Record<string, unknown>>((resolve) => {
+    listener(
+      { type: 'webmcp_provider_call', mount: 'webmcp', method: 'readdir', path: '' },
+      { id: 'test', url: 'https://evil.example/page' },
+      resolve
+    )
+  })
+  expect(readResult.code).not.toBe('EACCES')
+  // Write from a trusted app origin: allowed past the sender gate (the
+  // settings installer writes the DISABLED default config). An
+  // `activation: "enabled"` payload is separately refused by the consent
+  // layer below — enabling is exclusively the opt-in flow's job.
+  const writeResult = await new Promise<Record<string, unknown>>((resolve) => {
+    listener(
+      {
+        type: 'webmcp_provider_call',
+        mount: 'webmcp',
+        method: 'writeFile',
+        path: 'com.discord.main/config.json',
+        content: btoa(JSON.stringify({ activation: 'disabled' })),
+      },
+      { id: 'test', url: 'http://localhost:5173/projects' },
+      resolve
+    )
+  })
+  expect(writeResult.code).not.toBe('EACCES')
+  // The consent layer still refuses an ACTIVATION write even from a trusted
+  // page — enabling is exclusively the opt-in flow's job.
+  const activateResult = await new Promise<Record<string, unknown>>((resolve) => {
+    listener(
+      {
+        type: 'webmcp_provider_call',
+        mount: 'webmcp',
+        method: 'writeFile',
+        path: 'com.discord.main/config.json',
+        content: btoa(JSON.stringify({ activation: 'enabled' })),
+      },
+      { id: 'test', url: 'http://localhost:5173/projects' },
+      resolve
+    )
+  })
+  expect(activateResult).toEqual(expect.objectContaining({ ok: false, code: 'EACCES' }))
+})
+
+/**
  * A user-mount package (registry install) keeps its activation config in the
  * extension's OPFS, which has no storage.onChanged hook. The opt-in enable
  * path announces the change through a chrome.storage.local sentinel; the

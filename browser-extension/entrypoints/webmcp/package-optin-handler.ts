@@ -129,13 +129,42 @@ async function writePackageActivation(mount: string, directory: string): Promise
     return
   }
   const provider = await getAdapterStorage()
+  // Race guard (finding: "Uninstall leaves a phantom package"): between the
+  // caller's presence check and the write below an uninstall can remove the
+  // package directory — and the provider CREATES missing parent directories
+  // for config.json, which would leave a directory holding ONLY activation
+  // state (a "phantom package" the catalog then reports as installed). Stat
+  // the manifest immediately before the write and re-stat it after; if the
+  // manifest is gone post-write, remove the orphaned config.json (ENOENT-
+  // tolerant) so the race degrades to a clean enable failure instead of a
+  // resurrected directory.
+  try {
+    await provider.stat(`${directory}/manifest.json`)
+  } catch {
+    throw Object.assign(new Error('Package directory vanished before enable'), { code: 'PACKAGE_UNINSTALLED' })
+  }
   const bytes = new TextEncoder().encode(serializeWebMCPConfig({ activation: 'enabled' }))
   await provider.writeFile(`${directory}/config.json`, bytes)
+  try {
+    await provider.stat(`${directory}/manifest.json`)
+  } catch {
+    // The uninstall removed the directory between our two operations (or the
+    // write itself recreated a hollow one). Roll the orphaned config.json
+    // back — a missing file is fine (the uninstall won), anything else
+    // propagates.
+    try {
+      await provider.remove(`${directory}/config.json`)
+    } catch (cleanupError) {
+      const e = cleanupError as { code?: string; name?: string }
+      if (e.code !== 'ENOENT' && e.name !== 'NotFoundError') throw cleanupError
+    }
+    throw Object.assign(new Error('Package directory vanished during enable; the orphaned activation file was removed'), { code: 'PACKAGE_UNINSTALLED' })
+  }
   // The user-mount write has no storage.onChanged hook (the file lives in
   // OPFS, not chrome.storage). Bounce through chrome.storage.local — the same
   // key the builtin watcher listens on — so the adapter background refreshes
   // the catalog and the newly enabled tools register immediately instead of
-  // waiting for an unrelated refresh.
+  // waiting for an unrelated refresh. Only AFTER the write actually stuck.
   const sentinel = `${USER_PACKAGE_CONFIG_SENTINEL_PREFIX}${directory}`
   await chrome.storage.local.set({ [sentinel]: Date.now() })
   await chrome.storage.local.remove(sentinel)
@@ -188,17 +217,33 @@ interface ConsentTokenRecord {
 }
 
 /**
- * Fingerprint of a package candidate: the manifest version plus the sorted
- * tool names and paths. A re-install of a DIFFERENT package under the same
- * id changes at least one of these.
+ * Fingerprint of a package candidate: the manifest version plus, for every
+ * tool, the sorted `name:path:urlRegex` triple and the hash of the tool's
+ * ACTUAL SOURCE bytes (finding: "Changed packages reuse old consent" —
+ * version, tool names and paths alone do not change when a repackaged
+ * module swaps the workflow source under the same names, so the old consent
+ * tokens kept working; tool NAMES belong in the fingerprint too — a rename
+ * under a stable path changes what the user is consenting to). The hash is
+ * a non-crypto 64-bit FNV-1a over the sorted pairs; it only needs collision
+ * resistance against accidental/unmotivated drift, is synchronous and
+ * deterministic across contexts.
  */
 function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebMCPPackageEntry): string {
   const manifest = entry?.package?.manifest
   const version = manifest?.version ?? ''
-  const tools = manifest?.tools
-    ? manifest.tools.map(tool => `${tool.name}:${tool.path}`).sort().join(',')
+  const sources = entry?.package?.sources
+  const hashFnv1a = (text: string): string => {
+    let hash = 0xcbf29ce4
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i)
+      hash = Math.imul(hash, 0x1000193)
+    }
+    return (hash >>> 0).toString(16)
+  }
+  const toolPairs = manifest?.tools
+    ? manifest.tools.map(tool => `${tool.name}:${tool.path}:${tool.urlRegex}:${hashFnv1a(sources?.[tool.path] ?? '')}`).sort().join(',')
     : candidate.tools.map(tool => tool.name).sort().join(',')
-  return `${version}|${tools}`
+  return `${version}|${toolPairs}`
 }
 
 /**
@@ -625,6 +670,26 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
             return false
           }
         }
+        // Re-check the package CONTENT immediately before the write
+        // (finding: "Replacement receives old consent"): the fingerprint in
+        // the token was validated against the catalog read ABOVE, but an
+        // install replacing the package between that read and this write
+        // would receive the OLD consent. Re-read the catalog fresh and
+        // recompute the fingerprint from the live entry; a change rejects
+        // with PACKAGE_MISMATCH instead of arming the replacement.
+        const [freshEntries] = await readWebMCPCatalogDetailed()
+        const freshEntry = freshEntries.find(e => e.directory === candidate.directory && e.mount === candidate.mount)
+        if (
+          !freshEntry ||
+          packageFingerprint(candidate, freshEntry) !== packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
+        ) {
+          sendResponse({
+            ok: false,
+            errorCode: 'PACKAGE_MISMATCH',
+            error: 'The package changed while enabling; nothing was enabled.',
+          })
+          return false
+        }
         await writePackageActivation(candidate.mount, candidate.directory)
         // Reload FIRST, then verify, then respond (finding: "Disabled package
         // reported enabled"): a disable that commits after our enable write
@@ -706,6 +771,19 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         }
         sendResponse({ ok: true, packageId, hostname: candidate.hostname, reloaded })
       } catch (err: unknown) {
+        // The write path's race guards (finding: "Uninstall leaves a phantom
+        // package") signal a clean enable failure with a dedicated code —
+        // report that honestly instead of the generic ENABLE_FAILED (which
+        // records a cooldown as if storage were broken).
+        const raceCode = (err as { code?: string }).code
+        if (raceCode === 'PACKAGE_UNINSTALLED') {
+          sendResponse({
+            ok: false,
+            errorCode: 'PACKAGE_UNINSTALLED',
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return false
+        }
         sendResponse({
           ok: false,
           errorCode: 'ENABLE_FAILED',

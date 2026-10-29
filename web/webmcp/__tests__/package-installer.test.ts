@@ -326,6 +326,106 @@ describe('installPackage — failed replacement keeps the old package', () => {
     expect(listed.map(entry => entry.name).sort()).toEqual(['com.example.pkg'])
   })
 
+  it('ABORTS before removing the live package when the backup cannot be listed (no-rename provider)', async () => {
+    // Finding: "Backup failure loses old package" — a readdir error during
+    // the backup must be a backup FAILURE, not "source absent": treating it
+    // as absent would proceed without a backup and let a later failure
+    // delete the only copy.
+    const full = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, await validPkg(), full, { fetchImpl: fetchServing(fixtureFiles()) })
+    const before = await full.readFile('com.example.pkg/manifest.json')
+
+    const bridge = {
+      stat: (path: string) => full.stat(path),
+      readdir: (path: string) => {
+        if (path === 'com.example.pkg') throw new Error('readdir exploded')
+        return full.readdir(path)
+      },
+      readFile: (path: string) => full.readFile(path),
+      writeFile: (path: string, bytes: Uint8Array) => full.writeFile(path, bytes),
+      mkdir: (path: string, options?: { recursive?: boolean }) => full.mkdir(path, options),
+      remove: (path: string, options?: { recursive?: boolean }) => full.remove(path, options),
+    }
+    const v2Manifest = { ...TOOL_MANIFEST, version: '2.0.0' }
+    const v2Files = { 'manifest.json': JSON.stringify(v2Manifest), 'workflows/read.js': WORKFLOW_SOURCE }
+    const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    await expect(installPackage(registry, v2, bridge, { fetchImpl: fetchServing(v2Files) }))
+      .rejects.toMatchObject({ code: 'STORAGE_FAILED' })
+
+    // The live package was never touched.
+    expect(await full.readFile('com.example.pkg/manifest.json')).toEqual(before)
+    expect((await full.readdir('')).map(entry => entry.name).sort()).toEqual(['com.example.pkg'])
+  })
+
+  it('PRESERVES the backup when both replacement and restore fail (no-rename provider)', async () => {
+    // Finding (critical): "Failed rollback deletes working package" — when
+    // the swap fails AND restoring the backup fails, the backup directory
+    // must survive: it holds the only remaining copy of the old package.
+    const full = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, await validPkg(), full, { fetchImpl: fetchServing(fixtureFiles()) })
+    const before = await full.readFile('com.example.pkg/manifest.json')
+
+    let liveWrites = 0
+    let backupRestoreAttempted = false
+    const bridge = {
+      stat: (path: string) => full.stat(path),
+      readdir: (path: string) => full.readdir(path),
+      readFile: (path: string) => full.readFile(path),
+      writeFile: (path: string, bytes: Uint8Array) => {
+        const p = String(path)
+        if (p.startsWith('com.example.pkg/') && !p.startsWith('com.example.pkg/.') ) {
+          liveWrites += 1
+          // Fail the FIRST write into the live dir AND the restore writes.
+          if (liveWrites === 1 || backupRestoreAttempted) throw new Error('bridge write refused')
+        }
+        if (p.startsWith('.com.example.pkg.previous/')) backupRestoreAttempted = true
+        return full.writeFile(path, bytes)
+      },
+      mkdir: (path: string, options?: { recursive?: boolean }) => full.mkdir(path, options),
+      remove: (path: string, options?: { recursive?: boolean }) => full.remove(path, options),
+    }
+    const v2Manifest = { ...TOOL_MANIFEST, version: '2.0.0' }
+    const v2Files = { 'manifest.json': JSON.stringify(v2Manifest), 'workflows/read.js': WORKFLOW_SOURCE }
+    const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    await expect(installPackage(registry, v2, bridge, { fetchImpl: fetchServing(v2Files) }))
+      .rejects.toMatchObject({ code: 'STORAGE_FAILED' })
+
+    // The backup SURVIVED (deleting it would have destroyed the only copy).
+    await expect(full.stat('.com.example.pkg.previous')).resolves.toMatchObject({ kind: 'directory' })
+    expect(await full.readFile('.com.example.pkg.previous/manifest.json')).toEqual(before)
+  })
+
+  it('removes the PARTIAL live directory when a FIRST install fails mid-copy', async () => {
+    // Finding: "Failed first install leaves partial package" — nothing to
+    // roll back to, so the half-written directory must be removed instead
+    // of being reported as installed.
+    const full = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    let refused = false
+    const bridge = {
+      stat: (path: string) => full.stat(path),
+      readdir: (path: string) => full.readdir(path),
+      readFile: (path: string) => full.readFile(path),
+      writeFile: (path: string, bytes: Uint8Array) => {
+        if (String(path).startsWith('com.example.pkg/') && !refused) {
+          refused = true
+          throw new Error('bridge write refused')
+        }
+        return full.writeFile(path, bytes)
+      },
+      mkdir: (path: string, options?: { recursive?: boolean }) => full.mkdir(path, options),
+      remove: (path: string, options?: { recursive?: boolean }) => full.remove(path, options),
+    }
+    const pkg = await validPkg()
+    await expect(installPackage(registry, pkg, bridge, { fetchImpl: fetchServing(fixtureFiles()) }))
+      .rejects.toMatchObject({ code: 'STORAGE_FAILED' })
+    // No partial package and no staging leftovers remain.
+    await expect(full.stat('com.example.pkg')).rejects.toThrow()
+    expect((await full.readdir('')).filter(entry => !entry.name.startsWith('.')).map(entry => entry.name)).toEqual([])
+  })
+
   it('preserves the previous install on a provider WITHOUT rename (the extension bridge)', async () => {
     // The bridge provider exposes stat/readdir/readFile/writeFile/mkdir/remove
     // only — there is no atomic rename, so the installer must fall back to
@@ -371,6 +471,21 @@ describe('installPackage — failed replacement keeps the old package', () => {
 })
 
 describe('installPackage — overlapping operations', () => {
+  /** The installed tree must be ONE complete version: manifest and workflow
+   * contents must both come from the SAME fixture (never a torn mix). */
+  async function expectCoherentInstall(provider: ReturnType<typeof memoryProvider>): Promise<'1.0.0' | '2.0.0'> {
+    const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json'))) as { version: string }
+    expect(['1.0.0', '2.0.0']).toContain(manifest.version)
+    const workflow = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(workflow).toBe(WORKFLOW_SOURCE)
+    // The installer always appends the disabled-default config.json.
+    expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
+      .toEqual(INSTALLER_DEFAULT_CONFIG)
+    const listed = (await provider.readdir('com.example.pkg')).map(entry => entry.name).sort()
+    expect(listed).toEqual(['config.json', 'manifest.json', 'workflows'])
+    return manifest.version as '1.0.0' | '2.0.0'
+  }
+
   it('serializes two installs of the same id (each ends with a complete tree)', async () => {
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
@@ -386,8 +501,7 @@ describe('installPackage — overlapping operations', () => {
     expect(r2.filesWritten).toBeGreaterThan(0)
     // The final directory is ONE complete version, never a mix, and no
     // staging leftovers remain.
-    const listed = await provider.readdir('com.example.pkg')
-    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'manifest.json', 'workflows'])
+    await expectCoherentInstall(provider)
     expect((await provider.readdir('')).map(entry => entry.name).sort()).toEqual(['com.example.pkg'])
   })
 
@@ -398,9 +512,11 @@ describe('installPackage — overlapping operations', () => {
     const installPromise = installPackage(registry, pkg, provider, { fetchImpl: fetchServing(fixtureFiles()) })
     const uninstallPromise = uninstallPackage('com.example.pkg', provider)
     await Promise.all([installPromise, uninstallPromise])
-    // Whichever ran last wins — but no staging leftovers and no torn state.
+    // Whichever ran last wins — the package is either ABSENT or ONE
+    // complete, coherent install (never an empty or partial directory).
     const roots = (await provider.readdir('')).map(entry => entry.name).sort()
     expect(roots).toEqual(roots.includes('com.example.pkg') ? ['com.example.pkg'] : [])
+    if (roots.includes('com.example.pkg')) await expectCoherentInstall(provider)
     expect(roots.filter(name => name.includes('installing') || name.includes('previous'))).toEqual([])
   })
 })

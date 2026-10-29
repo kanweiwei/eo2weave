@@ -35,5 +35,13 @@ export const webmcpPackages = {
   confirmInstallConfirm: "설치",
   confirmInstallCancel: "취소",
   actionFailed: "작업 실패: {error}",
+  errorUnreachable: "패키지 레지스트리에 연결할 수 없습니다. URL과 네트워크 연결을 확인하세요.",
+  errorNotFound: "패키지 레지스트리 또는 매니페스트를 찾을 수 없습니다 (404).",
+  errorTimeout: "레지스트리 요청이 시간 초과되었습니다. 다시 시도하세요.",
+  errorTooLarge: "레지스트리 응답이 크기 제한을 초과했습니다.",
+  errorBusy: "다른 설치 또는 제거 작업이 진행 중입니다. 잠시 후 다시 시도하세요.",
+  errorCollision: "이 패키지는 기존 패키지와 충돌합니다. {detail}",
+  errorGeneric: "작업에 실패했습니다. {detail}",
+  addSessionOnly: "{label}이(가) 이 세션에만 추가되었습니다 — 브라우저 저장소를 사용할 수 없어 새로고침하면 목록에서 사라집니다.",
   dismissError: "닫기",
 }

@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import {
   addRegistry,
+  registriesPersisted,
   installRegistryPackage,
   listInstalledPackageIds,
   listRegistries,
@@ -43,11 +44,55 @@ interface WebMCPPackageRegistrySectionProps {
   t: (key: string) => string
 }
 
+/** Bound for the section's own manifest.json preview fetches. */
+const REGISTRY_PREVIEW_TIMEOUT_MS = 30_000
+
+/**
+ * Read a preview response under a byte cap (finding: "Registry bodies hang
+ * or exhaust memory"). Prefers streaming text so the cap is enforced BEFORE
+ * parsing; falls back to `json()` for response doubles without a text body
+ * (tests).
+ */
+async function readJsonCapped(response: Response, maxBytes: number): Promise<unknown> {
+  if (typeof response.text === 'function') {
+    const text = await response.text()
+    if (text.length > maxBytes) throw new Error(`Response exceeds the size limit (${maxBytes} bytes)`)
+    return JSON.parse(text)
+  }
+  return response.json()
+}
+
 function format(message: string, values: Record<string, string | number>): string {
   return Object.entries(values).reduce(
     (text, [key, value]) => text.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value)),
     message,
   )
+}
+
+
+/**
+ * Map a thrown error to a LOCALIZED message key (finding: "Error details
+ * ignore selected locale" — raw English exception text interpolated into a
+ * localized template stays English for every other locale). Known error
+ * shapes get their own key; anything unknown falls back to a generic
+ * localized failure message with the diagnostic text as a secondary detail.
+ */
+function errorKeyFor(message: string): { key: string; values?: Record<string, string> } {
+  const m = message.toLowerCase()
+  if (m.includes('timed out') || m.includes('timeout')) return { key: 'settings.webmcpPackages.errorTimeout' }
+  if (m.includes('not found') || m.includes('http 404')) return { key: 'settings.webmcpPackages.errorNotFound' }
+  if (m.includes('size limit') || m.includes('exceeds') || m.includes('too large')) return { key: 'settings.webmcpPackages.errorTooLarge' }
+  if (m.includes('unreachable') || m.includes('network') || m.includes('failed to fetch')) return { key: 'settings.webmcpPackages.errorUnreachable' }
+  if (m.includes('busy') || m.includes('in progress')) return { key: 'settings.webmcpPackages.errorBusy' }
+  if (m.startsWith('cannot install')) return { key: 'settings.webmcpPackages.errorCollision', values: { detail: message } }
+  return { key: 'settings.webmcpPackages.errorGeneric', values: { detail: message } }
+}
+
+/** Localized text for a thrown error (see `errorKeyFor`). */
+function localizedError(t: (key: string) => string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const { key, values } = errorKeyFor(message)
+  return values ? format(t(key), values) : t(key)
 }
 
 interface RegistryCardProps {
@@ -57,7 +102,7 @@ interface RegistryCardProps {
   /** Activation state per installed id (read from the package config). */
   activations: Map<string, 'enabled' | 'disabled'>
   busyId: string | null
-  onInstall: (registry: PackageRegistry, pkg: RegistryManifestPackage) => Promise<boolean>
+  onInstall: (registry: PackageRegistry, pkg: RegistryManifestPackage, verifiedToolCount: number) => Promise<boolean>
   onUninstall: (pkg: RegistryManifestPackage) => Promise<boolean>
   onRemoveRegistry: (registry: PackageRegistry) => void
 }
@@ -81,7 +126,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
     try {
       setManifest(await loadRegistryCatalog(registry, { force }))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(localizedError(t, err))
     } finally {
       setRefreshing(false)
     }
@@ -94,10 +139,16 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
   /** Read one package's manifest.json and record its real tool count. */
   const readToolCount = useCallback(async (pkgId: string) => {
     try {
-      const { registryFileUrl } = await import('@/webmcp/package-registry-client')
-      const response = await fetch(registryFileUrl(registry, `packages/${pkgId}/manifest.json`), { credentials: 'omit' })
+      const { registryFileUrl, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES } = await import('@/webmcp/package-registry-client')
+      const response = await fetch(registryFileUrl(registry, `packages/${pkgId}/manifest.json`), {
+        credentials: 'omit',
+        // Same bound as every other registry request (finding: "Registry
+        // bodies hang or exhaust memory") — a stalled or oversized package
+        // manifest must not hang the settings page.
+        signal: AbortSignal.timeout(REGISTRY_PREVIEW_TIMEOUT_MS),
+      })
       if (!response.ok) return
-      const data = await response.json() as { tools?: unknown }
+      const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: unknown }
       if (!Array.isArray(data.tools)) return
       const count = (data.tools as unknown[]).length
       setVerifiedToolCounts(previous => {
@@ -210,7 +261,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
                       type="button"
                       className="rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                       disabled={busy}
-                      onClick={() => void onInstall(registry, pkg)}
+                      onClick={() => void onInstall(registry, pkg, verifiedToolCounts.get(pkg.id) ?? pkg.toolCount)}
                     >
                       {busy ? t('settings.webmcpPackages.installing') : t('settings.webmcpPackages.install')}
                     </button>
@@ -242,10 +293,13 @@ function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg:
     let disposed = false
     void (async () => {
       try {
-        const { registryFileUrl } = await import('@/webmcp/package-registry-client')
-        const response = await fetch(registryFileUrl(registry, `packages/${pkg.id}/manifest.json`), { credentials: 'omit' })
+        const { registryFileUrl, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES } = await import('@/webmcp/package-registry-client')
+        const response = await fetch(registryFileUrl(registry, `packages/${pkg.id}/manifest.json`), {
+          credentials: 'omit',
+          signal: AbortSignal.timeout(REGISTRY_PREVIEW_TIMEOUT_MS),
+        })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const data = await response.json() as { tools?: Array<{ name: string; description: string }> }
+        const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: Array<{ name: string; description: string }> }
         if (!disposed) setTools(Array.isArray(data.tools) ? data.tools : [])
       } catch {
         if (!disposed) setTools([])
@@ -279,7 +333,12 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [confirmPkg, setConfirmPkg] = useState<{ registry: PackageRegistry; pkg: RegistryManifestPackage } | null>(null)
+  const [confirmPkg, setConfirmPkg] = useState<{
+    registry: PackageRegistry
+    pkg: RegistryManifestPackage
+    /** Tool count VERIFIED from the package manifest (falls back to the claim). */
+    verifiedToolCount: number
+  } | null>(null)
   /**
    * Refresh generation. Two overlapping refreshes can resolve out of order;
    * an older read must never overwrite a newer one, or an installed package
@@ -303,6 +362,20 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     void refreshInstalled()
   }, [refreshInstalled])
 
+  useEffect(() => {
+    // The side-panel opt-in flow enables packages OUTSIDE this section (the
+    // background broadcasts `webmcp_packages_changed` after every catalog
+    // refresh). Without this listener the activation badge stays stale until
+    // an unrelated refresh or a remount (finding: "Activation badge stays
+    // stale"). Guarded: tests and non-extension embeds have no chrome.
+    if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage?.addListener) return
+    const listener = (message: { type?: string } | undefined) => {
+      if (message?.type === 'webmcp_packages_changed') void refreshInstalled()
+    }
+    chrome.runtime.onMessage.addListener(listener)
+    return () => chrome.runtime.onMessage.removeListener(listener)
+  }, [refreshInstalled])
+
   const handleAdd = async () => {
     if (!input.trim()) return
     setAdding(true)
@@ -310,11 +383,20 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     try {
       const registry = addRegistry(input)
       setRegistries(listRegistries())
+      if (!registriesPersisted()) {
+        // Private mode / storage failure: the registry lives in the session
+        // mirror only — keep the form open and say so instead of letting the
+        // addition silently vanish on reload (finding: "Registry addition
+        // disappears in private mode").
+        setAddError(format(t('settings.webmcpPackages.addSessionOnly'), { label: registry.label }))
+        setAdding(false)
+        return
+      }
       setInput('')
       setAddOpen(false)
       void registry
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : String(err))
+      setAddError(localizedError(t, err))
     } finally {
       setAdding(false)
     }
@@ -329,7 +411,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
       setConfirmPkg(null)
       return true
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error))
+      setActionError(localizedError(t, error))
       return false
     } finally {
       setBusyId(null)
@@ -344,7 +426,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
       setActionError(null)
       return true
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error))
+      setActionError(localizedError(t, error))
       return false
     } finally {
       setBusyId(null)
@@ -390,7 +472,14 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           installedIds={installedIds}
           activations={activations}
           busyId={busyId}
-          onInstall={(reg, pkg) => { setConfirmPkg({ registry: reg, pkg }); return Promise.resolve(true) }}
+          onInstall={(reg, pkg, verifiedCount) => {
+            // The confirmation discloses the count VERIFIED from the package
+            // manifest (finding: "Confirmation shows wrong tool count") — the
+            // registry's claim is only a fallback when the manifest was
+            // unreadable.
+            setConfirmPkg({ registry: reg, pkg, verifiedToolCount: verifiedCount })
+            return Promise.resolve(true)
+          }}
           onUninstall={handleUninstall}
           onRemoveRegistry={handleRemoveRegistry}
         />
@@ -440,7 +529,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
               {format(t('settings.webmcpPackages.confirmInstallTitle'), { id: confirmPkg.pkg.id })}
             </div>
             <div className="mt-2 text-xs text-tertiary">
-              {format(t('settings.webmcpPackages.confirmInstallBody'), { count: confirmPkg.pkg.toolCount })}
+              {format(t('settings.webmcpPackages.confirmInstallBody'), { count: confirmPkg.verifiedToolCount })}
             </div>
             {actionError && (
               <div className="mt-2 text-xs text-red-600 dark:text-red-400">
