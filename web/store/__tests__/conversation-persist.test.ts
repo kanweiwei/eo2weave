@@ -393,6 +393,14 @@ describe('conversation persistence: metadata routing', () => {
     // UPSERT guard, so the committed conversion cannot be reverted).
     const metaKinds = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0]?.kind)
     expect(metaKinds).not.toContain('project')
+    // NOTE: the SQL-level half of this contract (the saveMeta UPSERT must
+    // declare kind on INSERT and NEVER assign it in the ON CONFLICT update
+    // clause — not via excluded.kind, a positional parameter, or a literal)
+    // is asserted against the real SQL in
+    // web/sqlite/repositories/conversation.repository.test.ts
+    // ('saveMeta writes kind on INSERT but never updates it on conflict');
+    // this file mocks the repository, so only the caller-side argument
+    // contract is observable here.
     expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
   })
 })

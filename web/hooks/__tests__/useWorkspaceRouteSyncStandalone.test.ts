@@ -430,6 +430,79 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     }
   })
 
+  it('repairs the destination after a timed-out host activation commits late (route left)', async () => {
+    // The timeout releases the ROUTE (redirect to /chats), but the
+    // activation promise keeps running inside the store and commits late —
+    // AFTER the user has left the route. Cleanup blanks newestChatIdRef, so
+    // the stale-completion repair cannot help; the retained
+    // destinationChatIdRef must let the late commit re-run the full sync for
+    // the destination chat instead of leaving the stale host project active.
+    vi.useFakeTimers()
+    try {
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+      let releaseActivation: (() => void) | null = null
+      const activationGate = new Promise<boolean>((resolve) => {
+        releaseActivation = () => resolve(true)
+      })
+      // Mirror the real setActiveProject: the commit lands inside the store
+      // whenever the activation finally settles (long after the timeout).
+      setActiveProjectSpy.mockImplementation(
+        () =>
+          activationGate.then((value) => {
+            useProjectStore.setState({ activeProjectId: PROJECT_A.id })
+            return value
+          }) as Promise<boolean>,
+      )
+
+      const { unmount } = renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveProjectSpy).toHaveBeenCalledWith('project-a')
+
+      // Timeout: the recoverable redirect fires while the activation hangs.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+
+      // The user leaves the route entirely before the activation settles.
+      unmount()
+
+      // The activation settles and commits late inside the store.
+      releaseActivation!()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The late-commit repair restored the destination: full sync ran for
+      // the retained destination chat (workspace switch + activation).
+      expect(useProjectStore.getState().activeProjectId).toBe('project-a')
+      expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-1')
+      expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not repair after a genuinely rejected host activation', async () => {
+    // Only a LATE COMMIT (timeout then eventual success) needs the repair;
+    // a genuine rejection never commits anything, so no sync may run after
+    // the redirect.
+    vi.useFakeTimers()
+    try {
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+      setActiveProjectSpy.mockRejectedValue(new Error('activation failed'))
+
+      renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(switchWorkspaceSpy).not.toHaveBeenCalled()
+      expect(setActiveConversationSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a settled host-project activation still proceeds normally (bound does not fire early)', async () => {
     vi.useFakeTimers()
     try {
@@ -445,6 +518,112 @@ describe('useWorkspaceRouteSyncStandalone', () => {
       expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-1')
       expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1')
       expect(routerReplaceMock).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a timed-out host activation that commits later does not repoint the newer chat (full re-sync)', async () => {
+    vi.useFakeTimers()
+    try {
+      // No active project: Step 0 binds a host. The activation is SLOW, not
+      // dead — it commits after the 30s bound, landing on whatever page the
+      // user navigated to in the meantime. The hook must observe that late
+      // commit and re-run the full sync so the stores return to chat-b.
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-a', kind: 'direct' }, { id: 'chat-b', kind: 'direct' }] })
+      let releaseActivation: (() => void) | null = null
+      setActiveProjectSpy.mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            releaseActivation = () => resolve(true)
+          }),
+      )
+      // Mirror the real setActive: commit synchronously when called.
+      setActiveConversationSpy.mockImplementation(async (id: string) => {
+        useConversationStore.setState({ activeConversationId: id })
+      })
+
+      const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+        initialProps: { chatId: 'chat-a' },
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveProjectSpy).toHaveBeenCalledWith('project-a')
+
+      // Timeout fires: sync A bails with the recoverable redirect.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+
+      // User navigates to chat-b; its sync activates it. Only patch the
+      // active-project pointer — re-running setupStores here would re-install
+      // fresh spies and drop the committing setActive mock above.
+      useProjectStore.setState({ activeProjectId: 'project-a', isLoading: false })
+      rerender({ chatId: 'chat-b' })
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-b')
+
+      // NOW the abandoned activation for chat-a's session commits. The late
+      // commit would repoint the stores; the watcher must re-run the full
+      // sync for chat-b so it converges back (no stale chat-a activation).
+      releaseActivation!()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveConversationSpy).not.toHaveBeenCalledWith('chat-a')
+      expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a timed-out workspace switch that completes later does not repoint the newer chat (full re-sync)', async () => {
+    vi.useFakeTimers()
+    try {
+      // Host is already bound, so the sync goes straight to Step 2. The
+      // switchWorkspace for chat-a is SLOW: the 30s bound redirects, the user
+      // navigates to chat-b, and then the abandoned switch completes — its
+      // late commit must trigger a re-sync back to chat-b.
+      setupStores({ conversations: [{ id: 'chat-a', kind: 'direct' }, { id: 'chat-b', kind: 'direct' }] })
+      let releaseSwitch: (() => void) | null = null
+      switchWorkspaceSpy.mockImplementation(
+        (id: string) =>
+          new Promise<void>((resolve) => {
+            if (id === 'chat-a') {
+              releaseSwitch = resolve
+            } else {
+              resolve()
+            }
+          }),
+      )
+      // Mirror the real setActive: commit synchronously when called.
+      setActiveConversationSpy.mockImplementation(async (id: string) => {
+        useConversationStore.setState({ activeConversationId: id })
+      })
+
+      const { rerender } = renderHook(({ chatId }) => useWorkspaceRouteSyncStandalone(chatId), {
+        initialProps: { chatId: 'chat-a' },
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(switchWorkspaceSpy).toHaveBeenCalledWith('chat-a')
+
+      // Timeout fires: sync A bails with the recoverable redirect.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+
+      // User navigates to chat-b; its sync activates it.
+      rerender({ chatId: 'chat-b' })
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-b')
+
+      // NOW the abandoned switch to chat-a completes. The watcher re-runs the
+      // full sync for chat-b, converging the stores back onto the route.
+      releaseSwitch!()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveConversationSpy).not.toHaveBeenCalledWith('chat-a')
+      expect(useConversationStore.getState().activeConversationId).toBe('chat-b')
     } finally {
       vi.useRealTimers()
     }

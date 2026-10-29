@@ -129,6 +129,41 @@ let projectDeletionRebindChain: Promise<void> = Promise.resolve()
 // Dropped on page reload by design.
 const pendingOpfsProjectDeletions = new Set<string>()
 
+// Upper bound for one OPFS cleanup attempt. Cleanup is best-effort (the DB
+// row is already gone, so a skipped cleanup only leaves orphaned files), but
+// it is awaited INSIDE the serialized deletion chain: a cleanup that never
+// settles would hold the chain forever and block every later project
+// deletion in this tab. The race bounds that wait — on timeout the project
+// id stays in (or is added to) the retry list and the chain moves on.
+const OPFS_CLEANUP_TIMEOUT_MS = 10_000
+
+// Overall wall-clock budget for ONE flush pass over the retry queue. Each
+// queued cleanup is already bounded per-attempt, but the flush loop is
+// awaited INSIDE the serialized deletion chain: without a pass-level cap a
+// large retry backlog would serialize N × 10s of waits into the chain and
+// delay every later project deletion in this tab. One pass spends at most
+// this much time; leftovers stay queued for the next flush (best-effort —
+// the data is unreferenced, so deferred cleanup is orphaned files only).
+const OPFS_FLUSH_BUDGET_MS = 10_000
+
+/**
+ * Await `promise` with a hard deadline. Resolves with `false` if the
+ * underlying promise does not settle within `timeoutMs` (the promise keeps
+ * running in the background — its late result is ignored, never a leak of
+ * failure into the caller's error path).
+ */
+async function withTimeout(promise: Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function tryDeleteOpfsProject(projectId: string): Promise<boolean> {
   try {
     const pm = await ProjectManager.create()
@@ -140,14 +175,23 @@ async function tryDeleteOpfsProject(projectId: string): Promise<boolean> {
   }
 }
 
+/** Best-effort bounded OPFS cleanup: false on failure OR on timeout. */
+function tryDeleteOpfsProjectBounded(projectId: string): Promise<boolean> {
+  return withTimeout(tryDeleteOpfsProject(projectId), OPFS_CLEANUP_TIMEOUT_MS)
+}
+
 async function flushPendingOpfsProjectDeletions(): Promise<void> {
   if (pendingOpfsProjectDeletions.size === 0) return
+  const deadline = Date.now() + OPFS_FLUSH_BUDGET_MS
   for (const id of [...pendingOpfsProjectDeletions]) {
+    if (Date.now() >= deadline) break
     // eslint-disable-next-line no-await-in-loop -- sequential retries keep OPFS contention predictable
-    if (await tryDeleteOpfsProject(id)) {
+    if (await tryDeleteOpfsProjectBounded(id)) {
       pendingOpfsProjectDeletions.delete(id)
     }
   }
+  // Leftover ids stay queued: the next flush pass retries them under a
+  // fresh budget.
 }
 
 /**
@@ -578,24 +622,20 @@ export const useProjectStore = create<ProjectState>()(
           .then(async () => {
             const remaining = await repo.findAllProjects()
             const nextProjectId = remaining.find((p) => p.id !== projectId)?.id || ''
-            try {
-              // The rebind and the deletion now share ONE SQLite transaction
-              // (rebindWorkspacesAndDeleteProject): a crash between the old
-              // per-row rebind loop and repo.deleteProject left the project
-              // row alive with some workspaces already reassigned to the
-              // successor — and a retry only saw rows still pointing at the
-              // original project, so the partial reassignment persisted. With
-              // the single-transaction form, a failure (or a dead tab /
-              // process) rolls the rebind AND the row deletion back together,
-              // so the whole deletion stays retryable. The in-memory
-              // rollback/`rebound` bookkeeping of the loop is gone with it:
-              // there is nothing left to restore by hand — a rejected
-              // transaction has already rolled back atomically, so the catch
-              // below only rethrows. The project row is removed inside the
-              // same section: a queued overlapping deletion re-reads the table
-              // only after this row is gone, so it can never select THIS
-              // project as its successor.
-              await repo.rebindWorkspacesAndDeleteProject(projectId, nextProjectId)
+            const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+            const workspaceRepo = getWorkspaceRepository()
+            const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
+            // Rebind ALL host rows off the deleted project AND delete the
+            // project row in ONE SQLite transaction (repository method): an
+            // interruption mid-section can no longer leave the project row
+            // alive with some workspaces already assigned to the successor —
+            // rebinds and the row deletion commit (or roll back) together, so
+            // a retry observes the pre-deletion state and re-runs cleanly.
+            await repo.deleteProjectIncludingHostRebind(
+              projectId,
+              nextProjectId,
+              orphaned.map((ws) => ws.id)
+            )
 
               // ── OPFS workspace-data cleanup — AFTER the DB commit ──
               // Deliberately deferred and best-effort: the row is gone, so the
@@ -605,18 +645,15 @@ export const useProjectStore = create<ProjectState>()(
               // rollback path could not restore. Failures are logged and
               // queued in an in-memory retry list (not persisted — storage-
               // light rule); the next successful deletion flushes the queue.
-              if (!(await tryDeleteOpfsProject(projectId))) {
+              // The wait is BOUNDED (timeout race): a hung cleanup must not
+              // hold the serialized deletion chain forever and strand every
+              // later deletion — on timeout the id is queued for retry and
+              // the chain proceeds (tradeoff: possible orphaned OPFS files
+              // until a later flush succeeds).
+              if (!(await tryDeleteOpfsProjectBounded(projectId))) {
                 pendingOpfsProjectDeletions.add(projectId)
               }
               await flushPendingOpfsProjectDeletions()
-            } catch (err) {
-              // The transaction rolled back atomically (rebind + secret +
-              // row deletion undone together) — no manual restore of
-              // workspace assignments is needed or possible here. Rethrow so
-              // THIS caller observes the failure while the chain keeps
-              // draining for later deletions.
-              throw err
-            }
 
             // ── Post-delete repair — INSIDE the serialized section ──
             // The check must run AFTER this deletion committed, and inside

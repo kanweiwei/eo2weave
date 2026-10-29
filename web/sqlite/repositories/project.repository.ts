@@ -120,6 +120,44 @@ export class ProjectRepository {
     )
   }
 
+  /**
+   * Atomically rebind host workspace rows off a project and delete the
+   * project row (plus its scoped secrets) in ONE SQLite transaction.
+   *
+   * Rebinding in a loop of standalone `updateWorkspace` calls left a crash
+   * window: a tab/process termination after one or more rebinds committed but
+   * before the project row was deleted stranded those workspaces on the
+   * successor while the project survived — and the retry loop's
+   * findAllWorkspacesByProjectIncludingDirect query no longer matched the
+   * already-rebound rows, so the partial reassignment persisted. Inside a
+   * transaction the rebinds and the row deletion commit (or roll back)
+   * together: any interruption leaves the previous consistent state.
+   */
+  async deleteProjectIncludingHostRebind(
+    projectId: string,
+    nextProjectId: string,
+    hostWorkspaceIds: string[]
+  ): Promise<void> {
+    const db = getSQLiteDB()
+    const secretPrefix = getProjectSecretStoragePrefix(projectId)
+    await db.transaction(async (tx) => {
+      for (const workspaceId of hostWorkspaceIds) {
+        // eslint-disable-next-line no-await-in-loop -- one transaction; ordering is irrelevant to correctness here
+        await tx.execute('UPDATE workspaces SET project_id = ? WHERE id = ?', [
+          nextProjectId,
+          workspaceId,
+        ])
+      }
+      // Secrets are encrypted API-key records scoped with this exact prefix.
+      // substr avoids SQL LIKE wildcard handling for encoded project IDs.
+      await tx.execute('DELETE FROM api_keys WHERE substr(provider, 1, ?) = ?', [
+        secretPrefix.length,
+        secretPrefix,
+      ])
+      await tx.execute('DELETE FROM projects WHERE id = ?', [projectId])
+    })
+  }
+
   async deleteProject(id: string): Promise<void> {
     const db = getSQLiteDB()
     const secretPrefix = getProjectSecretStoragePrefix(id)
