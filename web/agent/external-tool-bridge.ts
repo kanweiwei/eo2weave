@@ -22,6 +22,7 @@ import { toolErrorJson, toolOkJson } from './tools/tool-envelope'
 import { authorize } from './policy-engine'
 import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
+import { useSettingsStore } from '@/store/settings.store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
 import {
@@ -111,6 +112,7 @@ export function collectAllExternalTools(): UnifiedToolEntry[] {
 
   // --- WebMCP tools ---
   try {
+    if (!useSettingsStore.getState().enableWebMCP) return tools
     const store = useWebMCPStore.getState()
     const enabledTools = store.getEnabledTools()
     for (const tool of enabledTools) {
@@ -818,8 +820,16 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     args?: Record<string, unknown>
   }
 
-  const allTools = collectAllExternalTools()
-  const tool = allTools.find(t => t.fullName === full_tool_name)
+  let tool = collectAllExternalTools().find(t => t.fullName === full_tool_name)
+
+  const validTabId = Number.isSafeInteger(tab_id) && tab_id! > 0
+  const missingTab = tool?.source === 'webmcp' && validTabId && !tool.tabIds?.includes(tab_id!)
+  if ((!tool || missingTab) && validTabId && !context.abortSignal?.aborted && useSettingsStore.getState().enableWebMCP) {
+    // Discovery can replace the catalog between search_tools and call_tool.
+    // Recheck once against a fresh snapshot before declaring the tool or tab gone.
+    await refreshCatalogWithinDeadline()
+    tool = collectAllExternalTools().find(t => t.fullName === full_tool_name)
+  }
 
   if (!tool) {
     return toolErrorJson(
@@ -904,6 +914,9 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
   if (tool.source === 'mcp') {
     return executeMCPTool(tool, toolArgs || {})
   } else {
+    if (!useSettingsStore.getState().enableWebMCP) {
+      return toolErrorJson('call_tool', 'WEBMCP_DISABLED', 'WebMCP is disabled.', { retryable: false })
+    }
     return executeWebMCPTool(tool, tab_id!, toolArgs || {}, context)
   }
 }
@@ -1051,33 +1064,34 @@ async function navigationCatalog(tabId: number, rawToolName?: string) {
   }
 }
 
-/**
- * Re-discover the page catalog and return the current legacy route key
- * (`groupKey`) of `fullName` on `tabId`.
- *
- * Extension <= 1.1.7 routes invocations by a key that embeds the page's
- * toolset signature, so the key rotates whenever the page re-registers its
- * tools and the cached one goes stale. Returns undefined when the tool or
- * the tab is gone.
- */
+/** Refresh the WebMCP catalog once, with a short deadline for failed calls. */
+async function refreshCatalogWithinDeadline(freshAfterInFlight = false): Promise<boolean> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  try {
+    const { refreshWebMCPCatalog, discoverWebMCPCatalog, expireWebMCPDiscovery } = await import('@/webmcp/manager')
+    await Promise.race([
+      freshAfterInFlight ? refreshWebMCPCatalog() : discoverWebMCPCatalog(true),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          expireWebMCPDiscovery()
+          reject(new Error('WebMCP catalog refresh timed out'))
+        }, 3000)
+      }),
+    ])
+    return true
+  } catch {
+    return false
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
+/** Return the current legacy route key after rediscovering the selected tab. */
 async function refreshLegacyRouteKey(
   fullName: string,
   tabId: number,
 ): Promise<string | undefined> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined
-  try {
-    const { refreshWebMCPCatalog } = await import('@/webmcp/manager')
-    await Promise.race([
-      refreshWebMCPCatalog(),
-      new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Legacy route refresh timed out')), 3000)
-      }),
-    ])
-  } catch {
-    return undefined
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId)
-  }
+  if (!(await refreshCatalogWithinDeadline(true))) return undefined
   try {
     const refreshed = useWebMCPStore.getState().getToolByCallName(fullName)
     return refreshed?.tabs.find((tab) => tab.tabId === tabId)?.groupKey
