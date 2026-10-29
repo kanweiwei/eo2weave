@@ -103,17 +103,25 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
 
   const Icon = packageIcon(packageInfo.id)
   const tools = packageInfo.tools ?? []
-  // Legacy (pre-#102) payloads carry a tool COUNT but no per-tool list, so
-  // `tools` is empty there. Disclose the real count instead of "0 tools":
-  // the summary falls back to the package-wide count, and (with no list to
-  // split against) the additional-tools note must NOT claim the tools are
-  // on other origins.
+  // Tool-count disclosure, per protocol:
+  //  - NEW (#102): `tools` = the tools matching THIS tab, `totalTools` = the
+  //    package-wide count. An empty matching list means "no tool matches
+  //    this site" — the package-wide count must be disclosed as ADDITIONAL
+  //    tools on other origins, never as this site's count.
+  //  - LEGACY (1.1.7): the payload carries a COUNT only, no per-tool list,
+  //    so there is no per-site/package split to disclose — the count is the
+  //    only truthful number, and no other-origins note is shown.
+  const isLegacy = legacy === true
   const disclosedToolCount =
     tools.length > 0
       ? tools.length
-      : typeof packageInfo.totalTools === 'number'
+      : isLegacy && typeof packageInfo.totalTools === 'number'
         ? packageInfo.totalTools
         : 0
+  const showAdditionalTools =
+    !isLegacy &&
+    typeof packageInfo.totalTools === 'number' &&
+    packageInfo.totalTools > tools.length
 
   const handleConfirm = async () => {
     setSubmitting(true)
@@ -353,10 +361,10 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
             </p>
           )}
 
-          {tools.length > 0 && typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
+          {showAdditionalTools && (
             <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
               {t('sidePanelPackage.additionalToolsNote', {
-                count: packageInfo.totalTools - tools.length,
+                count: packageInfo.totalTools! - tools.length,
               })}
             </p>
           )}

@@ -132,9 +132,20 @@ export interface LegacyRecipeStatus {
 type ProtocolSupport = 'new' | 'legacy-only' | 'none'
 let protocolSupport: ProtocolSupport | null = null
 
+/**
+ * In-flight legacy enables, keyed by recipe id. The legacy bridge call
+ * cannot be cancelled, so a retry after a client-side TIMEOUT would start a
+ * SECOND enable while the first may still commit (two storage writes, two
+ * tab reloads). Tracking the pending bridge call lets a retry await the
+ * SAME call — and its REAL outcome — instead of firing a duplicate
+ * (finding: "Timed-out enable can be retried concurrently").
+ */
+const pendingLegacyEnables = new Map<string, Promise<PackageOptInEnableResult>>()
+
 /** Test seam: forget the per-session protocol verdict. */
 export function resetPackagePromptProtocolCache(): void {
   protocolSupport = null
+  pendingLegacyEnables.clear()
 }
 
 const DISMISS_STORAGE_KEY_PREFIX = 'cw_webmcp_package_prompt_dismissed_v1'
@@ -493,7 +504,15 @@ async function probeLegacyProtocol(
   if (!status || status.ok === false) {
     // eslint-disable-next-line no-console
     console.warn('[SidePanelPackagePrompt] skip: legacy bridge returned failure/timeout', { status })
-    return null
+    // A legacy timeout (null) or a transient background error is NOT a
+    // definitive "nothing to offer" answer: returning null here would let
+    // the caller cache the 'legacy-only' verdict and skip a new-protocol
+    // bridge that may have recovered. Stay retryable instead (finding:
+    // "Transient failures hide the prompt"). A structural failure
+    // (UNAUTHORIZED_TARGET — bad binding/origin) cannot heal and stays
+    // terminal, mirroring the new-protocol semantics.
+    const structural = status?.errorCode === 'UNAUTHORIZED_TARGET'
+    return structural ? null : { applicable: false, retryable: true }
   }
   const recipe = status.recipe
   if (!status.applicable || !recipe || typeof recipe.id !== 'string') {
@@ -692,27 +711,55 @@ export async function enableLegacyRecipeAndReload(
   ).__agentWeb
   if (!agentWeb?.recipeEnable) return { ok: false, errorCode: 'BRIDGE_UNAVAILABLE' }
 
-  try {
-    const raw = await Promise.race([
-      agentWeb.recipeEnable(binding, recipeId),
+  // A previous enable for this recipe is still in flight (the client-side
+  // timeout fired but the bridge call kept running): await THAT call
+  // instead of starting a duplicate enable + reload (two storage writes,
+  // two tab reloads). The wait is bounded by the same budget so a bridge
+  // that never settles cannot wedge the prompt.
+  const inFlight = pendingLegacyEnables.get(recipeId)
+  if (inFlight) {
+    // eslint-disable-next-line no-console
+    console.info('[SidePanelPackagePrompt] legacy enable already in flight; awaiting it', { recipeId })
+    const raced = await Promise.race([
+      inFlight,
       new Promise<null>(resolve => {
         setTimeout(() => resolve(null), ENABLE_TIMEOUT_MS)
       }),
     ])
-    if (!raw) return { ok: false, errorCode: 'TIMEOUT' }
-    return {
-      ok: raw.ok === true,
-      errorCode: raw.ok === true ? undefined : (raw.errorCode ?? 'ENABLE_FAILED'),
-      error: raw.error,
-      reloaded: raw.reloaded,
-    }
-  } catch (err: unknown) {
-    // eslint-disable-next-line no-console
-    console.error('[SidePanelPackagePrompt] legacy enable bridge call failed:', err, { recipeId })
-    return {
-      ok: false,
-      errorCode: 'ENABLE_FAILED',
-      error: err instanceof Error ? err.message : String(err),
-    }
+    return raced ?? { ok: false, errorCode: 'TIMEOUT' }
   }
+
+  // The bridge promise is the unit of concurrency control: the client-side
+  // timeout only bounds the WAIT, never the call itself.
+  const bridgeCall = agentWeb.recipeEnable(binding, recipeId).then(
+    raw => ({
+      ok: raw?.ok === true,
+      errorCode: raw?.ok === true ? undefined : (raw?.errorCode ?? 'ENABLE_FAILED'),
+      error: raw?.error,
+      reloaded: raw?.reloaded,
+    }),
+    (err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error('[SidePanelPackagePrompt] legacy enable bridge call failed:', err, { recipeId })
+      return {
+        ok: false,
+        errorCode: 'ENABLE_FAILED',
+        error: err instanceof Error ? err.message : String(err),
+      }
+    },
+  )
+  pendingLegacyEnables.set(recipeId, bridgeCall)
+  void bridgeCall.finally(() => {
+    if (pendingLegacyEnables.get(recipeId) === bridgeCall) pendingLegacyEnables.delete(recipeId)
+  })
+
+  const timedOut = Symbol('timeout')
+  const outcome = await Promise.race([
+    bridgeCall,
+    new Promise<typeof timedOut>(resolve => {
+      setTimeout(() => resolve(timedOut), ENABLE_TIMEOUT_MS)
+    }),
+  ])
+  if (outcome === timedOut) return { ok: false, errorCode: 'TIMEOUT' }
+  return outcome
 }

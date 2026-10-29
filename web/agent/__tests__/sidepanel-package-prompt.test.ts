@@ -406,6 +406,33 @@ describe('getPendingPackagePrompt', () => {
     dismissPackagePrompt('world.jmail.messages')
     expect(await getPendingPackagePrompt()).toBeNull()
   })
+
+  it('keeps a transient legacy failure retryable instead of caching legacy-only', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const checkStatus = vi.fn().mockResolvedValue({
+      ok: false,
+      applicable: false,
+      errorCode: 'STATUS_FAILED',
+      error: 'storage hiccup',
+    })
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockRejectedValue(new Error('unknown message type')),
+      recipeCheckStatus: checkStatus,
+    })
+
+    // A transient legacy failure must NOT be cached as a definitive
+    // legacy-only verdict (finding: "Transient failures hide the prompt").
+    expect(await getPendingPackagePrompt()).toEqual({ applicable: false, retryable: true })
+
+    // The new bridge recovers → the prompt comes back (the verdict was not
+    // locked to legacy-only).
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue(okStatus()),
+      recipeCheckStatus: checkStatus,
+    })
+    const result = await getPendingPackagePrompt()
+    expect(result?.applicable).toBe(true)
+  })
 })
 
 describe('dismissPackagePrompt (concurrency-safe storage)', () => {
@@ -581,6 +608,8 @@ describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
   beforeEach(() => {
     getSidePanelBindingIdMock.mockReturnValue(BINDING)
     setAgentWeb(undefined)
+    // Drop any in-flight enable left behind by a previous case.
+    resetPackagePromptProtocolCache()
   })
 
   it('calls recipeEnable with binding + recipeId and NO consent token; maps ok/reloaded', async () => {
@@ -635,5 +664,36 @@ describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
     setAgentWeb({ recipeEnable: vi.fn() })
     const result = await enableLegacyRecipeAndReload('world.jmail.messages')
     expect(result).toMatchObject({ ok: false, errorCode: 'NO_BINDING' })
+  })
+
+  it('does not fire a duplicate enable while a timed-out legacy call is still in flight', async () => {
+    vi.useFakeTimers()
+    try {
+      const recipeEnable = vi.fn(
+        () =>
+          new Promise<{ ok?: boolean; reloaded?: boolean }>(resolve => {
+            // The bridge answers after the 8s client timeout but within the
+            // retry's own wait window.
+            setTimeout(() => resolve({ ok: true, reloaded: true }), 12_000)
+          }),
+      )
+      setAgentWeb({ recipeEnable })
+      const pending = enableLegacyRecipeAndReload('world.jmail.messages')
+      await vi.advanceTimersByTimeAsync(8_100)
+      expect(await pending).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
+
+      // The user retries while the first call is still running: the SAME
+      // call is awaited instead of starting a second enable (no duplicate
+      // storage write, no second tab reload), and its REAL outcome reaches
+      // the retry.
+      const retry = enableLegacyRecipeAndReload('world.jmail.messages')
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(4_000)
+      expect(await retry).toMatchObject({ ok: true, reloaded: true })
+      expect(recipeEnable).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

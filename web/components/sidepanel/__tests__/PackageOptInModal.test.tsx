@@ -109,6 +109,20 @@ describe('PackageOptInModal', () => {
     expect(container.textContent).not.toContain('additional tool')
   })
 
+  it('new protocol: an empty matching-tools list keeps the other-origins disclosure and claims no site tools', () => {
+    // The new protocol's `tools` = tools matching THIS tab, `totalTools` =
+    // the package-wide count. With no matching tools the summary must not
+    // claim site tools, and the other-origins note must stay visible.
+    const { container } = render(
+      <PackageOptInModal
+        packageInfo={{ ...packageInfo, tools: [], totalTools: 5 }}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(container.textContent).toContain('(0 tools)')
+    expect(container.textContent).toContain('activates 5 additional tool')
+  })
+
   it('confirm: enables the package with the consent token + shows the localized success toast + closes', async () => {
     const onClose = vi.fn()
     render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)
