@@ -488,12 +488,14 @@ describe('createPackageOptInHandler', () => {
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     // The token was minted for world.jmail.archive; presenting it for a
-    // different package fails the token's package binding (finding: "Consent
-    // transfers across packages") before any candidate matching happens.
+    // different package fails at the CANDIDATE lookup — the re-derived
+    // candidate list does not contain com.douban.movie (it is not offered
+    // for this tab), so the mismatch is reported before the token binding
+    // is even consulted. The token stays unconsumed either way.
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.douban.movie', consentToken: token }, respond)
     expect(setBuiltinConfig).not.toHaveBeenCalled()
     expect(reload).not.toHaveBeenCalled()
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'CONSENT_REQUIRED' }))
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'PACKAGE_MISMATCH' }))
   })
 
   it('revalidates the LIVE tab url after reading the catalog and cancels on navigation', async () => {

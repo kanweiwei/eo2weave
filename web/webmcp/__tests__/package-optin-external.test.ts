@@ -99,6 +99,13 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
 
   const enablePath = 'com.discord.main/config.json'
 
+  /** Seed the user mount with the package the catalog reports as installed. */
+  async function seedInstalledPackage(provider: ReturnType<typeof memoryProvider>): Promise<void> {
+    await provider.mkdir('com.discord.main', { recursive: true })
+    await provider.writeFile('com.discord.main/manifest.json', new TextEncoder().encode(JSON.stringify(DISCORD_MANIFEST)))
+    await provider.writeFile(enablePath, new TextEncoder().encode(JSON.stringify({ activation: 'disabled' })))
+  }
+
   beforeEach(() => {
     vi.resetAllMocks()
     userStorage = memoryProvider()
@@ -145,6 +152,9 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
   })
 
   it('enable writes activation:enabled into the EXTERNAL package config on the user mount', async () => {
+    // The package directory exists on the user mount (the presence
+    // revalidation before the write passes).
+    await seedInstalledPackage(userStorage)
     const token = await mintToken()
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
@@ -158,12 +168,83 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
   })
 
   it('enable verifies against the user-mount config after the write', async () => {
+    await seedInstalledPackage(userStorage)
     const token = await mintToken()
+    // A concurrent disable commits AFTER the enable write (e.g. the package
+    // management page raced the enable): the write itself succeeds, but the
+    // post-reload verification read observes the disabled config and the
+    // handler must NOT report success (finding: "Verification is not
+    // tested" — this test fails the moment the post-reload verification is
+    // removed or skipped, because then the response is ok:true).
+    const wrapped = await userStorage
+    userStorage = {
+      ...wrapped,
+      readFile: async (path: string) => {
+        const bytes = await wrapped.readFile(path)
+        if (path === enablePath) return new TextEncoder().encode(JSON.stringify({ activation: 'disabled' }))
+        return bytes
+      },
+    } as typeof wrapped
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
-    expect(respond.mock.calls[0][0]).toMatchObject({ ok: true })
+    expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'ENABLE_REVERTED' })
     expect(reload).toHaveBeenCalled()
+  })
+
+  it('refuses to enable when the package was UNINSTALLED after the status probe (no resurrected directory)', async () => {
+    // Token minted while the package was still installed...
+    await seedInstalledPackage(userStorage)
+    const token = await mintToken()
+    // ...then uninstall removed the directory before the enable landed.
+    await userStorage.remove('com.discord.main', { recursive: true })
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
+    expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'PACKAGE_UNINSTALLED' })
+    // The activation write never happened — the provider would have
+    // recreated the directory for config.json (finding: "Uninstall races
+    // can recreate packages").
+    await expect(userStorage.stat('com.discord.main')).rejects.toThrow()
+  })
+
+  it('rejects the enable when the package was REPLACED under the same id after the status probe (stale consent)', async () => {
+    // High finding: "Stale consent enables replaced tools" — the consent
+    // token is bound to the FINGERPRINT (manifest version + tool manifest)
+    // of the package the user saw, not just its id.
+    await seedInstalledPackage(userStorage)
+    const token = await mintToken()
+    // A different package is installed under the SAME id before the user
+    // confirms: new version, different tool.
+    const replacedManifest = {
+      ...DISCORD_MANIFEST,
+      version: '9.9.9',
+      tools: [
+        { name: 'send_messages', description: 'Send messages.', urlRegex: '^https://discord\\.com/.*$', path: 'workflows/send_messages.js' },
+      ],
+    }
+    const replacedEntry = externalEntry({
+      package: {
+        manifest: replacedManifest,
+        sources: { 'workflows/send_messages.js': READ_ONLY_SOURCE },
+      },
+    })
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([replacedEntry])
+    vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[replacedEntry], { userMountComplete: true }])
+    await userStorage.writeFile(
+      'com.discord.main/manifest.json',
+      new TextEncoder().encode(JSON.stringify(replacedManifest)),
+    )
+
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.discord.main', consentToken: token }, respond)
+    expect(respond.mock.calls[0][0]).toMatchObject({ ok: false, errorCode: 'CONSENT_REQUIRED' })
+    // The stale consent never reached the config: the package is still
+    // disabled and the replacement's tools stay off.
+    const stored = JSON.parse(new TextDecoder().decode(await userStorage.readFile(enablePath)))
+    expect(stored).toEqual({ activation: 'disabled' })
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('rejects a consent token minted for ANOTHER package (protocol identical across mounts)', async () => {

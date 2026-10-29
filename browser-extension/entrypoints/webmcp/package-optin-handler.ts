@@ -55,6 +55,7 @@ import {
   findPackageOptInCandidates,
   type PackageOptInCandidate,
 } from './package-optin'
+import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 import { readWebMCPCatalog, readWebMCPCatalogDetailed } from './package-repository'
 import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
 import { serializeWebMCPConfig, parseWebMCPConfig } from '@creatorweave/shared/webmcp-config'
@@ -175,7 +176,29 @@ interface ConsentTokenRecord {
   tabId: number
   /** The package the token was minted for — a token never enables a sibling. */
   packageId: string
+  /**
+   * Fingerprint of the package the user actually saw in the modal (manifest
+   * version + tool names/paths). A package replaced under the same id between
+   * the status probe and the confirmation carries a different fingerprint, so
+   * the stale confirmation is rejected instead of enabling the replacement's
+   * tools (finding: "Stale consent enables replaced tools").
+   */
+  fingerprint: string
   issuedAt: number
+}
+
+/**
+ * Fingerprint of a package candidate: the manifest version plus the sorted
+ * tool names and paths. A re-install of a DIFFERENT package under the same
+ * id changes at least one of these.
+ */
+function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebMCPPackageEntry): string {
+  const manifest = entry?.package?.manifest
+  const version = manifest?.version ?? ''
+  const tools = manifest?.tools
+    ? manifest.tools.map(tool => `${tool.name}:${tool.path}`).sort().join(',')
+    : candidate.tools.map(tool => tool.name).sort().join(',')
+  return `${version}|${tools}`
 }
 
 /**
@@ -200,14 +223,14 @@ function pruneConsentTokens(now: number): void {
   }
 }
 
-function issueConsentToken(tabId: number, packageId: string): string {
+function issueConsentToken(tabId: number, packageId: string, fingerprint: string): string {
   const now = Date.now()
   pruneConsentTokens(now)
   const token =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `ct_${now}_${Math.random().toString(36).slice(2)}`
-  consentTokens.set(token, { tabId, packageId, issuedAt: now })
+  consentTokens.set(token, { tabId, packageId, fingerprint, issuedAt: now })
   return token
 }
 
@@ -216,8 +239,18 @@ function issueConsentToken(tabId: number, packageId: string): string {
  * AND this package (finding: "Consent transfers across packages" — a tab
  * navigating between two supported sites must not carry consent from one
  * package to another).
+ *
+ * The token is also bound to the package FINGERPRINT (finding: "Stale
+ * consent enables replaced tools"): if the package was replaced under the
+ * same id between the probe and the confirmation, the fingerprint differs
+ * and the stale confirmation is rejected.
  */
-function consumeConsentToken(token: string, tabId: number, packageId: string): boolean {
+function consumeConsentToken(
+  token: string,
+  tabId: number,
+  packageId: string,
+  fingerprint: string,
+): boolean {
   const record = consentTokens.get(token)
   if (!record) return false
   consentTokens.delete(token)
@@ -225,6 +258,7 @@ function consumeConsentToken(token: string, tabId: number, packageId: string): b
   return (
     record.tabId === tabId &&
     record.packageId === packageId &&
+    record.fingerprint === fingerprint &&
     now - record.issuedAt <= CONSENT_TOKEN_TTL_MS &&
     now - record.issuedAt >= CONSENT_TOKEN_MIN_AGE_MS
   )
@@ -367,7 +401,11 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // consent must cover them.
         const consentToken =
           candidate.activation === 'disabled'
-            ? issueConsentToken(tabId, candidate.id)
+            ? issueConsentToken(
+                tabId,
+                candidate.id,
+                packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
+              )
             : undefined
         // Sibling candidates for the dismissed-best case (finding: "Dismissal
         // hides other package prompts"): the web client picks the best
@@ -396,7 +434,13 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           .map(item => ({
             ...item,
             consentToken:
-              item.activation === 'disabled' ? issueConsentToken(tabId, item.id) : undefined,
+              item.activation === 'disabled'
+                ? issueConsentToken(
+                    tabId,
+                    item.id,
+                    packageFingerprint(item, entries.find(e => e.directory === item.directory)),
+                  )
+                : undefined,
           }))
         // Tokens minted for alternatives the client may never offer would
         // linger until TTL expiry; acceptable (bounded, in-memory, single
@@ -453,19 +497,6 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         )
       }
       try {
-        // Consume first (fail-closed): an invalid/expired/replayed token must
-        // never reach the config write. Only reached with a token present.
-        // The token is consumed against the WEB-SUPPLIED package id — the
-        // package the modal showed when the user confirmed. If the re-derived
-        // candidate below turns out to differ, the mismatch path rejects.
-        if (hasConsentToken && !consumeConsentToken(consentToken, tabId, packageId)) {
-          sendResponse({
-            ok: false,
-            errorCode: 'CONSENT_REQUIRED',
-            error: 'Consent token missing, expired, already used, or bound to another tab/package.',
-          })
-          return false
-        }
         // Re-derive the candidates from the LIVE tab URL — never trust the
         // web-app-supplied id alone. The requested package must be AMONG the
         // candidates the bound tab actually hosts (finding: "Sibling opt-in
@@ -511,6 +542,31 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
+        // Fail-closed token consumption happens only NOW, against the
+        // RE-DERIVED candidate: the token must match the package the user
+        // ACTUALLY saw in the modal — tab, id AND fingerprint (finding:
+        // "Stale consent enables replaced tools"). A package replaced under
+        // the same id between the status probe and this confirmation carries
+        // a different fingerprint, so the stale confirmation is rejected
+        // instead of enabling the replacement's tools. Consuming after the
+        // candidate lookup (not before) keeps a wrong-token request from
+        // burning a valid token for a DIFFERENT package.
+        if (
+          hasConsentToken &&
+          !consumeConsentToken(
+            consentToken,
+            tabId,
+            packageId,
+            packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
+          )
+        ) {
+          sendResponse({
+            ok: false,
+            errorCode: 'CONSENT_REQUIRED',
+            error: 'Consent token missing, expired, already used, or bound to another tab/package/version.',
+          })
+          return false
+        }
         // The duplicate-namespace diagnostic only exists when BOTH twins are
         // in the catalog. Read the mount ids of every entry sharing the
         // candidate's manifest id: if a user-mounted twin is present, the
@@ -545,6 +601,29 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
             error: 'The bound tab navigated away; enable cancelled.',
           })
           return false
+        }
+        // Revalidate package PRESENCE immediately before the activation
+        // write (finding: "Uninstall races can recreate packages"): an
+        // uninstall that removed the directory after the catalog read above
+        // must not be resurrected by this write — the provider creates
+        // missing parent directories for config.json, which would leave a
+        // directory holding ONLY activation state, and the post-reload
+        // verification would then report a package whose manifest and tools
+        // are gone as "enabled". For builtin packages the config lives in
+        // chrome.storage.local, not the package directory, so there is
+        // nothing to resurrect.
+        if (candidate.mount !== 'builtin-webmcp') {
+          const provider = await getAdapterStorage()
+          try {
+            await provider.stat(`${candidate.directory}/manifest.json`)
+          } catch {
+            sendResponse({
+              ok: false,
+              errorCode: 'PACKAGE_UNINSTALLED',
+              error: 'The package was removed while enabling; nothing was enabled.',
+            })
+            return false
+          }
         }
         await writePackageActivation(candidate.mount, candidate.directory)
         // Reload FIRST, then verify, then respond (finding: "Disabled package
