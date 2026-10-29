@@ -137,6 +137,15 @@ const pendingOpfsProjectDeletions = new Set<string>()
 // id stays in (or is added to) the retry list and the chain moves on.
 const OPFS_CLEANUP_TIMEOUT_MS = 10_000
 
+// Overall wall-clock budget for ONE flush pass over the retry queue. Each
+// queued cleanup is already bounded per-attempt, but the flush loop is
+// awaited INSIDE the serialized deletion chain: without a pass-level cap a
+// large retry backlog would serialize N × 10s of waits into the chain and
+// delay every later project deletion in this tab. One pass spends at most
+// this much time; leftovers stay queued for the next flush (best-effort —
+// the data is unreferenced, so deferred cleanup is orphaned files only).
+const OPFS_FLUSH_BUDGET_MS = 10_000
+
 /**
  * Await `promise` with a hard deadline. Resolves with `false` if the
  * underlying promise does not settle within `timeoutMs` (the promise keeps
@@ -173,12 +182,16 @@ function tryDeleteOpfsProjectBounded(projectId: string): Promise<boolean> {
 
 async function flushPendingOpfsProjectDeletions(): Promise<void> {
   if (pendingOpfsProjectDeletions.size === 0) return
+  const deadline = Date.now() + OPFS_FLUSH_BUDGET_MS
   for (const id of [...pendingOpfsProjectDeletions]) {
+    if (Date.now() >= deadline) break
     // eslint-disable-next-line no-await-in-loop -- sequential retries keep OPFS contention predictable
     if (await tryDeleteOpfsProjectBounded(id)) {
       pendingOpfsProjectDeletions.delete(id)
     }
   }
+  // Leftover ids stay queued: the next flush pass retries them under a
+  // fresh budget.
 }
 
 /**

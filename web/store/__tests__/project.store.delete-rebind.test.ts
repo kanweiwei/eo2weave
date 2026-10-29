@@ -618,4 +618,52 @@ describe('project.store deleteProject host rebind', () => {
     expect(projectManagerDeleteMock).toHaveBeenCalledWith('p-a')
     expect(useProjectStore.getState().error).toBeNull()
   })
+
+  it('a flush pass over a large retry backlog is capped by an overall budget', async () => {
+    // Finding: flushPendingOpfsProjectDeletions awaited every queued cleanup
+    // sequentially, each up to the per-attempt timeout — a large retry
+    // backlog would serialize N × 10s of bounded waits INTO the serialized
+    // deletion chain, delaying later project deletions ~10s per queued id.
+    // One flush pass must spend at most OPFS_FLUSH_BUDGET_MS of wall time
+    // overall; leftover ids stay queued for the next flush.
+    //
+    // Deterministic trace with never-settling cleanups (per-attempt timeout
+    // and flush budget are both 10s, so each failed attempt costs 10s of
+    // fake time):
+    //   p-a section: attempt p-a → timeout@10s → queue={p-a}
+    //     flush: deadline 10s+10s=20s; attempt p-a → timeout@20s; now >=
+    //     deadline → STOP (unfixed code would be done here anyway with one
+    //     queued id — the cap needs a second queued id to be observable).
+    //   p-b section: attempt p-b → timeout@30s → queue={p-a,p-b}
+    //     flush: deadline 30s+10s=40s; attempt p-a → timeout@40s; now >=
+    //     deadline → STOP, leaving p-b queued.
+    //   → attempted == [p-a, p-a, p-b, p-a]; the UNFIXED loop would grind
+    //   on to a 5th attempt (p-b) inside the same pass.
+    useProjectStore.setState({ activeProjectId: '', projects: [project('p-a'), project('p-b')] } as never)
+    findAllProjectsMock.mockResolvedValue([project('p-a'), project('p-b')])
+    findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
+    const attempted: string[] = []
+    projectManagerDeleteMock.mockImplementation((async (id: string) => {
+      attempted.push(id)
+      await new Promise<void>(() => {
+        /* never settles — every attempt runs to its per-attempt timeout */
+      })
+    }) as never)
+
+    vi.useFakeTimers()
+    try {
+      const okA = useProjectStore.getState().deleteProject('p-a')
+      const okB = useProjectStore.getState().deleteProject('p-b')
+      // Wide margin past the full fixed-code trace (40s): with the cap the
+      // pass ends itself; leftovers just remain queued.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(await okA).toBe(true)
+      expect(await okB).toBe(true)
+
+      expect(attempted).toEqual(['p-a', 'p-a', 'p-b', 'p-a'])
+      expect(useProjectStore.getState().error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
 })
