@@ -106,4 +106,26 @@ describe('URL matching', () => {
   it.each(['example.com', '^[$', '^https://example.com'])('rejects invalid patterns %s', urlRegex => {
     expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id)).toThrow()
   })
+  /**
+   * A registry package could ship a catastrophically backtracking pattern
+   * and stall the extension's service worker while probing the tab URL.
+   * The pattern is rejected at VALIDATION time (manifest validation), so
+   * such a package never reaches the matching stage.
+   */
+  it.each(['^(https://example\\.com/)+(a+)+$', '^(https://example\\.com/)*(.*)*$', '^(x+x+)+y$'])(
+    'rejects the catastrophic-backtracking pattern %s',
+    urlRegex => {
+      expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id))
+        .toThrow(/nested quantifiers/i)
+    },
+  )
+  it('keeps matching a normal pattern that merely uses a quantified group', () => {
+    const urlRegex = '^https://example\\.com/articles(?:/[^?#]*)?$'
+    expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id)).not.toThrow()
+    expect(matchesToolUrl(urlRegex, 'https://example.com/articles/1')).toBe(true)
+  })
+  it('does not match an over-long URL (no backtracking work for a hostile pattern)', () => {
+    const long = `https://example.com/${'a'.repeat(5000)}`
+    expect(matchesToolUrl(manifest.tools[0].urlRegex, long)).toBe(false)
+  })
 })

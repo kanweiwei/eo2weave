@@ -9,6 +9,7 @@ vi.mock('../../../browser-extension/entrypoints/webmcp/adapter-service', () => (
 const onUpdated = vi.fn()
 const onRemoved = vi.fn()
 const onMessage = vi.fn()
+const onStorageChanged = vi.fn()
 const refresh = vi.fn(async () => {})
 afterEach(() => vi.unstubAllGlobals())
 beforeEach(() => {
@@ -18,7 +19,7 @@ beforeEach(() => {
   } as unknown as ReturnType<typeof createAdapterService>)
   vi.stubGlobal('chrome', {
     tabs: { onUpdated: { addListener: onUpdated }, onRemoved: { addListener: onRemoved } },
-    storage: { onChanged: { addListener: vi.fn() } },
+    storage: { onChanged: { addListener: onStorageChanged } },
     runtime: {
       id: 'test',
       getURL: (path: string) => 'chrome-extension://test' + path,
@@ -76,4 +77,24 @@ it('routes the extension skill mount through the background transport', async ()
   })
   expect(result.ok).toBe(true)
   expect(atob(result.value as string)).toContain('name: cw-webmcp-creator')
+})
+
+/**
+ * A user-mount package (registry install) keeps its activation config in the
+ * extension's OPFS, which has no storage.onChanged hook. The opt-in enable
+ * path announces the change through a chrome.storage.local sentinel; the
+ * background must react to it, otherwise the newly enabled tools never
+ * register and a removed package's routes stay invokable.
+ */
+it('refreshes the catalog when a USER package activation sentinel changes', async () => {
+  const listener = onStorageChanged.mock.calls[0][0] as (changes: Record<string, unknown>, area: string) => void
+  expect(refresh).toHaveBeenCalledTimes(1)
+
+  listener({ 'webmcp_user_package_config_com.discord.main': { newValue: 1 } }, 'local')
+  await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+
+  // An unrelated storage change must NOT trigger a refresh.
+  listener({ 'some_other_key': { newValue: 1 } }, 'local')
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(refresh).toHaveBeenCalledTimes(2)
 })

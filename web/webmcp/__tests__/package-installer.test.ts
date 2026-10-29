@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { memoryProvider } from '@creatorweave/fs-provider/memory'
-import { installPackage, uninstallPackage, sha256Hex, PackageInstallError } from '../package-installer'
-import { registryFromManifestUrl } from '../package-registry-client'
+import { installPackage, uninstallPackage, sha256Hex, PackageInstallError, INSTALLER_DEFAULT_CONFIG } from '../package-installer'
+import { registryFromManifestUrl, MAX_PACKAGE_FILES, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_TOTAL_BYTES } from '../package-registry-client'
 import type { RegistryManifestPackage } from '../package-registry-client'
 
 const RAW = 'https://raw.githubusercontent.com/owner/repo/main'
@@ -10,7 +10,30 @@ async function sha256Of(text: string): Promise<string> {
   return sha256Hex(new TextEncoder().encode(text))
 }
 
-async function pkgWithFiles(files: Record<string, string>): Promise<RegistryManifestPackage> {
+const WORKFLOW_SOURCE = `export default {
+  inputSchema: { type: 'object' }, outputSchema: { type: 'string' },
+  tree: { type: 'condition', inspect() { return true } },
+  result() { return 'title' }
+}`
+const TOOL_MANIFEST = {
+  id: 'com.example.pkg',
+  version: '1.0.0',
+  description: 'Test package.',
+  tools: [
+    { name: 'read_title', description: 'Read title.', urlRegex: '^https://example\\.com/.*$', path: 'workflows/read.js' },
+  ],
+}
+
+/** Default files of the fixture package: a package the extension ACCEPTS. */
+function fixtureFiles(manifest = TOOL_MANIFEST): Record<string, string> {
+  return {
+    'manifest.json': JSON.stringify(manifest),
+    'config.json': '{}',
+    'workflows/read.js': WORKFLOW_SOURCE,
+  }
+}
+
+async function pkgWithFiles(files: Record<string, string>, overrides: Partial<RegistryManifestPackage> = {}): Promise<RegistryManifestPackage> {
   const entries = await Promise.all(Object.entries(files).map(async ([path, content]) => ({
     path: `packages/com.example.pkg/${path}`,
     sha256: await sha256Of(content),
@@ -21,7 +44,13 @@ async function pkgWithFiles(files: Record<string, string>): Promise<RegistryMani
     description: 'Test package.',
     toolCount: 1,
     files: entries,
+    ...overrides,
   }
+}
+
+/** A package that passes the extension's own package validation. */
+function validPkg(overrides: Partial<RegistryManifestPackage> = {}): Promise<RegistryManifestPackage> {
+  return pkgWithFiles(fixtureFiles(), overrides)
 }
 
 function fetchServing(files: Record<string, string>): typeof fetch {
@@ -39,13 +68,13 @@ function fetchServing(files: Record<string, string>): typeof fetch {
   }) as typeof fetch
 }
 
+function fetchNever(): typeof fetch {
+  return vi.fn() as unknown as typeof fetch
+}
+
 describe('installPackage', () => {
   it('downloads, verifies and writes the whole tree into the mount', async () => {
-    const files = {
-      'manifest.json': '{"id":"com.example.pkg"}',
-      'config.json': '{}',
-      'workflows/read.js': 'export default {}',
-    }
+    const files = fixtureFiles()
     const pkg = await pkgWithFiles(files)
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
@@ -60,11 +89,7 @@ describe('installPackage', () => {
   })
 
   it('leaves NOTHING on the mount when one file fails verification', async () => {
-    const files = {
-      'manifest.json': '{"id":"com.example.pkg"}',
-      'config.json': '{}',
-      'workflows/read.js': 'export default {}',
-    }
+    const files = fixtureFiles()
     const pkg = await pkgWithFiles(files)
     // Corrupt one checksum — as if the registry or the download was tampered.
     const tampered: RegistryManifestPackage = {
@@ -79,33 +104,36 @@ describe('installPackage', () => {
     await expect(installPackage(registry, tampered, provider, { fetchImpl: fetchServing(files) }))
       .rejects.toMatchObject({ code: 'SHA256_MISMATCH' })
     await expect(provider.stat('com.example.pkg')).rejects.toThrow()
+    await expect(provider.stat('.com.example.pkg.installing')).rejects.toThrow()
   })
 
   it('forces the registry config.json to the disabled default (never trusts a shipped activation)', async () => {
-    const files = {
-      'manifest.json': '{"id":"com.example.pkg"}',
-      // A malicious registry could ship activation:enabled to bypass the
-      // on-site opt-in consent flow.
-      'config.json': '{"activation":"enabled"}',
-      'workflows/read.js': 'export default {}',
-    }
-    const pkg = await pkgWithFiles(files)
+    // A malicious registry could ship activation:enabled to bypass the
+    // on-site opt-in consent flow.
+    const files = fixtureFiles({
+      ...TOOL_MANIFEST,
+      config: undefined,
+      // (extra manifest fields are tolerated by validateManifest only via the
+      // exact-fields rule — keep the manifest clean and poison config.json.)
+    } as never)
+    const servingFiles = { ...files, 'config.json': '{"activation":"enabled"}' }
+    const pkg = await pkgWithFiles(servingFiles)
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
-    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(servingFiles) })
     // The installed config.json is ALWAYS the disabled default.
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
-      .toEqual({ activation: 'disabled' })
+      .toEqual(INSTALLER_DEFAULT_CONFIG)
   })
 
   it('rejects aliased registry paths that would overwrite each other', async () => {
-    const files = { 'manifest.json': '{}', 'workflows/read.js': 'export default {}' }
+    const files = fixtureFiles()
     const pkg = await pkgWithFiles(files)
     const aliased: RegistryManifestPackage = {
       ...pkg,
       files: [
         ...pkg.files,
-        { path: 'packages/com.example.pkg/workflows/./read.js', sha256: await sha256Of('export default {}') },
+        { path: 'packages/com.example.pkg/workflows/./read.js', sha256: await sha256Of(WORKFLOW_SOURCE) },
       ],
     }
     const provider = memoryProvider()
@@ -114,43 +142,276 @@ describe('installPackage', () => {
       .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
   })
 
-  it('replaces a previous install (removes the old directory first)', async () => {
-    const v1 = { 'manifest.json': '{"id":"com.example.pkg","version":1}' }
-    const v2 = { 'manifest.json': '{"id":"com.example.pkg","version":2}', 'extra.js': 'x' }
+  it('replaces a previous install atomically via the staging rename', async () => {
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
 
-    await installPackage(registry, await pkgWithFiles(v1), provider, { fetchImpl: fetchServing(v1) })
-    await installPackage(registry, await pkgWithFiles(v2), provider, { fetchImpl: fetchServing(v2) })
+    await installPackage(registry, await validPkg(), provider, { fetchImpl: fetchServing(fixtureFiles()) })
+
+    const v2Manifest = { ...TOOL_MANIFEST, version: '2.0.0' }
+    const v2Files = {
+      'manifest.json': JSON.stringify(v2Manifest),
+      'workflows/read.js': WORKFLOW_SOURCE,
+      'extra.js': 'x',
+    }
+    const v2Pkg = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    await installPackage(registry, v2Pkg, provider, { fetchImpl: fetchServing(v2Files) })
 
     await expect(provider.stat('com.example.pkg/extra.js')).resolves.toMatchObject({ kind: 'file' })
     const listed = await provider.readdir('com.example.pkg')
     // The installer always appends the disabled-default config.json.
-    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'extra.js', 'manifest.json'])
+    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'extra.js', 'manifest.json', 'workflows'])
+    // No staging/backup leftovers.
+    await expect(provider.stat('.com.example.pkg.installing')).rejects.toThrow()
+    await expect(provider.stat('.com.example.pkg.previous')).rejects.toThrow()
+    const mountRoot = await provider.readdir('')
+    expect(mountRoot.map(entry => entry.name).sort()).toEqual(['com.example.pkg'])
   })
 
   it('fails with DOWNLOAD_FAILED when a file 404s and writes nothing', async () => {
-    const pkg = await pkgWithFiles({ 'manifest.json': '{}' })
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
     const missing: RegistryManifestPackage = {
       ...pkg,
-      files: [{ path: 'packages/com.example.pkg/gone.js', sha256: 'a'.repeat(64) }],
+      files: [...pkg.files, { path: 'packages/com.example.pkg/gone.js', sha256: 'a'.repeat(64) }],
     }
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
 
-    await expect(installPackage(registry, missing, provider, { fetchImpl: fetchServing({}) }))
+    await expect(installPackage(registry, missing, provider, { fetchImpl: fetchServing(files) }))
       .rejects.toMatchObject({ code: 'DOWNLOAD_FAILED' })
     await expect(provider.stat('com.example.pkg')).rejects.toThrow()
+    await expect(provider.stat('.com.example.pkg.installing')).rejects.toThrow()
+  })
+})
+
+describe('installPackage — package validation at install time', () => {
+  it('rejects a downloaded manifest whose id does not match the registry id', async () => {
+    const files = fixtureFiles({ ...TOOL_MANIFEST, id: 'com.other.pkg' })
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+    await expect(provider.stat('com.example.pkg')).rejects.toThrow()
+  })
+
+  it('rejects a manifest that violates the extension package schema', async () => {
+    const files = fixtureFiles({ ...TOOL_MANIFEST, version: 'not-semver' })
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+
+  it('rejects a manifest whose urlRegex is not a valid tool URL pattern', async () => {
+    // No ^...$ anchors — the extension's validateUrlRegex rejects it.
+    const files = fixtureFiles({
+      ...TOOL_MANIFEST,
+      tools: [{ ...TOOL_MANIFEST.tools[0], urlRegex: 'https://example\\.com/.*' }],
+    })
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+
+  it('rejects a package whose referenced tool source is missing', async () => {
+    // manifest.json downloads fine, but workflows/read.js is not in the file
+    // list — the extension's validatePackage rejects the missing tool source.
+    const files = { 'manifest.json': JSON.stringify(TOOL_MANIFEST) }
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+
+  it('rejects a tool source that is not a valid workflow', async () => {
+    const files = { 'manifest.json': JSON.stringify(TOOL_MANIFEST), 'workflows/read.js': 'export default {}' }
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+})
+
+describe('installPackage — resource limits', () => {
+  it('rejects a manifest listing more than the file-count cap before downloading', async () => {
+    const pkg = await validPkg()
+    const many: RegistryManifestPackage = {
+      ...pkg,
+      files: [...pkg.files, ...Array.from({ length: MAX_PACKAGE_FILES }, (_, i) => ({
+        path: `packages/com.example.pkg/filler/${i}.js`,
+        sha256: 'a'.repeat(64),
+      }))],
+    }
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // Rejected BEFORE any download happens.
+    await expect(installPackage(registry, many, provider, { fetchImpl: fetchNever() }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+
+  it('rejects a single file above the per-file size cap', async () => {
+    const files = fixtureFiles()
+    files['workflows/read.js'] = 'x'.repeat(MAX_PACKAGE_FILE_BYTES + 1)
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+
+  it('rejects when the total staged size exceeds the package cap', async () => {
+    const chunk = 'x'.repeat(1024 * 1024)
+    const fillerCount = Math.ceil(MAX_PACKAGE_TOTAL_BYTES / chunk.length)
+    const files: Record<string, string> = { 'manifest.json': JSON.stringify(TOOL_MANIFEST) }
+    for (let i = 0; i < fillerCount; i += 1) files[`filler/${i}.js`] = chunk
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+    await expect(provider.stat('com.example.pkg')).rejects.toThrow()
+  })
+
+  it('aborts a download that never completes (bounded timeout)', async () => {
+    const pkg = await validPkg()
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const hanging: typeof fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })
+    }) as typeof fetch
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: hanging, timeoutMs: 25 }))
+      .rejects.toMatchObject({ code: 'DOWNLOAD_FAILED' })
+  })
+})
+
+describe('installPackage — failed replacement keeps the old package', () => {
+  it('preserves the previous install when a staging write fails', async () => {
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, await validPkg(), provider, { fetchImpl: fetchServing(fixtureFiles()) })
+    const before = await provider.readFile('com.example.pkg/manifest.json')
+
+    // v2 downloads fine but the provider refuses a write mid-tree.
+    const v2Manifest = { ...TOOL_MANIFEST, version: '2.0.0' }
+    const v2Files = { 'manifest.json': JSON.stringify(v2Manifest), 'workflows/read.js': WORKFLOW_SOURCE }
+    const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    const failing = new Proxy(provider, {
+      get(target, prop, receiver) {
+        if (prop === 'writeFile') {
+          return async (path: string, bytes: Uint8Array) => {
+            if (String(path).startsWith('.com.example.pkg.installing/')) {
+              throw new Error('quota exceeded mid-write')
+            }
+            return (Reflect.get(target, prop, receiver) as typeof provider.writeFile).call(target, path, bytes)
+          }
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    await expect(installPackage(registry, v2, failing, { fetchImpl: fetchServing(v2Files) }))
+      .rejects.toMatchObject({ code: 'STORAGE_FAILED' })
+
+    // The OLD package is still intact and byte-identical.
+    expect(await provider.readFile('com.example.pkg/manifest.json')).toEqual(before)
+    const listed = await provider.readdir('')
+    expect(listed.map(entry => entry.name).sort()).toEqual(['com.example.pkg'])
+  })
+
+  it('preserves the previous install on a provider WITHOUT rename (the extension bridge)', async () => {
+    // The bridge provider exposes stat/readdir/readFile/writeFile/mkdir/remove
+    // only — there is no atomic rename, so the installer must fall back to
+    // the copy-aside + restore path.
+    const full = memoryProvider()
+    const bridge = {
+      stat: (path: string) => full.stat(path),
+      readdir: (path: string) => full.readdir(path),
+      readFile: (path: string) => full.readFile(path),
+      writeFile: (path: string, bytes: Uint8Array) => full.writeFile(path, bytes),
+      mkdir: (path: string, options?: { recursive?: boolean }) => full.mkdir(path, options),
+      remove: (path: string, options?: { recursive?: boolean }) => full.remove(path, options),
+    }
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, await validPkg(), bridge, { fetchImpl: fetchServing(fixtureFiles()) })
+    const before = await full.readFile('com.example.pkg/manifest.json')
+
+    // v2 fails while copying the new tree into place.
+    const v2Manifest = { ...TOOL_MANIFEST, version: '2.0.0' }
+    const v2Files = { 'manifest.json': JSON.stringify(v2Manifest), 'workflows/read.js': WORKFLOW_SOURCE }
+    const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    let failed = false
+    const failing = {
+      ...bridge,
+      writeFile: async (path: string, bytes: Uint8Array) => {
+        // Fail ONCE while the new tree is copied into the live directory
+        // (the rollback that follows must be able to write again).
+        if (String(path).startsWith('com.example.pkg/') && !String(path).includes('.installing') && !failed) {
+          failed = true
+          throw new Error('bridge write refused')
+        }
+        return full.writeFile(path, bytes)
+      },
+    }
+    await expect(installPackage(registry, v2, failing, { fetchImpl: fetchServing(v2Files) }))
+      .rejects.toMatchObject({ code: 'STORAGE_FAILED' })
+
+    // The OLD package survived the failed replacement.
+    expect(await full.readFile('com.example.pkg/manifest.json')).toEqual(before)
+    const roots = (await full.readdir('')).map(entry => entry.name).sort()
+    expect(roots).toEqual(['com.example.pkg'])
+  })
+})
+
+describe('installPackage — overlapping operations', () => {
+  it('serializes two installs of the same id (each ends with a complete tree)', async () => {
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const v1Files = fixtureFiles()
+    const v2Files = fixtureFiles({ ...TOOL_MANIFEST, version: '2.0.0' })
+    const v1 = await pkgWithFiles(v1Files)
+    const v2 = await pkgWithFiles(v2Files, { version: '2.0.0' })
+    const [r1, r2] = await Promise.all([
+      installPackage(registry, v1, provider, { fetchImpl: fetchServing(v1Files) }),
+      installPackage(registry, v2, provider, { fetchImpl: fetchServing(v2Files) }),
+    ])
+    expect(r1.filesWritten).toBeGreaterThan(0)
+    expect(r2.filesWritten).toBeGreaterThan(0)
+    // The final directory is ONE complete version, never a mix, and no
+    // staging leftovers remain.
+    const listed = await provider.readdir('com.example.pkg')
+    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'manifest.json', 'workflows'])
+    expect((await provider.readdir('')).map(entry => entry.name).sort()).toEqual(['com.example.pkg'])
+  })
+
+  it('serializes an uninstall against a running install', async () => {
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const pkg = await validPkg()
+    const installPromise = installPackage(registry, pkg, provider, { fetchImpl: fetchServing(fixtureFiles()) })
+    const uninstallPromise = uninstallPackage('com.example.pkg', provider)
+    await Promise.all([installPromise, uninstallPromise])
+    // Whichever ran last wins — but no staging leftovers and no torn state.
+    const roots = (await provider.readdir('')).map(entry => entry.name).sort()
+    expect(roots).toEqual(roots.includes('com.example.pkg') ? ['com.example.pkg'] : [])
+    expect(roots.filter(name => name.includes('installing') || name.includes('previous'))).toEqual([])
   })
 })
 
 describe('uninstallPackage', () => {
   it('removes the package directory including the activation override', async () => {
-    const files = { 'manifest.json': '{}', 'config.json': '{"activation":"enabled"}' }
-    const pkg = await pkgWithFiles(files)
+    const pkg = await validPkg()
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
-    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(fixtureFiles()) })
+    await provider.writeFile('com.example.pkg/config.json', new TextEncoder().encode(JSON.stringify({ activation: 'enabled' })))
 
     await uninstallPackage('com.example.pkg', provider)
 

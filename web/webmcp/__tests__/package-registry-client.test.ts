@@ -5,6 +5,7 @@ import {
   registryFileUrl,
   registryFromManifestUrl,
   validateRegistryManifest,
+  MAX_PACKAGE_FILES,
   RegistryError,
   type RegistryManifest,
 } from '../package-registry-client'
@@ -94,6 +95,31 @@ describe('parseRegistryInput — loose URL forms', () => {
 
   it('rejects non-GitHub hosts explicitly', () => {
     expect(() => parseRegistryInput('https://gitlab.com/owner/repo')).toThrow(RegistryError)
+  })
+})
+
+describe('fetchRegistryManifest — resource limits', () => {
+  it('rejects a manifest listing more files than the per-package cap', () => {
+    const bad = {
+      packages: [{
+        id: 'com.x', version: '1.0.0', description: '', toolCount: 1,
+        files: Array.from({ length: MAX_PACKAGE_FILES + 1 }, (_, i) => ({
+          path: `packages/com.x/f${i}.js`, sha256: 'a'.repeat(64),
+        })),
+      }],
+    }
+    expect(() => validateRegistryManifest(bad)).toThrow(/too many files/i)
+  })
+
+  it('aborts a manifest request that never completes (bounded timeout)', async () => {
+    const registry = registryFromManifestUrl('https://raw.githubusercontent.com/o/hang/main/manifest.json')
+    const hanging: typeof fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })
+    }) as typeof fetch
+    await expect(fetchRegistryManifest(registry, { fetchImpl: hanging, timeoutMs: 25 }))
+      .rejects.toThrow(/timed out/i)
   })
 })
 

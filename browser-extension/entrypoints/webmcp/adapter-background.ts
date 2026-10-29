@@ -3,6 +3,7 @@ import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { validateAdapterDirectory } from './adapter-validation'
 import { getWebMCPMounts, readEnabledWebMCPPackages } from './package-repository'
 import { getBuiltinStorage, BUILTIN_CONFIG_STORAGE_KEY } from './builtin-storage'
+import { USER_PACKAGE_CONFIG_SENTINEL_PREFIX } from './package-optin-handler'
 import { createPackageManagement } from './package-management'
 import { getAdapterStorage } from './provider-storage'
 import { createProviderHandler } from './provider-handler'
@@ -37,8 +38,23 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
   }
   void refresh().catch(error => console.warn('[WebMCP adapters] Catalog refresh failed:', error))
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[BUILTIN_CONFIG_STORAGE_KEY]) {
+    if (area !== 'local') return
+    // Builtin overrides live in chrome.storage.local.
+    if (changes[BUILTIN_CONFIG_STORAGE_KEY]) {
       void refresh().catch(error => console.warn('[WebMCP adapters] Catalog refresh failed:', error))
+      return
+    }
+    // USER-mount packages (registry installs) keep their config.json in the
+    // extension's OPFS, which has no storage.onChanged hook. The opt-in
+    // enable path bounces a sentinel key through chrome.storage.local for
+    // exactly that reason — this listener is the other half of that
+    // handshake. Without it a newly enabled external package would keep
+    // its tools unregistered until an unrelated refresh.
+    for (const key of Object.keys(changes)) {
+      if (key.startsWith(USER_PACKAGE_CONFIG_SENTINEL_PREFIX)) {
+        void refresh().catch(error => console.warn('[WebMCP adapters] Catalog refresh failed:', error))
+        return
+      }
     }
   })
   const providerCall = createProviderHandler(getAdapterStorage, refresh)

@@ -15,7 +15,7 @@
  * WebMCP settings-card visual language (bordered cards, tertiary text).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -33,6 +33,7 @@ import {
   listInstalledPackageIds,
   listRegistries,
   loadRegistryCatalog,
+  readInstalledPackageActivation,
   removeRegistry,
   uninstallRegistryPackage,
 } from '@/webmcp/package-registry-store'
@@ -53,17 +54,26 @@ interface RegistryCardProps {
   t: (key: string) => string
   registry: PackageRegistry
   installedIds: Set<string>
+  /** Activation state per installed id (read from the package config). */
+  activations: Map<string, 'enabled' | 'disabled'>
   busyId: string | null
   onInstall: (registry: PackageRegistry, pkg: RegistryManifestPackage) => Promise<boolean>
   onUninstall: (pkg: RegistryManifestPackage) => Promise<boolean>
   onRemoveRegistry: (registry: PackageRegistry) => void
 }
 
-function RegistryCard({ t, registry, installedIds, busyId, onInstall, onUninstall, onRemoveRegistry }: RegistryCardProps) {
+function RegistryCard({ t, registry, installedIds, activations, busyId, onInstall, onUninstall, onRemoveRegistry }: RegistryCardProps) {
   const [manifest, setManifest] = useState<RegistryManifest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  /**
+   * Tool count per package id, taken from the package's OWN manifest.json
+   * (the file the extension validates). The registry's `toolCount` is a
+   * publisher-provided claim and may disagree with the package contents —
+   * the verified count is shown instead so the catalog never misleads.
+   */
+  const [verifiedToolCounts, setVerifiedToolCounts] = useState<Map<string, number>>(new Map())
 
   const load = useCallback(async (force: boolean) => {
     setRefreshing(true)
@@ -80,6 +90,29 @@ function RegistryCard({ t, registry, installedIds, busyId, onInstall, onUninstal
   useEffect(() => {
     void load(false)
   }, [load])
+
+  /** Read one package's manifest.json and record its real tool count. */
+  const readToolCount = useCallback(async (pkgId: string) => {
+    try {
+      const { registryFileUrl } = await import('@/webmcp/package-registry-client')
+      const response = await fetch(registryFileUrl(registry, `packages/${pkgId}/manifest.json`), { credentials: 'omit' })
+      if (!response.ok) return
+      const data = await response.json() as { tools?: unknown }
+      if (!Array.isArray(data.tools)) return
+      const count = (data.tools as unknown[]).length
+      setVerifiedToolCounts(previous => {
+        const next = new Map(previous)
+        next.set(pkgId, count)
+        return next
+      })
+    } catch {
+      // Unreadable manifest — keep the registry's claim for that package.
+    }
+  }, [registry])
+
+  useEffect(() => {
+    for (const pkg of manifest?.packages ?? []) void readToolCount(pkg.id)
+  }, [manifest, readToolCount])
 
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-800">
@@ -124,6 +157,11 @@ function RegistryCard({ t, registry, installedIds, busyId, onInstall, onUninstal
           const installed = installedIds.has(pkg.id)
           const busy = busyId === pkg.id
           const expanded = expandedId === pkg.id
+          // The verified count (from the package manifest) wins over the
+          // registry's claim; the claim is only used until the manifest was
+          // read (or when it cannot be read at all).
+          const toolCount = verifiedToolCounts.get(pkg.id) ?? pkg.toolCount
+          const active = installed && activations.get(pkg.id) === 'enabled'
           return (
             <div key={pkg.id} className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
               <div className="flex items-start gap-2">
@@ -139,7 +177,7 @@ function RegistryCard({ t, registry, installedIds, busyId, onInstall, onUninstal
                   <div className="truncate font-mono text-xs font-medium">{pkg.id}</div>
                   <div className="mt-0.5 line-clamp-2 text-xs text-tertiary">{pkg.description}</div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-tertiary">
-                    <span>{format(t('settings.webmcpPackages.toolsCount'), { count: pkg.toolCount })}</span>
+                    <span>{format(t('settings.webmcpPackages.toolsCount'), { count: toolCount })}</span>
                     <span>·</span>
                     <span>{format(t('settings.webmcpPackages.version'), { version: pkg.version })}</span>
                   </div>
@@ -147,9 +185,13 @@ function RegistryCard({ t, registry, installedIds, busyId, onInstall, onUninstal
                     <div className="mt-1.5">
                       <span className="inline-flex items-center gap-1 rounded-full border border-neutral-300 px-2 py-0.5 text-xs text-tertiary dark:border-neutral-600">
                         <Check className="h-3 w-3 text-green-600 dark:text-green-400" />
-                        {t('settings.webmcpPackages.installedInactive')}
+                        {active ? t('settings.webmcpPackages.installedActive') : t('settings.webmcpPackages.installedInactive')}
                       </span>
-                      <div className="mt-1 text-xs text-tertiary">{t('settings.webmcpPackages.installedInactiveHint')}</div>
+                      {/* The "enable it" hint only makes sense while the
+                          package is still inactive. */}
+                      {!active && (
+                        <div className="mt-1 text-xs text-tertiary">{t('settings.webmcpPackages.installedInactiveHint')}</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -229,6 +271,8 @@ function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg:
 export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySectionProps) {
   const [registries, setRegistries] = useState<PackageRegistry[]>([])
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set())
+  /** Activation state per installed id, read from the package config. */
+  const [activations, setActivations] = useState<Map<string, 'enabled' | 'disabled'>>(new Map())
   const [busyId, setBusyId] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [input, setInput] = useState('')
@@ -236,15 +280,28 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const [addError, setAddError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [confirmPkg, setConfirmPkg] = useState<{ registry: PackageRegistry; pkg: RegistryManifestPackage } | null>(null)
+  /**
+   * Refresh generation. Two overlapping refreshes can resolve out of order;
+   * an older read must never overwrite a newer one, or an installed package
+   * would appear uninstalled and could be installed a second time.
+   */
+  const refreshGeneration = useRef(0)
+
+  const refreshInstalled = useCallback(async () => {
+    const generation = refreshGeneration.current + 1
+    refreshGeneration.current = generation
+    const ids = await listInstalledPackageIds()
+    const states = await Promise.all([...ids].map(async id => [id, await readInstalledPackageActivation(id)] as const))
+    // A stale read (an older generation that resolved last) is dropped.
+    if (refreshGeneration.current !== generation) return
+    setInstalledIds(ids)
+    setActivations(new Map(states))
+  }, [])
 
   useEffect(() => {
     setRegistries(listRegistries())
-    void listInstalledPackageIds().then(setInstalledIds)
-  }, [])
-
-  const refreshInstalled = useCallback(() => {
-    void listInstalledPackageIds().then(setInstalledIds)
-  }, [])
+    void refreshInstalled()
+  }, [refreshInstalled])
 
   const handleAdd = async () => {
     if (!input.trim()) return
@@ -267,7 +324,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     setBusyId(pkg.id)
     try {
       await installRegistryPackage(registry, pkg)
-      refreshInstalled()
+      await refreshInstalled()
       setActionError(null)
       setConfirmPkg(null)
       return true
@@ -283,7 +340,8 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     setBusyId(pkg.id)
     try {
       await uninstallRegistryPackage(pkg.id)
-      refreshInstalled()
+      await refreshInstalled()
+      setActionError(null)
       return true
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error))
@@ -330,6 +388,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           t={t}
           registry={registry}
           installedIds={installedIds}
+          activations={activations}
           busyId={busyId}
           onInstall={(reg, pkg) => { setConfirmPkg({ registry: reg, pkg }); return Promise.resolve(true) }}
           onUninstall={handleUninstall}

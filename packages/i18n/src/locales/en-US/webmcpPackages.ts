@@ -17,6 +17,7 @@ export const webmcpPackages = {
   uninstallFailed: "Removal failed: {error}",
   installedInactive: "Installed · inactive",
   installedInactiveHint: "Open the side panel on a matching site to enable it.",
+  installedActive: "Installed · active",
   toolsCount: "{count} tools",
   version: "v{version}",
   addRegistryTitle: "Add custom package repository",

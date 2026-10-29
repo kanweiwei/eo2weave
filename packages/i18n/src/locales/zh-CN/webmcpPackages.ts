@@ -1,4 +1,4 @@
-// WebMCP 包仓库安装器（issue #117 Tier 1）
+// WebMCP package registry installer (issue #117, Tier 1)
 export const webmcpPackages = {
   title: "站点工具包",
   description: "从包仓库安装站点工具包。安装后的包默认未激活——到匹配站点打开侧边栏即可启用。",
@@ -17,6 +17,7 @@ export const webmcpPackages = {
   uninstallFailed: "移除失败：{error}",
   installedInactive: "已安装 · 未激活",
   installedInactiveHint: "到匹配站点打开侧边栏即可启用。",
+  installedActive: "已安装 · 已激活",
   toolsCount: "{count} 个工具",
   version: "v{version}",
   addRegistryTitle: "添加自定义包仓库",

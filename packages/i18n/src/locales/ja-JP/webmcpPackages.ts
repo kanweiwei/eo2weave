@@ -1,4 +1,4 @@
-// WebMCP パッケージレジストリインストーラー（issue #117 Tier 1）
+// WebMCP package registry installer (issue #117, Tier 1)
 export const webmcpPackages = {
   title: "サイトパッケージ",
   description: "パッケージレジストリからサイトツールパッケージをインストールします。インストール済みパッケージは無効のままです — 対応サイトでサイドパネルを開くと有効化できます。",
@@ -17,6 +17,7 @@ export const webmcpPackages = {
   uninstallFailed: "削除に失敗しました：{error}",
   installedInactive: "インストール済み · 無効",
   installedInactiveHint: "対応サイトでサイドパネルを開くと有効化できます。",
+  installedActive: "インストール済み · 有効",
   toolsCount: "{count} ツール",
   version: "v{version}",
   addRegistryTitle: "カスタムパッケージリポジトリを追加",

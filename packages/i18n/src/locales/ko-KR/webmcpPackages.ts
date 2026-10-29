@@ -1,4 +1,4 @@
-// WebMCP 패키지 레지스트리 설치기 (issue #117 Tier 1)
+// WebMCP package registry installer (issue #117, Tier 1)
 export const webmcpPackages = {
   title: "사이트 패키지",
   description: "패키지 레지스트리에서 사이트 도구 패키지를 설치합니다. 설치된 패키지는 비활성 상태로 유지되며 — 일치하는 사이트에서 사이드 패널을 열면 활성화할 수 있습니다.",
@@ -17,6 +17,7 @@ export const webmcpPackages = {
   uninstallFailed: "제거 실패: {error}",
   installedInactive: "설치됨 · 비활성",
   installedInactiveHint: "일치하는 사이트에서 사이드 패널을 열면 활성화할 수 있습니다.",
+  installedActive: "설치됨 · 활성",
   toolsCount: "도구 {count}개",
   version: "v{version}",
   addRegistryTitle: "사용자 지정 패키지 저장소 추가",

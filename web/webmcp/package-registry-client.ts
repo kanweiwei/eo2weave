@@ -70,6 +70,18 @@ const RAW_HOST = 'raw.githubusercontent.com'
 const DEFAULT_BRANCH = 'main'
 /** Session-level manifest cache TTL (skill-store pattern). */
 const CACHE_TTL_MS = 5 * 60 * 1000
+/**
+ * Bound on every registry/file request: a server that accepts a connection
+ * but never responds must not keep the catalog loader or an install busy
+ * forever. The error is phrased as retryable.
+ */
+export const REGISTRY_FETCH_TIMEOUT_MS = 30_000
+
+/** Per-package caps: a registry entry cannot list unbounded/large payloads. */
+export const MAX_PACKAGE_FILES = 200
+/** Total staged size cap — the extension bridge itself refuses files > 32 MiB. */
+export const MAX_PACKAGE_TOTAL_BYTES = 20 * 1024 * 1024
+export const MAX_PACKAGE_FILE_BYTES = 8 * 1024 * 1024
 
 const manifestCache = new Map<string, { data: RegistryManifest; ts: number }>()
 
@@ -180,10 +192,30 @@ export function registryFileUrl(registry: PackageRegistry, path: string): string
   return `${registry.rawBase}/${clean}`
 }
 
+/**
+ * Shared fetch deadline for registry and package-file requests. A stalled
+ * connection aborts after `REGISTRY_FETCH_TIMEOUT_MS` with a retryable error
+ * instead of hanging the settings page or an install indefinitely.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit, fetchImpl: typeof fetch, timeoutMs: number = REGISTRY_FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetchImpl(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new RegistryError(`Registry request timed out after ${timeoutMs / 1000}s: ${url}`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Fetch + validate a registry manifest (5-minute session cache per URL). */
 export async function fetchRegistryManifest(
   registry: PackageRegistry,
-  options?: { force?: boolean; fetchImpl?: typeof fetch },
+  options?: { force?: boolean; fetchImpl?: typeof fetch; timeoutMs?: number },
 ): Promise<RegistryManifest> {
   const doFetch = options?.fetchImpl ?? fetch
   const cached = manifestCache.get(registry.manifestUrl)
@@ -191,8 +223,14 @@ export async function fetchRegistryManifest(
 
   let response: Response
   try {
-    response = await doFetch(registry.manifestUrl, { credentials: 'omit', cache: options?.force ? 'no-cache' : 'default' })
+    response = await fetchWithTimeout(
+      registry.manifestUrl,
+      { credentials: 'omit', cache: options?.force ? 'no-cache' : 'default' },
+      doFetch,
+      options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS,
+    )
   } catch (error) {
+    if (error instanceof RegistryError) throw error
     throw new RegistryError(`Registry unreachable: ${error instanceof Error ? error.message : String(error)}`)
   }
   if (response.status === 404) {
@@ -234,6 +272,9 @@ export function validateRegistryManifest(data: unknown): RegistryManifest {
       throw new RegistryError(`Package ${id}: invalid toolCount`)
     }
     if (!Array.isArray(files) || files.length === 0) throw new RegistryError(`Package ${id}: files must be a non-empty array`)
+    if (files.length > MAX_PACKAGE_FILES) {
+      throw new RegistryError(`Package ${id}: too many files (${files.length}; the limit is ${MAX_PACKAGE_FILES})`)
+    }
     const seen = new Set<string>()
     const validatedFiles = files.map((file, fileIndex) => {
       if (!isPlainObject(file)) throw new RegistryError(`Package ${id}: file #${fileIndex} is not an object`)

@@ -108,6 +108,16 @@ async function readPackageActivation(
   }
 }
 
+/**
+ * Sentinel key prefix used to announce a USER-mount package activation
+ * change. The user mount's config.json lives in the extension's OPFS, which
+ * has no storage.onChanged hook, so the write is announced through
+ * chrome.storage.local. The adapter background listens for this prefix and
+ * refreshes the catalog, so the newly enabled tools register immediately
+ * (and an uninstalled package's routes are withdrawn).
+ */
+export const USER_PACKAGE_CONFIG_SENTINEL_PREFIX = 'webmcp_user_package_config_'
+
 /** Enable a package on EITHER mount (see `readPackageActivation` for the split). */
 async function writePackageActivation(mount: string, directory: string): Promise<void> {
   if (mount === 'builtin-webmcp') {
@@ -125,7 +135,7 @@ async function writePackageActivation(mount: string, directory: string): Promise
   // key the builtin watcher listens on — so the adapter background refreshes
   // the catalog and the newly enabled tools register immediately instead of
   // waiting for an unrelated refresh.
-  const sentinel = `webmcp_user_package_config_${directory}`
+  const sentinel = `${USER_PACKAGE_CONFIG_SENTINEL_PREFIX}${directory}`
   await chrome.storage.local.set({ [sentinel]: Date.now() })
   await chrome.storage.local.remove(sentinel)
 }
