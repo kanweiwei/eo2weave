@@ -67,6 +67,13 @@ type Phase =
 
 type ErrorKind = 'missing-param' | 'not-found' | 'load-failed'
 
+/**
+ * Bound for the skill-store manifest fetch: a request that stalls without
+ * settling must surface as a retryable load error instead of pinning the
+ * page in `loading` forever.
+ */
+const MANIFEST_TIMEOUT_MS = 15_000
+
 interface InstallOutcome {
   alreadyInstalled: boolean
 }
@@ -110,13 +117,29 @@ function SkillInstallView() {
     setErrorMessage(null)
     setEntry(null)
     setAlreadyInstalled(false)
+    // The cached readiness verdict belongs to the PREVIOUS skill: without
+    // this reset, a changed `skill` query would take runAiReadiness's
+    // fast path and never re-check current credentials (a visitor who
+    // since logged out would skip the required login step).
+    readinessDoneRef.current = false
     if (!skillParam) {
       setErrorKind('missing-param')
       setPhase('error')
       return
     }
     try {
-      const manifest = await fetchSkillStoreManifest()
+      // Bound the manifest fetch: a stalled request that never settles
+      // would otherwise leave the page in `loading` forever, with no
+      // error view or retry. 15s covers slow mobile connections; the
+      // manifest itself is a small JSON document.
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS)
+      let manifest: Awaited<ReturnType<typeof fetchSkillStoreManifest>>
+      try {
+        manifest = await fetchSkillStoreManifest({ signal: controller.signal })
+      } finally {
+        clearTimeout(timeoutId)
+      }
       if (isStale()) return
       const found = manifest.skills.find((s) => s.dirName === skillParam)
       if (!found) {
@@ -250,6 +273,16 @@ function SkillInstallView() {
     try {
       const readiness = await checkAiReadiness()
       if (currentGeneration() !== installGenerationRef.current) return
+      if (readiness.keyStoreUnavailable) {
+        // The api-key store could not be probed, so "not ready" is
+        // UNPROVEN — the visitor's key may live in that store. Surface a
+        // retryable error instead of the login step, and leave
+        // readinessDoneRef false so the retry re-checks credentials.
+        console.error('[SkillInstall] api-key store probe failed during readiness check')
+        setErrorMessage(t('skillInstall.keyStoreUnavailable'))
+        setPhase('details')
+        return
+      }
       readinessDoneRef.current = true
       if (readiness.ready) {
         setCreditExhausted(readiness.creditExhausted)
@@ -291,8 +324,18 @@ function SkillInstallView() {
       if (!alreadyInstalled) {
         await installSkillFromUrl(entry.zipUrl, setInstallProgress)
         // A query change during the download abandons the old skill's flow:
-        // never register, verify, or navigate for it.
-        if (isStale()) return
+        // never verify or navigate for it. The skill IS on disk though, so
+        // the manager cache must still be refreshed — otherwise the
+        // installed skill stays absent from the slash-command registry
+        // until some unrelated refresh happens to rescan OPFS.
+        if (isStale()) {
+          try {
+            await getSkillManager().refreshUserSkills()
+          } catch (refreshErr) {
+            console.warn('[SkillInstall] post-install refresh failed:', refreshErr)
+          }
+          return
+        }
         // Register the slash command immediately — refreshUserSkills()
         // rescans OPFS and re-syncs the slash-command registry.
         await getSkillManager().refreshUserSkills()

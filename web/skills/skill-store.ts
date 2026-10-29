@@ -59,9 +59,14 @@ const CACHE_TTL_MS = 5 * 60 * 1000
 /**
  * Fetch the skill store manifest. Uses in-memory cache to avoid re-fetching.
  * Throws on network/HTTP error so callers can show user-friendly UI.
+ *
+ * @param opts.force      Bypass the in-memory cache.
+ * @param opts.signal     Optional abort signal (e.g. a page-level timeout
+ *                        so a stalled request cannot hang the caller).
  */
 export async function fetchSkillStoreManifest(opts?: {
   force?: boolean
+  signal?: AbortSignal
 }): Promise<SkillStoreManifest> {
   if (!opts?.force && manifestCache && Date.now() - manifestCache.ts < CACHE_TTL_MS) {
     return manifestCache.data
@@ -70,6 +75,7 @@ export async function fetchSkillStoreManifest(opts?: {
   const resp = await fetch(MANIFEST_URL, {
     credentials: 'omit',
     cache: opts?.force ? 'no-cache' : 'default',
+    signal: opts?.signal,
   })
   if (resp.status === 404) {
     throw new Error(

@@ -26,6 +26,13 @@ export interface AiReadinessResult {
   ready: boolean
   /** Gateway logged in but /v1/rate-limits reports 0 available credit. */
   creditExhausted: boolean
+  /**
+   * True when the API-key store itself could not be probed (storage
+   * outage) — the "not ready" verdict is then UNPROVEN, not confirmed:
+   * the visitor's key may well be in that store. The caller should offer
+   * a retry instead of the login step.
+   */
+  keyStoreUnavailable?: boolean
 }
 
 /**
@@ -40,7 +47,10 @@ export interface AiReadinessResult {
  *   4. nothing → not ready (caller offers inline device-code login).
  *
  * All probes are best-effort: a failing quota/key-store probe never turns
- * a ready visitor "not ready".
+ * a ready visitor "not ready". When the api-key store probe fails, the
+ * not-ready verdict is flagged as unproven (`keyStoreUnavailable`) so the
+ * page can offer a retry instead of sending a visitor whose usable key
+ * sits in that store to the login step with no explanation.
  */
 export async function checkAiReadiness(): Promise<AiReadinessResult> {
   if (ENABLE_LLM_GATEWAY && isLLMGatewayConfigured()) {
@@ -77,9 +87,13 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
     if (others.length > 0) {
       return { ready: true, creditExhausted: false }
     }
-  } catch {
-    // Key store unavailable (storage not ready) — treat as not ready; the
-    // send path's 401 chain backstops either way.
+  } catch (e) {
+    // Key store unavailable (storage not ready): the not-ready verdict
+    // below is UNPROVEN — the visitor's usable key may live in that
+    // store. Log it and flag it so the page can offer a retry rather
+    // than silently prompting for login.
+    console.error('[skill-install-flow] api-key store probe failed:', e)
+    return { ready: false, creditExhausted: false, keyStoreUnavailable: true }
   }
 
   return { ready: false, creditExhausted: false }
