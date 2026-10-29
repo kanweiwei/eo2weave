@@ -12,10 +12,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const findAllProjectsMock = vi.hoisted(() => vi.fn())
 const findProjectStatsMock = vi.hoisted(() => vi.fn(async () => []))
 const deleteProjectMock = vi.hoisted(() => vi.fn(async () => {}))
+const findAllWorkspacesByProjectIncludingDirectMock = vi.hoisted(() => vi.fn(async () => []))
+const deleteProjectIncludingHostRebindMock = vi.hoisted(() => vi.fn(async () => {}))
 const projectRepoMock = vi.hoisted(() => ({
   findAllProjects: findAllProjectsMock,
   findProjectStats: findProjectStatsMock,
   deleteProject: deleteProjectMock,
+  deleteProjectIncludingHostRebind: deleteProjectIncludingHostRebindMock,
   createProject: vi.fn(),
   updateProject: vi.fn(),
   setActiveProject: vi.fn(async () => {}),
@@ -23,13 +26,6 @@ const projectRepoMock = vi.hoisted(() => ({
   // Activation's existence checks: tests that exercise setActiveProject
   // replace this with a live spy (default: never found).
   findById: vi.fn(async () => null),
-}))
-
-const findAllWorkspacesByProjectIncludingDirectMock = vi.hoisted(() => vi.fn(async () => []))
-const updateWorkspaceMock = vi.hoisted(() => vi.fn(async () => {}))
-const workspaceRepoMock = vi.hoisted(() => ({
-  findAllWorkspacesByProjectIncludingDirect: findAllWorkspacesByProjectIncludingDirectMock,
-  updateWorkspace: updateWorkspaceMock,
 }))
 
 const projectManagerDeleteMock = vi.hoisted(() => vi.fn(async () => {}))
@@ -43,7 +39,9 @@ vi.mock('@/sqlite/repositories/project.repository', () => ({
 }))
 
 vi.mock('@/sqlite/repositories/workspace.repository', () => ({
-  getWorkspaceRepository: () => workspaceRepoMock,
+  getWorkspaceRepository: () => ({
+    findAllWorkspacesByProjectIncludingDirect: findAllWorkspacesByProjectIncludingDirectMock,
+  }),
 }))
 
 vi.mock('@/opfs', () => ({ ProjectManager: ProjectManagerMock }))
@@ -74,9 +72,8 @@ const project = (id: string) => ({
 describe('project.store deleteProject host rebind', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    updateWorkspaceMock.mockResolvedValue(undefined)
     findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
-    deleteProjectMock.mockResolvedValue(undefined)
+    deleteProjectIncludingHostRebindMock.mockResolvedValue(undefined)
     projectManagerDeleteMock.mockResolvedValue(undefined)
     useProjectStore.setState({
       activeProjectId: '',
@@ -96,13 +93,14 @@ describe('project.store deleteProject host rebind', () => {
     findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([
       { id: 'host-1', projectId: 'p-a' } as never,
     ])
-    updateWorkspaceMock.mockRejectedValueOnce(new Error('rebind boom'))
+    deleteProjectIncludingHostRebindMock.mockRejectedValueOnce(new Error('rebind boom'))
 
     const ok = await useProjectStore.getState().deleteProject('p-a')
 
     expect(ok).toBe(false)
     expect(useProjectStore.getState().error).toContain('rebind boom')
-    // Deletion must NOT have been committed — the rebind runs first.
+    // Nothing was committed — the atomic transaction (rebinds + row delete)
+    // rolled back, and the legacy deleteProject entry point was never used.
     expect(deleteProjectMock).not.toHaveBeenCalled()
   })
 
@@ -117,19 +115,17 @@ describe('project.store deleteProject host rebind', () => {
     findAllProjectsMock.mockImplementation(async () =>
       [...alive].map((id) => ({ id, name: id, status: 'active', createdAt: 1, updatedAt: 1 }))
     )
-    deleteProjectMock.mockImplementation((async (id: string) => {
-      alive.delete(id)
+    deleteProjectIncludingHostRebindMock.mockImplementation((async (projectId: string) => {
+      if (projectId === 'p-a') throw new Error('rebind boom')
+      alive.delete(projectId)
     }) as never)
     // The workspace query is keyed by project (like production): p-a owns
-    // host-1, p-b owns host-2. p-a's rebind fails; p-b's rebind must still
-    // run afterwards and must not inherit p-a's failure.
+    // host-1, p-b owns host-2. p-a's atomic transaction fails; p-b's section
+    // must still run afterwards and must not inherit p-a's failure.
     findAllWorkspacesByProjectIncludingDirectMock.mockImplementation((async (projectId: string) =>
       projectId === 'p-a'
         ? [{ id: 'host-1', projectId: 'p-a' } as never]
         : [{ id: 'host-2', projectId: 'p-b' } as never]) as never)
-    updateWorkspaceMock.mockImplementation((async (ws: { id: string; projectId: string }) => {
-      if (ws.id === 'host-1') throw new Error('rebind boom')
-    }) as never)
 
     const [okA, okB] = await Promise.all([
       useProjectStore.getState().deleteProject('p-a'),
@@ -139,9 +135,11 @@ describe('project.store deleteProject host rebind', () => {
     // The failed deletion reports failure to ITS caller only...
     expect(okA).toBe(false)
     expect(useProjectStore.getState().error).toContain('rebind boom')
-    // ...and the queued deletion still RAN and succeeded.
+    // ...and the queued deletion still RAN and succeeded. Its successor is
+    // 'p-a' — p-a's transaction FAILED, so its row survives (atomicity) and
+    // remains a valid host for p-b's orphans.
     expect(okB).toBe(true)
-    expect(deleteProjectMock).toHaveBeenCalledWith('p-b')
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenNthCalledWith(2, 'p-b', 'p-a', ['host-2'])
     expect(alive.has('p-b')).toBe(false)
   })
 
@@ -157,14 +155,10 @@ describe('project.store deleteProject host rebind', () => {
     const ok = await useProjectStore.getState().deleteProject('p-only')
 
     expect(ok).toBe(true)
-    expect(deleteProjectMock).toHaveBeenCalledWith('p-only')
-    expect(updateWorkspaceMock).toHaveBeenCalledTimes(2)
-    expect(updateWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1', projectId: '' }))
-    expect(updateWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-2', projectId: '' }))
-    // Sanity: nextProjectId derived from remaining projects EXCLUDING the
-    // deleted one — never the deleted id itself.
-    const reboundIds = updateWorkspaceMock.mock.calls.map((c) => ((c as unknown as [{ projectId: string }])[0]).projectId)
-    expect(reboundIds).not.toContain('p-only')
+    // Hosts + row deletion went through ONE atomic transaction, with the
+    // successor derived as '' for the last-project case.
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-only', '', ['host-1', 'host-2'])
+    expect(deleteProjectMock).not.toHaveBeenCalled()
   })
 
   it('rebinds hosts to the next remaining project when other projects survive', async () => {
@@ -177,8 +171,8 @@ describe('project.store deleteProject host rebind', () => {
     const ok = await useProjectStore.getState().deleteProject('p-a')
 
     expect(ok).toBe(true)
-    expect(deleteProjectMock).toHaveBeenCalledWith('p-a')
-    expect(updateWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1', projectId: 'p-b' }))
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-a', 'p-b', ['host-1'])
+    expect(deleteProjectMock).not.toHaveBeenCalled()
   })
 
   it('overlapping deletions are serialized: the second rebind re-reads projects the first already deleted', async () => {
@@ -187,30 +181,39 @@ describe('project.store deleteProject host rebind', () => {
     // successor from the same not-yet-updated project table and rebind the
     // OTHER's standalone-chat hosts to a project that is itself being
     // deleted — leaving those host rows pointing at a dead project id. The
-    // module-level promise chain forces p-a's rebind AND row deletion to
-    // finish before p-b's rebind reads the project table.
+    // module-level promise chain forces p-a's atomic rebind+delete to finish
+    // before p-b's section reads the project table.
     let alive = new Set(['p-a', 'p-b'])
     findAllProjectsMock.mockImplementation(async () =>
       [...alive].map((id) => ({ id, name: id, status: 'active', createdAt: 1, updatedAt: 1 }))
     )
-    deleteProjectMock.mockImplementation((async (id: string) => {
-      // Reproduce the interleaving hazard: p-b's rebind section starts while
-      // p-a's deletion row is NOT yet committed — if the rebind sections
-      // overlapped, p-a's hosts would pick p-b as successor here.
-      alive.delete(id)
-    }) as never)
-    // Gate the rebind section so both deleteProject calls are in flight
-    // before either rebind begins: p-a's rebind blocks until p-b has been
-    // INITIATED (both promises created), proving the chain serializes the
-    // critical sections rather than the callers merely sequencing.
-    let releaseARebind: (() => void) | null = null
-    const aRebindGate = new Promise<void>((resolve) => {
-      releaseARebind = resolve
-    })
-    updateWorkspaceMock.mockImplementation((async (ws: { id: string; projectId: string }) => {
-      if (ws.projectId === 'p-a' && ws.id === 'host-1') {
-        await aRebindGate
+    // Gate the atomic transaction so both deleteProject calls are in flight
+    // before either section's transaction begins: p-a's transaction blocks
+    // until p-b has been INITIATED (both promises created), proving the chain
+    // serializes the critical sections rather than the callers merely
+    // sequencing. The gate resolver is assigned INSIDE the mock, which only
+    // runs once the store's chained `.then` callbacks have executed — so the
+    // test MUST yield a task boundary before invoking it; calling it
+    // synchronously right after creating the two promises would dereference
+    // null (Sourcery round-6: "Deletion test calls a null gate").
+    let releaseASection: (() => void) | null = null
+    const sectionOrder: string[] = []
+    deleteProjectIncludingHostRebindMock.mockImplementation((async (projectId: string) => {
+      if (projectId !== 'p-a') {
+        // Reproduce the interleaving hazard: p-b's section starts only after
+        // p-a's atomic transaction committed — if the sections overlapped,
+        // p-a's hosts would pick p-b as successor here... and p-b would not
+        // be alive to delete.
+        alive.delete(projectId)
+        sectionOrder.push(`commit:${projectId}`)
+        return
       }
+      sectionOrder.push(`enter:${projectId}`)
+      await new Promise<void>((resolve) => {
+        releaseASection = resolve
+      })
+      alive.delete(projectId)
+      sectionOrder.push(`commit:${projectId}`)
     }) as never)
     findAllWorkspacesByProjectIncludingDirectMock.mockImplementation((async (projectId: string) =>
       projectId === 'p-a'
@@ -219,31 +222,31 @@ describe('project.store deleteProject host rebind', () => {
 
     const deleteA = useProjectStore.getState().deleteProject('p-a')
     const deleteB = useProjectStore.getState().deleteProject('p-b')
-    // Both callers are in flight; now let p-a's rebind proceed. p-b's rebind
-    // must still run entirely after p-a's FULL deleteProject (rebind + row
-    // deletion) because each deletion enqueues BOTH steps on the shared
-    // chain — so p-b's successor selection observes p-a's row already gone.
-    releaseARebind!()
+    // Both callers are in flight; yield a macrotask so p-a's chained section
+    // has actually RUN and assigned `releaseASection` before it is invoked.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(releaseASection).toBeTypeOf('function')
+    expect(sectionOrder).toEqual(['enter:p-a'])
+    // Now let p-a's transaction proceed. p-b's section must still run
+    // entirely after p-a's FULL atomic commit (rebind + row deletion)
+    // because each deletion enqueues the whole section on the shared chain
+    // — so p-b's successor selection observes p-a's row already gone.
+    releaseASection!()
     const [okA, okB] = await Promise.all([deleteA, deleteB])
 
     expect(okA).toBe(true)
     expect(okB).toBe(true)
-    // host-1 (p-a's orphan) was rebound while p-b's row still existed — but
-    // p-b's own deletion completes afterwards and rebinds nothing else; the
-    // critical hazard the chain eliminates is the SECOND selection reading a
-    // STALE table: p-b's rebind of host-2 must not pick p-a (row already
-    // deleted by the time p-b's section runs).
-    const host1Rebind = updateWorkspaceMock.mock.calls.find(
-      (c) => (c as unknown as [{ id: string }])[0].id === 'host-1'
-    ) as unknown as [{ id: string; projectId: string }]
-    expect(updateWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1', projectId: 'p-b' }))
-    // p-b's rebind (host-2) ran after p-a's row deletion: its successor must
+    // Sections ran strictly in queue order: p-a entered (and was gated)
+    // before p-b's transaction was ever reached.
+    expect(sectionOrder).toEqual(['enter:p-a', 'commit:p-a', 'commit:p-b'])
+    // p-a's hosts were rebound (inside its transaction) to the survivor p-b,
+    // which was still alive at that point...
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-a', 'p-b', ['host-1'])
+    // ...while p-b's section ran AFTER p-a's row deletion: its successor must
     // NOT be p-a (already deleted) — it must be '' here.
-    const host2Rebind = updateWorkspaceMock.mock.calls.find(
-      (c) => (c as unknown as [{ id: string }])[0].id === 'host-2'
-    ) as unknown as [{ id: string; projectId: string }]
-    expect(host2Rebind[0].projectId).toBe('')
-    void host1Rebind
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-b', '', ['host-2'])
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenNthCalledWith(2, 'p-b', '', ['host-2'])
+    expect(deleteProjectMock).not.toHaveBeenCalled()
   })
 
   it('queued deletion repairs a stale active pointer: an earlier chained deletion rebound active to THIS deletion target', async () => {
@@ -274,8 +277,8 @@ describe('project.store deleteProject host rebind', () => {
     findAllProjectsMock.mockImplementation(async () =>
       [...alive].map((id) => ({ id, name: id, status: 'active', createdAt: 1, updatedAt: 1 }))
     )
-    deleteProjectMock.mockImplementation((async (id: string) => {
-      alive.delete(id)
+    deleteProjectIncludingHostRebindMock.mockImplementation((async (projectId: string) => {
+      alive.delete(projectId)
     }) as never)
     findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([])
 
@@ -328,35 +331,30 @@ describe('project.store deleteProject host rebind', () => {
     expect(agentSetActiveProjectMock).toHaveBeenCalledWith('p-a')
   })
 
-  it('rebind failure mid-deleteProject restores original workspace assignments', async () => {
-    // Finding: when the SECOND rebind (or the row deletion) failed, the
-    // already-rebound workspaces stayed assigned to the successor project
-    // even though the deletion aborted — the caller saw failure while the
-    // store held half-applied rebinds. Every successful rebind must be
-    // rolled back to its ORIGINAL project id on failure.
+  it('a transaction failure mid-deleteProject reports failure with nothing else touched', async () => {
+    // Finding (superseded by the atomic transaction): when the SECOND rebind
+    // (or the row deletion) failed, the already-rebound workspaces stayed
+    // assigned to the successor project even though the deletion aborted.
+    // The rebinds + row deletion now run inside ONE SQLite transaction, so
+    // the ROLLBACK is the repository's job (covered by
+    // sqlite-database.transaction tests): the store only has to report the
+    // failure, skip any further writes, and stay retryable.
     useProjectStore.setState({ activeProjectId: '', projects: [project('p-a'), project('p-b')] } as never)
     findAllProjectsMock.mockResolvedValue([project('p-a'), project('p-b')])
     findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([
       { id: 'host-1', projectId: 'p-a' } as never,
       { id: 'host-2', projectId: 'p-a' } as never,
     ])
-    // First rebind succeeds, second fails — the rollback must restore BOTH.
-    updateWorkspaceMock.mockImplementation((async (ws: { id: string }) => {
-      if (ws.id === 'host-2') throw new Error('second rebind boom')
-    }) as never)
+    deleteProjectIncludingHostRebindMock.mockRejectedValue(new Error('second rebind boom'))
 
     const ok = await useProjectStore.getState().deleteProject('p-a')
 
     expect(ok).toBe(false)
     expect(useProjectStore.getState().error).toContain('second rebind boom')
-    // Deletion never committed.
+    // The legacy per-row entry point was never used, and no follow-up writes
+    // (OPFS cleanup) ran — the transaction rolled everything back atomically.
     expect(deleteProjectMock).not.toHaveBeenCalled()
-    // Rollback: host-1 (successfully rebound to p-b) is restored to p-a.
-    const host1Restore = updateWorkspaceMock.mock.calls.find(
-      (c) => (c as unknown as [{ id: string; projectId: string }])[0].id === 'host-1' &&
-        (c as unknown as [{ id: string; projectId: string }])[0].projectId === 'p-a'
-    )
-    expect(host1Restore).toBeTruthy()
+    expect(projectManagerDeleteMock).not.toHaveBeenCalled()
   })
 
   it('post-delete repair failure still returns success with a refreshed list', async () => {
@@ -385,7 +383,7 @@ describe('project.store deleteProject host rebind', () => {
 
     // Deletion committed → success, despite the repair crash.
     expect(ok).toBe(true)
-    expect(deleteProjectMock).toHaveBeenCalledWith('p-a')
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-a', 'p-b', [])
     expect(useProjectStore.getState().error).toBeNull()
     // The UI list was refreshed AFTER the deletion committed: it reflects
     // the surviving projects, not the invocation-time snapshot.
@@ -433,9 +431,9 @@ describe('project.store deleteProject host rebind', () => {
       getProject: async () => null,
       deleteProject: projectManagerDeleteMock,
     }))
-    // The overlapping deletion must actually REMOVE the row: once the DB
-    // delete commits, both findAllProjects and findById observe it gone.
-    deleteProjectMock.mockImplementation((async () => {
+    // The overlapping deletion must actually REMOVE the row: once the atomic
+    // transaction commits, both findAllProjects and findById observe it gone.
+    deleteProjectIncludingHostRebindMock.mockImplementation((async () => {
       rowAlive = false
     }) as never)
     // Fresh registry + own doMock factories: earlier tests in this file
@@ -498,7 +496,7 @@ describe('project.store deleteProject host rebind', () => {
     // best-effort: at that point the data is unreferenced, so a failed OPFS
     // cleanup is orphaned files, not data loss).
     const order: string[] = []
-    deleteProjectMock.mockImplementation((async (id: string) => {
+    deleteProjectIncludingHostRebindMock.mockImplementation((async (id: string) => {
       order.push(`db:${id}`)
     }) as never)
     projectManagerDeleteMock.mockImplementation((async (id: string) => {
@@ -511,6 +509,7 @@ describe('project.store deleteProject host rebind', () => {
 
     expect(ok).toBe(true)
     expect(order).toEqual(['db:p-a', 'opfs:p-a'])
+    expect(deleteProjectMock).not.toHaveBeenCalled()
   })
 
   it('a DB deletion failure never touches OPFS (workspace files survive for retry)', async () => {
@@ -523,7 +522,7 @@ describe('project.store deleteProject host rebind', () => {
     findAllWorkspacesByProjectIncludingDirectMock.mockResolvedValue([
       { id: 'host-1', projectId: 'p-a' } as never,
     ])
-    deleteProjectMock.mockRejectedValueOnce(new Error('db boom'))
+    deleteProjectIncludingHostRebindMock.mockRejectedValueOnce(new Error('db boom'))
 
     const ok = await useProjectStore.getState().deleteProject('p-a')
 
@@ -564,7 +563,7 @@ describe('project.store deleteProject host rebind', () => {
 
     // Deletion committed → still success.
     expect(ok).toBe(true)
-    expect(deleteProjectMock).toHaveBeenCalledWith('p-a')
+    expect(deleteProjectIncludingHostRebindMock).toHaveBeenCalledWith('p-a', 'p-b', [])
     // Pointer was re-derived away from the deleted id to the survivor.
     expect(useProjectStore.getState().activeProjectId).not.toBe('p-a')
     expect(useProjectStore.getState().activeProjectId).toBe('p-b')

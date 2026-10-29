@@ -581,22 +581,17 @@ export const useProjectStore = create<ProjectState>()(
             const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
             const workspaceRepo = getWorkspaceRepository()
             const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
-            // Snapshot each row's ORIGINAL project id before rebinding: if a
-            // later rebind or the row deletion throws, the catch below
-            // restores every already-rebound workspace so a failed deletion
-            // never leaves workspaces assigned to the successor project.
-            const originalProjectIds = orphaned.map((ws) => ws.projectId ?? '')
-            const rebound: Array<{ id: string; projectId: string }> = []
-            try {
-              for (const ws of orphaned) {
-                // eslint-disable-next-line no-await-in-loop -- sequential rebinds: a later row's successor selection must observe earlier rebinds
-                await workspaceRepo.updateWorkspace({ ...ws, projectId: nextProjectId })
-                rebound.push({ id: ws.id, projectId: nextProjectId })
-              }
-              // The project row is removed inside the same section: a queued
-              // overlapping deletion re-reads the table only after this row is
-              // gone, so it can never select THIS project as its successor.
-              await repo.deleteProject(projectId)
+            // Rebind ALL host rows off the deleted project AND delete the
+            // project row in ONE SQLite transaction (repository method): an
+            // interruption mid-section can no longer leave the project row
+            // alive with some workspaces already assigned to the successor —
+            // rebinds and the row deletion commit (or roll back) together, so
+            // a retry observes the pre-deletion state and re-runs cleanly.
+            await repo.deleteProjectIncludingHostRebind(
+              projectId,
+              nextProjectId,
+              orphaned.map((ws) => ws.id)
+            )
 
               // ── OPFS workspace-data cleanup — AFTER the DB commit ──
               // Deliberately deferred and best-effort: the row is gone, so the
@@ -610,23 +605,6 @@ export const useProjectStore = create<ProjectState>()(
                 pendingOpfsProjectDeletions.add(projectId)
               }
               await flushPendingOpfsProjectDeletions()
-            } catch (err) {
-              // Roll back the rebinds the deletion depended on. Row deletion
-              // has not committed (or it failed with the rebinds already
-              // undone), so restoring the original assignments keeps
-              // workspaces pointing at the project whose deletion failed.
-              for (const ws of orphaned) {
-                const originalProjectId = originalProjectIds[orphaned.indexOf(ws)]
-                if (!rebound.some((r) => r.id === ws.id) || originalProjectId === nextProjectId) continue
-                try {
-                  // eslint-disable-next-line no-await-in-loop -- sequential restores
-                  await workspaceRepo.updateWorkspace({ ...ws, projectId: originalProjectId })
-                } catch (restoreErr) {
-                  console.error('[ProjectStore] Failed to restore workspace after failed deletion:', restoreErr)
-                }
-              }
-              throw err
-            }
 
             // ── Post-delete repair — INSIDE the serialized section ──
             // The check must run AFTER this deletion committed, and inside
