@@ -43,6 +43,7 @@ vi.mock('@/security/api-key-store', () => ({
 import {
   buildPrefillText,
   checkAiReadiness,
+  mergePrefillText,
   pickConversationTarget,
   waitForCondition,
 } from '../skill-install-flow'
@@ -98,9 +99,36 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
 
   it('ready when ANOTHER provider has a key in the api-key store', async () => {
     getValidAccessTokenMock.mockResolvedValue(null)
-    getAllApiKeyProvidersMock.mockResolvedValue(['openai', '__llm_gateway_token__'])
+    // Fixture intentionally contains ONLY the non-gateway provider: the
+    // ready assertion must depend on `openai` alone, not on the presence
+    // of multiple provider ids or the gateway shadow.
+    getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+  })
+
+  it('gateway token-lookup failure falls through to other usable credentials', async () => {
+    // The gateway probe itself throws (storage not ready) — a valid
+    // other-provider key must still make the visitor ready.
+    getValidAccessTokenMock.mockRejectedValue(new Error('token storage unavailable'))
+    getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(fetchGatewayRateLimitsMock).not.toHaveBeenCalled()
+  })
+
+  it('gateway token-lookup failure falls through to settings.hasApiKey', async () => {
+    getValidAccessTokenMock.mockRejectedValue(new Error('token storage unavailable'))
+    settingsState.hasApiKey = true
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    settingsState.hasApiKey = false
+  })
+
+  it('gateway token-lookup failure with nothing else configured stays not-ready', async () => {
+    getValidAccessTokenMock.mockRejectedValue(new Error('token storage unavailable'))
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
   })
 
   it('not ready when nothing is configured (triggers the inline login step)', async () => {
@@ -179,6 +207,25 @@ describe('buildPrefillText (issue #126 input prefill)', () => {
 
   it('trims whitespace-only prompts to the bare command', () => {
     expect(buildPrefillText('my-skill', '   ')).toBe('/my-skill')
+  })
+})
+
+describe('mergePrefillText (issue #128 draft preservation)', () => {
+  it('returns the bare prefill when the conversation has no draft', () => {
+    expect(mergePrefillText(null, '/my-skill')).toBe('/my-skill')
+    expect(mergePrefillText('', '/my-skill prompt')).toBe('/my-skill prompt')
+  })
+
+  it('keeps an existing unsent draft below the command', () => {
+    expect(mergePrefillText('my unsent question', '/my-skill')).toBe(
+      '/my-skill\nmy unsent question',
+    )
+  })
+
+  it('is idempotent when the draft already starts with the command', () => {
+    expect(mergePrefillText('/my-skill my unsent question', '/my-skill')).toBe(
+      '/my-skill my unsent question',
+    )
   })
 })
 
