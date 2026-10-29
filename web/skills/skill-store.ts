@@ -8,9 +8,9 @@
 // ============================================================
 
 import {
-  deleteUserSkillDir,
   previewUserSkillZip,
   importUserSkillZip,
+  ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
 } from './user-skills-scanner'
 import { useSkillsStore } from '@/store/skills.store'
@@ -185,6 +185,13 @@ export async function installSkillFromUrl(
     }
 
     const contentLength = Number(resp.headers.get('content-length') ?? 0)
+    // Decompression-bomb guard: reject oversized downloads up front
+    // (before anything is buffered) when the server declares its size.
+    if (contentLength > ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE) {
+      throw new Error(
+        `Skill archive is too large (${formatBytes(contentLength)}; limit: ${formatBytes(ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE)}).`,
+      )
+    }
     const blob = await streamToBlob(resp, contentLength, controller.signal, (loaded, total) => {
       onProgress?.({
         phase: 'fetching',
@@ -203,40 +210,26 @@ export async function installSkillFromUrl(
     const preview = await previewUserSkillZip(file)
 
     report({ phase: 'importing', message: 'Installing…' })
-    try {
-      const count = await importUserSkillZip(preview)
+    // Cleanup on failure is handled inside importUserSkillZip: it removes
+    // only directories this import actually wrote and restores overwritten
+    // skills from a staged backup — previously installed skills that merely
+    // appear in the preview are never deleted.
+    const count = await importUserSkillZip(preview)
 
-      // Find manifest entry (best effort — caller may not have it)
-      const manifest: SkillStoreEntry = {
-        id: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
-        name: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
-        dirName: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
-        description: '',
-        category: '',
-        tags: [],
-        version: '',
-        zipUrl,
-      }
-
-      report({ phase: 'done', message: `Installed ${count} files` })
-      return { count, manifest }
-    } catch (e) {
-      // Mid-write failure: remove the partial directory so scanInstalledDirNames
-      // does not report the skill as installed.
-      const dirNames = preview.isBundle
-        ? (preview.skills ?? []).map((s) => s.dirName)
-        : preview.skill
-          ? [preview.skill.dirName]
-          : []
-      for (const dirName of dirNames) {
-        try {
-          await deleteUserSkillDir(dirName)
-        } catch (cleanupErr) {
-          console.warn('[SkillStore] Failed to clean up partial skill install:', dirName, cleanupErr)
-        }
-      }
-      throw e
+    // Find manifest entry (best effort — caller may not have it)
+    const manifest: SkillStoreEntry = {
+      id: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
+      name: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
+      dirName: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
+      description: '',
+      category: '',
+      tags: [],
+      version: '',
+      zipUrl,
     }
+
+    report({ phase: 'done', message: `Installed ${count} files` })
+    return { count, manifest }
   } catch (e) {
     clearTimeout(timeoutId)
     if (e instanceof DOMException && e.name === 'AbortError') {
