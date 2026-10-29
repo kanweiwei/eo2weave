@@ -137,20 +137,22 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           // The underlying activation cannot be cancelled and may still commit
           // its store changes AFTER this navigation — a late commit would
           // silently repoint the page the user moved to. Observe the abandoned
-          // promise and re-run the full sync on settlement:
+          // promise and re-run the full sync on settlement — but ONLY when the
+          // activation actually SUCCEEDED (fulfilled true, even if after the
+          // timeout). A rejected (or false-returning) activation committed
+          // nothing, so there is no late commit to repair: running the sync
+          // anyway would re-activate the abandoned chat from nothing. The
+          // fulfilled value is the success flag — not control flow.
           // - a live navigation to another chat re-syncs the newest target
           //   (upstream repair, newestChatIdRef);
           // - a route left entirely re-syncs the retained destination id —
           //   destinationChatIdRef is deliberately NOT blanked on cleanup
           //   because the late commit still lands, and newestChatIdRef is
-          //   blanked so it cannot carry this repair. On a genuine rejection
-          //   the settlement continuation fires but both guards fail (the
-          //   store holds no committed conversation target to re-assert), so
-          //   nothing is repaired.
+          //   blanked so it cannot carry this repair.
           if (activation) {
             void activation
-              .catch(() => {})
-              .then(() => {
+              .then((activated) => {
+                if (!activated) return
                 const newest = newestChatIdRef.current
                 const destination = destinationChatIdRef.current
                 if (newest && newest !== target && !isLive()) {
@@ -159,6 +161,7 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
                   void runSync(destination, false, true)
                 }
               })
+              .catch(() => {})
           }
           return
         }
@@ -214,16 +217,19 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
           // Same late-commit class as Step 0: the abandoned switch cannot be
           // cancelled and its completion may land on the page the user moved
           // to. Watch it and re-run the full sync for the newest target once
-          // it settles, so the stores converge back onto the route's chat.
+          // it settles — but ONLY on FULFILLMENT: a rejected switch committed
+          // nothing, so there is no late commit to repair (the repair would
+          // otherwise fire on the failure path too, re-syncing a chat the
+          // failed switch never reached).
           if (pendingSwitch) {
             void pendingSwitch
-              .catch(() => {})
               .then(() => {
                 const newest = newestChatIdRef.current
                 if (newest && newest !== target && !isLive()) {
                   void runSync(newest, false)
                 }
               })
+              .catch(() => {})
           }
           return
         }
@@ -237,6 +243,10 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
       // re-check cannot undo a commit that already landed inside the store,
       // so a stale completion is repaired by the caller below — through
       // this same full-sync path, never a bare setActive.
+      // Re-checked immediately before the store mutation: the awaits above
+      // may have been superseded (or the route left) while this continuation
+      // sat in the microtask queue.
+      if (!isLive()) return
       if (useConversationStore.getState().activeConversationId !== target) {
         await useConversationStore.getState().setActive(target)
       }

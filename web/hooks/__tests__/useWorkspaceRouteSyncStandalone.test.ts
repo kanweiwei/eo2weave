@@ -503,6 +503,57 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     }
   })
 
+  it('a late-REJECTED activation (timeout first, rejection after cleanup) triggers no repair and leaves the destination untouched', async () => {
+    // Sourcery round-6: the settlement watcher used to run on ANY settlement
+    // (`.catch(() => {}).then(...)`), so a promise that REJECTS only after
+    // the timeout fired — and after cleanup blanked newestChatIdRef — still
+    // entered the repair branch and re-ran the full sync for the retained
+    // destination. A rejected activation committed nothing, so that repair
+    // would re-activate the abandoned chat from nothing. The watcher now
+    // runs only on FULFILLMENT: a late rejection must leave the destination
+    // store state exactly as cleanup left it.
+    vi.useFakeTimers()
+    try {
+      setupStores({ activeProjectId: '', conversations: [{ id: 'chat-1', kind: 'direct' }] })
+      let rejectActivation: (() => void) | null = null
+      setActiveProjectSpy.mockImplementation(
+        () =>
+          new Promise<boolean>((_, reject) => {
+            rejectActivation = () => reject(new Error('late activation failure'))
+          }) as Promise<boolean>,
+      )
+
+      const { unmount } = renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setActiveProjectSpy).toHaveBeenCalledWith('project-a')
+
+      // Timeout: the recoverable redirect fires while the activation hangs.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(routerReplaceMock).toHaveBeenCalledWith('/chats')
+
+      // The user leaves the route entirely (cleanup blanks newestChatIdRef;
+      // destinationChatIdRef is retained) BEFORE the activation settles.
+      unmount()
+
+      // The abandoned activation now REJECTS — nothing ever committed.
+      rejectActivation!()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // No repair ran: the workspace/conversation stores were never touched,
+      // and the host pointer still holds the pre-route state ('' — the
+      // activation never committed).
+      expect(switchWorkspaceSpy).not.toHaveBeenCalled()
+      expect(setActiveConversationSpy).not.toHaveBeenCalled()
+      expect(useProjectStore.getState().activeProjectId).toBe('')
+      expect(useConversationContextStore.getState().activeWorkspaceId).toBeNull()
+      expect(useConversationStore.getState().activeConversationId).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a settled host-project activation still proceeds normally (bound does not fire early)', async () => {
     vi.useFakeTimers()
     try {
