@@ -81,13 +81,20 @@ describe('ConversationRepository', () => {
     })
 
     expect(execute).toHaveBeenCalledTimes(1)
-    const [sql] = execute.mock.calls[0] as unknown as [string, unknown[]]
+    const [sql, params] = execute.mock.calls[0] as unknown as [string, unknown[]]
     // INSERT carries kind (creating a 'direct' row must persist its kind)…
     expect(sql).toContain('INSERT INTO conversations')
-    expect(sql).toContain('kind')
-    // …but the conflict UPDATE must NOT write kind: a stale 'direct' snapshot
-    // landing after a committed direct→project transition must not revert it.
-    expect(sql).not.toMatch(/kind\s*=\s*excluded\.kind/)
+    // …and binds the REQUESTED kind value positionally: the column list must
+    // declare kind, and the requested value must be among the bound params.
+    expect(sql).toMatch(/INSERT INTO conversations\s*\([^)]*\bkind\b[^)]*\)/i)
+    expect(params).toContain('direct')
+    // …but the conflict UPDATE must NEVER write kind at all — not via
+    // excluded.kind, not via a positional parameter, not via a literal. Any
+    // kind assignment in the ON CONFLICT clause would let a stale snapshot
+    // landing after a committed direct→project transition revert it.
+    const conflictClause = sql.slice(sql.indexOf('ON CONFLICT'))
+    expect(conflictClause).not.toMatch(/\bkind\s*=/)
+    expect(conflictClause).not.toMatch(/,\s*kind\b/)
   })
 
   it('updateKind writes the kind column via a dedicated UPDATE', async () => {
