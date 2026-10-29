@@ -45,7 +45,11 @@ export interface RegistryManifest {
 
 /** A registry the user added; everything needed to fetch files is derived. */
 export interface PackageRegistry {
-  /** Raw base able to serve any repo-relative path (`.../<branch>`). */
+  /**
+   * Raw base able to serve any REPO-RELATIVE path (`.../<branch>`). For a
+   * subdirectory manifest URL this stays at the repo root — manifest paths
+   * are repo-relative — while `manifestUrl` keeps the subdirectory.
+   */
   rawBase: string
   /** The full raw URL of the registry manifest. */
   manifestUrl: string
@@ -93,7 +97,8 @@ export function parseRegistryInput(input: string): PackageRegistry {
 
   // owner/repo shorthand: no scheme, exactly one slash, both segments clean.
   if (/^[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/.test(raw)) {
-    return registryFrom(`https://${RAW_HOST}/${raw}/${DEFAULT_BRANCH}`, '', raw)
+    const rawBase = `https://${RAW_HOST}/${raw}/${DEFAULT_BRANCH}`
+    return { rawBase, manifestUrl: `${rawBase}/manifest.json`, label: raw }
   }
 
   let url: URL
@@ -101,6 +106,12 @@ export function parseRegistryInput(input: string): PackageRegistry {
     url = new URL(raw.includes('://') ? raw : `https://${raw}`)
   } catch {
     throw new RegistryError(`Invalid registry URL: ${input}`)
+  }
+  // Plain HTTP would let an interceptor replace the manifest, its checksums
+  // AND the package files in transit — sha256 verification verifies against
+  // the tampered manifest and passes. Registries are HTTPS-only.
+  if (url.protocol !== 'https:') {
+    throw new RegistryError(`Registry URLs must use HTTPS (got ${url.protocol})`)
   }
 
   if (url.hostname === RAW_HOST) {
@@ -110,8 +121,16 @@ export function parseRegistryInput(input: string): PackageRegistry {
       throw new RegistryError('Raw registry URL must include owner, repo and branch')
     }
     const [owner, repo, branch, ...rest] = parts
+    const label = `${owner}/${repo}`
+    // The raw base stays at the REPO ROOT: manifest file paths are
+    // repo-relative even when the manifest itself lives in a subdirectory.
+    const rawBase = `${url.protocol}//${RAW_HOST}/${owner}/${repo}/${branch}`
     const dir = rest.slice(0, -1)
-    return registryFrom(`${url.protocol}//${RAW_HOST}/${owner}/${repo}/${branch}`, dir.join('/'), `${owner}/${repo}`)
+    return {
+      rawBase,
+      manifestUrl: dir.length ? `${rawBase}/${dir.join('/')}/manifest.json` : `${rawBase}/manifest.json`,
+      label,
+    }
   }
 
   if (url.hostname === GITHUB_HOST || url.hostname === 'www.github.com') {
@@ -124,15 +143,17 @@ export function parseRegistryInput(input: string): PackageRegistry {
       throw new RegistryError(`Unsupported GitHub URL path: /${keyword}`)
     }
     const effectiveBranch = branch ?? DEFAULT_BRANCH
-    return registryFrom(`${url.protocol}//${RAW_HOST}/${owner}/${repo}/${effectiveBranch}`, dir.join('/'), `${owner}/${repo}`)
+    // Same as the raw form: file base at the repo root, manifest URL keeps
+    // the optional subdirectory.
+    const rawBase = `${url.protocol}//${RAW_HOST}/${owner}/${repo}/${effectiveBranch}`
+    return {
+      rawBase,
+      manifestUrl: dir.length ? `${rawBase}/${dir.join('/')}/manifest.json` : `${rawBase}/manifest.json`,
+      label: `${owner}/${repo}`,
+    }
   }
 
   throw new RegistryError(`Unsupported registry host: ${url.hostname}. Use a github.com repository URL or a raw.githubusercontent.com URL.`)
-}
-
-function registryFrom(rawBase: string, dir: string, label: string): PackageRegistry {
-  const base = dir ? `${rawBase}/${dir}` : rawBase
-  return { rawBase: base, manifestUrl: `${base}/manifest.json`, label }
 }
 
 /** Build a registry from an already-resolved raw manifest URL (tests, power users). */
@@ -146,7 +167,8 @@ export function registryFromManifestUrl(manifestUrl: string, label?: string): Pa
   const parts = url.pathname.split('/').filter(Boolean)
   if (parts.length < 2) throw new RegistryError('Manifest URL must include at least owner/repo')
   // Everything up to the last segment is the raw base (the final segment is
-  // conventionally the manifest file name).
+  // conventionally the manifest file name). Subdirectory manifests keep their
+  // directory in the manifest URL; file paths stay repo-relative.
   const base = parts.slice(0, -1).join('/')
   return { rawBase: `${url.protocol}//${url.host}/${base}`, manifestUrl, label: label ?? parts.slice(0, 2).join('/') }
 }

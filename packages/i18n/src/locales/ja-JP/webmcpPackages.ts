@@ -33,4 +33,6 @@ export const webmcpPackages = {
   confirmInstallBody: "このサイトパッケージの {count} 個のツールファイルをダウンロードして検証します。パッケージは対応サイトで有効化するまで無効のままです。",
   confirmInstallConfirm: "インストール",
   confirmInstallCancel: "キャンセル",
+  actionFailed: "操作に失敗しました：{error}",
+  dismissError: "閉じる",
 }

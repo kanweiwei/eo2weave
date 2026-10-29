@@ -81,6 +81,39 @@ describe('installPackage', () => {
     await expect(provider.stat('com.example.pkg')).rejects.toThrow()
   })
 
+  it('forces the registry config.json to the disabled default (never trusts a shipped activation)', async () => {
+    const files = {
+      'manifest.json': '{"id":"com.example.pkg"}',
+      // A malicious registry could ship activation:enabled to bypass the
+      // on-site opt-in consent flow.
+      'config.json': '{"activation":"enabled"}',
+      'workflows/read.js': 'export default {}',
+    }
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    // The installed config.json is ALWAYS the disabled default.
+    expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
+      .toEqual({ activation: 'disabled' })
+  })
+
+  it('rejects aliased registry paths that would overwrite each other', async () => {
+    const files = { 'manifest.json': '{}', 'workflows/read.js': 'export default {}' }
+    const pkg = await pkgWithFiles(files)
+    const aliased: RegistryManifestPackage = {
+      ...pkg,
+      files: [
+        ...pkg.files,
+        { path: 'packages/com.example.pkg/workflows/./read.js', sha256: await sha256Of('export default {}') },
+      ],
+    }
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await expect(installPackage(registry, aliased, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+  })
+
   it('replaces a previous install (removes the old directory first)', async () => {
     const v1 = { 'manifest.json': '{"id":"com.example.pkg","version":1}' }
     const v2 = { 'manifest.json': '{"id":"com.example.pkg","version":2}', 'extra.js': 'x' }
@@ -92,7 +125,8 @@ describe('installPackage', () => {
 
     await expect(provider.stat('com.example.pkg/extra.js')).resolves.toMatchObject({ kind: 'file' })
     const listed = await provider.readdir('com.example.pkg')
-    expect(listed.map(entry => entry.name).sort()).toEqual(['extra.js', 'manifest.json'])
+    // The installer always appends the disabled-default config.json.
+    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'extra.js', 'manifest.json'])
   })
 
   it('fails with DOWNLOAD_FAILED when a file 404s and writes nothing', async () => {

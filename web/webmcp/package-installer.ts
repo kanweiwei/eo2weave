@@ -89,6 +89,7 @@ export async function installPackage(
   // Stage everything in memory BEFORE touching storage — the all-or-nothing
   // guarantee lives here, not in a rollback pass.
   const staged: Array<{ path: string; bytes: Uint8Array }> = []
+  const seenPaths = new Set<string>()
   for (const file of pkg.files) {
     const url = registryFileUrl(registry, file.path)
     // Manifest paths are repo-relative (`packages/<id>/...`); on the mount
@@ -97,21 +98,32 @@ export async function installPackage(
     if (!file.path.startsWith(prefix)) {
       throw new PackageInstallError(`File ${file.path} does not belong to package ${id}`, 'INVALID_PACKAGE')
     }
-    const relative = file.path.slice(prefix.length)
+    const rawRelative = file.path.slice(prefix.length)
+    let relative: string
     try {
-      normalizeProviderPath(relative)
+      relative = normalizeProviderPath(rawRelative)
     } catch {
       throw new PackageInstallError(`Invalid file path in package ${id}: ${file.path}`, 'INVALID_PACKAGE')
     }
+    if (seenPaths.has(relative)) {
+      throw new PackageInstallError(`Package ${id} lists ${file.path} twice (aliased path)`, 'INVALID_PACKAGE')
+    }
+    seenPaths.add(relative)
     staged.push({ path: relative, bytes: await downloadFile(url, file.sha256, fetchImpl) })
   }
 
+  // SECURITY: the registry's own config.json is NEVER copied — a manifest
+  // could ship `activation: "enabled"` and the package would activate
+  // without the #102 on-site consent flow. Activation is always reset to
+  // the disabled default here; enabling is exclusively the opt-in flow's job.
+  const configIndex = staged.findIndex(file => file.path === 'config.json')
+  const configBytes = new TextEncoder().encode(JSON.stringify(INSTALLER_DEFAULT_CONFIG) + '\n')
+  if (configIndex >= 0) staged[configIndex] = { path: 'config.json', bytes: configBytes }
+  else staged.push({ path: 'config.json', bytes: configBytes })
+
   // Everything verified — replace any previous install, then write the tree.
   try {
-    await provider.remove(id, { recursive: true }).catch((error: unknown) => {
-      // A fresh install has nothing to remove; only real failures matter.
-      if ((error as { code?: string }).code !== 'ENOENT') throw error
-    })
+    await removeMissingOk(provider, id)
     await provider.mkdir(id, { recursive: true })
     for (const file of staged) {
       await provider.writeFile(`${id}/${file.path}`, file.bytes)
@@ -120,6 +132,21 @@ export async function installPackage(
     throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
   }
   return { filesWritten: staged.length }
+}
+
+/**
+ * Remove a path, tolerating "does not exist" in BOTH error shapes: the
+ * normalized `ENOENT` FsError and the raw File System Access `NotFoundError`
+ * DOMException (the production OPFS provider, see `providerMount`).
+ */
+async function removeMissingOk(provider: FsProvider, path: string): Promise<void> {
+  try {
+    await provider.remove(path, { recursive: true })
+  } catch (error) {
+    const e = error as { code?: string; name?: string }
+    if (e.code === 'ENOENT' || e.name === 'NotFoundError') return
+    throw error
+  }
 }
 
 /**
@@ -134,9 +161,8 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
     throw new PackageInstallError(`Invalid package id: ${packageId}`, 'INVALID_PACKAGE')
   }
   try {
-    await provider.remove(packageId, { recursive: true })
+    await removeMissingOk(provider, packageId)
   } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return
     throw new PackageInstallError(`Failed to remove package ${packageId}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
   }
 }

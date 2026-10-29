@@ -234,6 +234,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const [input, setInput] = useState('')
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [confirmPkg, setConfirmPkg] = useState<{ registry: PackageRegistry; pkg: RegistryManifestPackage } | null>(null)
 
   useEffect(() => {
@@ -267,12 +268,14 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     try {
       await installRegistryPackage(registry, pkg)
       refreshInstalled()
+      setActionError(null)
+      setConfirmPkg(null)
       return true
-    } catch {
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
       return false
     } finally {
       setBusyId(null)
-      setConfirmPkg(null)
     }
   }
 
@@ -282,7 +285,8 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
       await uninstallRegistryPackage(pkg.id)
       refreshInstalled()
       return true
-    } catch {
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
       return false
     } finally {
       setBusyId(null)
@@ -301,6 +305,17 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
       <div>
         <div className="text-sm font-semibold">{t('settings.webmcpPackages.title')}</div>
         <div className="mt-0.5 text-xs text-tertiary">{t('settings.webmcpPackages.description')}</div>
+        {actionError && (
+          <button
+            type="button"
+            className="mt-1.5 flex items-start gap-1.5 text-left text-xs text-red-600 dark:text-red-400"
+            onClick={() => setActionError(null)}
+            title={t('settings.webmcpPackages.dismissError')}
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{format(t('settings.webmcpPackages.actionFailed'), { error: actionError })}</span>
+          </button>
+        )}
       </div>
 
       {!hasRegistries && (
@@ -368,6 +383,11 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
             <div className="mt-2 text-xs text-tertiary">
               {format(t('settings.webmcpPackages.confirmInstallBody'), { count: confirmPkg.pkg.toolCount })}
             </div>
+            {actionError && (
+              <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                {format(t('settings.webmcpPackages.actionFailed'), { error: actionError })}
+              </div>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"

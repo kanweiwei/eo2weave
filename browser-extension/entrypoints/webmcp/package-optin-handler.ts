@@ -99,7 +99,11 @@ async function readPackageActivation(
     const bytes = await provider.readFile(`${directory}/config.json`)
     return parseWebMCPConfig(JSON.parse(new TextDecoder().decode(bytes)))
   } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return null
+    // The File System Access provider reports absence as a DOMException
+    // (NotFoundError) — normalize it like `providerMount` does. A package
+    // without config.json is simply at its disabled default.
+    const name = (error as { name?: string }).name
+    if ((error as { code?: string }).code === 'ENOENT' || name === 'NotFoundError') return null
     throw error
   }
 }
@@ -107,12 +111,23 @@ async function readPackageActivation(
 /** Enable a package on EITHER mount (see `readPackageActivation` for the split). */
 async function writePackageActivation(mount: string, directory: string): Promise<void> {
   if (mount === 'builtin-webmcp') {
+    // The builtin override write touches chrome.storage.local, whose
+    // onChanged listener in the adapter background triggers a catalog
+    // refresh — routes update without extra work here.
     await setBuiltinConfig(directory, { activation: 'enabled' })
     return
   }
   const provider = await getAdapterStorage()
   const bytes = new TextEncoder().encode(serializeWebMCPConfig({ activation: 'enabled' }))
   await provider.writeFile(`${directory}/config.json`, bytes)
+  // The user-mount write has no storage.onChanged hook (the file lives in
+  // OPFS, not chrome.storage). Bounce through chrome.storage.local — the same
+  // key the builtin watcher listens on — so the adapter background refreshes
+  // the catalog and the newly enabled tools register immediately instead of
+  // waiting for an unrelated refresh.
+  const sentinel = `webmcp_user_package_config_${directory}`
+  await chrome.storage.local.set({ [sentinel]: Date.now() })
+  await chrome.storage.local.remove(sentinel)
 }
 
 /**

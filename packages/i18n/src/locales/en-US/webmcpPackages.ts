@@ -33,4 +33,6 @@ export const webmcpPackages = {
   confirmInstallBody: "{count} tools for this site package will be downloaded and verified. The package stays inactive until you enable it on the matching site.",
   confirmInstallConfirm: "Install",
   confirmInstallCancel: "Cancel",
+  actionFailed: "Operation failed: {error}",
+  dismissError: "Dismiss",
 }

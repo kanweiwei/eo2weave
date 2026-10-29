@@ -56,15 +56,28 @@ describe('parseRegistryInput — loose URL forms', () => {
   })
 
   it('accepts a deep raw URL and anchors the base at the file directory', () => {
+    const registry = parseRegistryInput('https://raw.githubusercontent.com/owner/repo/dev/manifest.json')
+    expect(registry.rawBase).toBe('https://raw.githubusercontent.com/owner/repo/dev')
+    expect(registry.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/dev/manifest.json')
+  })
+
+  it('honors a github.com/tree/<branch> URL including subdirectory (manifest URL only)', () => {
+    const registry = parseRegistryInput('https://github.com/owner/repo/tree/nightly/sub/dir')
+    // Package file paths are repo-relative, so the file base stays at the
+    // repo root while the manifest URL keeps the subdirectory.
+    expect(registry.rawBase).toBe('https://raw.githubusercontent.com/owner/repo/nightly')
+    expect(registry.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/nightly/sub/dir/manifest.json')
+  })
+
+  it('anchors a deep raw URL at the repo root for files, subdirectory for the manifest', () => {
     const registry = parseRegistryInput('https://raw.githubusercontent.com/owner/repo/dev/packages/manifest.json')
-    expect(registry.rawBase).toBe('https://raw.githubusercontent.com/owner/repo/dev/packages')
+    expect(registry.rawBase).toBe('https://raw.githubusercontent.com/owner/repo/dev')
     expect(registry.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/dev/packages/manifest.json')
   })
 
-  it('honors a github.com/tree/<branch> URL including subdirectory', () => {
-    const registry = parseRegistryInput('https://github.com/owner/repo/tree/nightly/sub/dir')
-    expect(registry.rawBase).toBe('https://raw.githubusercontent.com/owner/repo/nightly/sub/dir')
-    expect(registry.manifestUrl).toBe('https://raw.githubusercontent.com/owner/repo/nightly/sub/dir/manifest.json')
+  it('rejects plain-http registry URLs', () => {
+    expect(() => parseRegistryInput('http://github.com/owner/repo')).toThrow(RegistryError)
+    expect(() => parseRegistryInput('http://raw.githubusercontent.com/owner/repo/main/manifest.json')).toThrow(RegistryError)
   })
 
   it('rejects an empty input explicitly', () => {

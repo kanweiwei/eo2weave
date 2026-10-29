@@ -107,6 +107,9 @@ describe('opt-in handler — external package on-site enable (issue #117 Tier 1)
     vi.stubGlobal('chrome', {
       tabs: { get, reload },
       alarms: { create: vi.fn(), getAll: vi.fn(async () => []), clear: vi.fn() },
+      // The user-mount enable bounces a sentinel through storage.local so the
+      // adapter background's onChanged listener refreshes the catalog.
+      storage: { local: { set: vi.fn(async () => {}), remove: vi.fn(async () => {}) } },
     })
     vi.mocked(readWebMCPCatalog).mockResolvedValue([externalEntry()])
     vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[externalEntry()], { userMountComplete: true }])

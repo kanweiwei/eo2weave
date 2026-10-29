@@ -33,4 +33,6 @@ export const webmcpPackages = {
   confirmInstallBody: "将下载并校验该站点包的 {count} 个工具文件。安装后保持未激活，直到你在匹配站点上启用。",
   confirmInstallConfirm: "安装",
   confirmInstallCancel: "取消",
+  actionFailed: "操作失败：{error}",
+  dismissError: "关闭",
 }

@@ -33,4 +33,6 @@ export const webmcpPackages = {
   confirmInstallBody: "이 사이트 패키지의 {count}개 도구 파일을 다운로드하여 검증합니다. 패키지는 일치하는 사이트에서 활성화할 때까지 비활성 상태로 유지됩니다.",
   confirmInstallConfirm: "설치",
   confirmInstallCancel: "취소",
+  actionFailed: "작업 실패: {error}",
+  dismissError: "닫기",
 }
