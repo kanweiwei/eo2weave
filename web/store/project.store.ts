@@ -107,94 +107,30 @@ let initInFlight: Promise<void> | undefined
 const PROJECT_CHANGE_CHANNEL = 'creatorweave-project-changes'
 const PROJECT_PASSIVE_REFRESH_INTERVAL_MS = 1000
 
-/** Cross-tab lock scope + localStorage-mutex fallback (see initialize). */
+/** Web Locks scope serializing first-run default-project auto-create. */
 const AUTO_DEFAULT_LOCK_SCOPE = 'creatorweave:project-store:auto-default'
-const AUTO_DEFAULT_LOCK_KEY = 'creatorweave:project-store:auto-default-lock'
-const AUTO_DEFAULT_LOCK_TTL_MS = 15000
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 /**
- * Serialize first-run auto-create across tabs (Sourcery: "Tabs create
- * duplicate projects"). Prefers the Web Locks API; falls back to a
- * localStorage claim with DOUBLE verification (verify, wait, re-verify) —
- * plain localStorage has no atomic compare-and-swap, so acquisition requires
- * the tab's token to be observed at two separated instants. For two tabs to
- * BOTH pass, one would have to overwrite the other in the sliver between the
- * winner's final verification and its create — and the caller's post-lock
- * re-read plus the inner flag/projects re-check heal even that case.
+ * Serialize first-run default-project auto-create across tabs
+ * (Sourcery: "Tabs create duplicate projects").
+ *
+ * Web Locks is the ONLY cross-tab-safe mechanism: plain localStorage has no
+ * atomic compare-and-swap, so every non-locks claim scheme can in principle
+ * be interleaved by another tab. When Web Locks is unavailable this helper
+ * FAILS CLOSED — it does not run the create callback, and the caller adopts
+ * whatever another tab created via its post-lock re-read (or the user
+ * Retries). Web Locks ships in every Chromium/Firefox/Safari release since
+ * 2022/2023, so this fallback only affects legacy browsers.
  */
-async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
+function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
   if (typeof navigator !== 'undefined' && navigator.locks) {
-    await navigator.locks.request(AUTO_DEFAULT_LOCK_SCOPE, async () => {
+    return navigator.locks.request(AUTO_DEFAULT_LOCK_SCOPE, async () => {
       await fn()
     })
-    return
   }
-
-  if (typeof localStorage === 'undefined') {
-    await fn()
-    return
-  }
-
-  const ownsLock = async (token: string): Promise<boolean> => {
-    const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
-    if (!raw) return false
-    try {
-      return (JSON.parse(raw) as { token?: string }).token === token
-    } catch {
-      return false
-    }
-  }
-
-  const token = Math.random().toString(36).slice(2)
-  const deadline = Date.now() + AUTO_DEFAULT_LOCK_TTL_MS
-  let acquired = false
-  while (Date.now() < deadline && !acquired) {
-    if (localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)) {
-      await sleep(150)
-      continue
-    }
-    try {
-      localStorage.setItem(AUTO_DEFAULT_LOCK_KEY, JSON.stringify({ token, at: Date.now() }))
-    } catch {
-      // Storage unavailable — cannot serialize at all. Run fn() so the
-      // first-run flow still works single-tab; duplicate risk is the
-      // pre-existing behavior and the post-lock re-read heals it.
-      await fn()
-      return
-    }
-    // Double verification: claim must hold at two separated instants.
-    await sleep(250)
-    if (!(await ownsLock(token))) continue
-    await sleep(250)
-    acquired = await ownsLock(token)
-  }
-
-  if (!acquired) {
-    // Mutex never acquired before the TTL: do NOT run fn() (Sourcery:
-    // "Default projects get duplicated") — another tab holds the create
-    // window. The caller's post-lock re-read picks up the winner's project,
-    // or the user retries initialize().
-    return
-  }
-
-  try {
-    // Final ownership re-check immediately before the create window.
-    if (!(await ownsLock(token))) return
-    await fn()
-  } finally {
-    try {
-      const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
-      if (raw && (JSON.parse(raw) as { token?: string }).token === token) {
-        localStorage.removeItem(AUTO_DEFAULT_LOCK_KEY)
-      }
-    } catch {
-      // stale lock expires via TTL — nothing to do.
-    }
-  }
+  // Fail closed: skip creation (see docblock above).
+  void fn
+  return Promise.resolve()
 }
 
 type ProjectChangeMessage =
@@ -495,41 +431,25 @@ export const useProjectStore = create<ProjectState>()(
             }
           }
 
-          if (typeof navigator !== 'undefined' && navigator.locks) {
-            await navigator.locks.request(
-              AUTO_DEFAULT_LOCK_SCOPE,
-              async () => {
-                // Winner creates; loser re-reads — the winner has committed
-                // its row + flag by the time the lock is released.
-                if (
-                  localStorage.getItem(AUTO_DEFAULT_CREATED_KEY) ||
-                  (await repo.findAllProjects()).length > 0
-                ) {
-                  return
-                }
-                await runAutoCreate()
-              }
-            )
-            if (normalizedProjects.length === 0) {
-              // This tab lost the race: pick up the winner's default project.
-              normalizedProjects = await repo.findAllProjects()
-              normalizedStats = await repo.findProjectStats()
-            }
-          } else {
-            // No Web Locks API: localStorage claim+verify mutex fallback.
-            await withAutoCreateLock(async () => {
-              if (
-                localStorage.getItem(AUTO_DEFAULT_CREATED_KEY) ||
-                (await repo.findAllProjects()).length > 0
-              ) {
-                return
-              }
-              await runAutoCreate()
-            })
-            if (normalizedProjects.length === 0) {
-              normalizedProjects = await repo.findAllProjects()
-              normalizedStats = await repo.findProjectStats()
-            }
+          // Serialized by Web Locks when available (Sourcery: "Tabs create
+          // duplicate projects"); without Web Locks the helper fails closed
+          // (never creates) and the re-read below adopts the other tab's
+          // default project. The wait is bounded (Sourcery: "Lock wait can
+          // stall first-run initialization"): a hung holder must not wedge
+          // this tab's initialize() forever — after the deadline this tab
+          // skips auto-creation and either adopts the winner's project from
+          // the re-read or the user can Retry.
+          const AUTO_CREATE_LOCK_TIMEOUT_MS = 5000
+          const lockAndCreate = withAutoCreateLock(runAutoCreate)
+          const timeout = new Promise<'timeout'>((resolve) =>
+            setTimeout(() => resolve('timeout'), AUTO_CREATE_LOCK_TIMEOUT_MS)
+          )
+          await Promise.race([lockAndCreate, timeout])
+          if (normalizedProjects.length === 0) {
+            // This tab lost the race, timed out, or skipped creation (no Web
+            // Locks): pick up the winner's default project.
+            normalizedProjects = await repo.findAllProjects()
+            normalizedStats = await repo.findProjectStats()
           }
         }
 

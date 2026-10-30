@@ -709,22 +709,17 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
 
   if (!isStorageReady) {
     // Storage-layer failure recorded in the project store: show the SAME
-    // InitErrorBanner (Retry re-runs initialize(), which re-opens the SQLite
-    // worker through getReadyWorkerClient) plus the StorageLoading error
-    // card's reset/export actions — instead of reload-only recovery
-    // (Sourcery: "Storage errors bypass recovery banner").
+    // InitErrorBanner (single viewport, Retry re-runs initialize() which
+    // re-opens the SQLite worker through getReadyWorkerClient) plus the
+    // diagnostics actions — NOT also the full-screen StorageLoading error
+    // card, which pushed Retry/export controls below the fold (Sourcery:
+    // "Recovery controls start below fold"). The destructive reset/export
+    // paths remain reachable via the app once init recovers.
     const storeInitError = useProjectStore.getState().initError
     if (storeInitError) {
       return (
         <>
           <InitErrorBanner />
-          <StorageLoading
-            progress={loadingProgress}
-            error={storageError}
-            canReset={canResetDatabase}
-            onReset={handleResetDatabase}
-            onExport={handleExportDatabase}
-          />
           <StorageInitDiagnosticsActions />
         </>
       )

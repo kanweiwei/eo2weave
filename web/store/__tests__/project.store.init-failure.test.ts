@@ -56,6 +56,16 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     // Auto-create now FAILS initialize() (Sourcery round 4), so make sure the
     // first-run flag from an earlier test never leaks into the next one.
     localStorage.removeItem('creatorweave:auto-default-project-created')
+    // happy-dom has no Web Locks API; the store's fail-closed helper needs one
+    // to run the auto-create callback. Stub an immediately-acquired lock.
+    vi.stubGlobal('navigator', {
+      ...globalThis.navigator,
+      locks: {
+        request: async (_scope: string, cb: () => Promise<void>) => {
+          await cb()
+        },
+      },
+    })
     // Default: a healthy repository returning an empty list. createProject
     // resolves a fresh default project — the auto-create path fires in these
     // tests (empty list + cleared first-run flag) and must succeed.
