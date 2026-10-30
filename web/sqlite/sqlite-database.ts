@@ -671,8 +671,20 @@ class SQLiteDatabaseManager {
     // Create the worker client synchronously (as the old inline IIFE did) so
     // callers that immediately query join the in-flight initPromise instead
     // of seeing "Database not initialized" during the lock-acquire microtask.
+    // Constructed under failure cleanup (Sourcery: "Worker startup failure
+    // wedges retries"): if the browser throws while constructing the worker
+    // (creation blocked, resources unavailable), the pre-construction `if`
+    // left `initializing` stuck true with no initPromise — every later call
+    // waited forever in the `initializing` spin. Wrap in try/catch, reset
+    // the gate, and rethrow so the caller can retry.
     if (!this.workerClient) {
-      this.workerClient = new SQLiteWorkerClient()
+      try {
+        this.workerClient = new SQLiteWorkerClient()
+      } catch (error) {
+        this.initializing = false
+        this.initPromise = null
+        throw error
+      }
     }
 
     this.initPromise = this.acquireInitLock().then((releaseInitLock) =>
@@ -718,6 +730,12 @@ class SQLiteDatabaseManager {
       // the configured budget. Consume the budget HERE: recreate the worker
       // and re-run initialize() with the same backoff before giving up.
       this.workerClient = null
+      // Track the FINAL failure (Sourcery: "Diagnostics report stale
+      // failure"): a later retry can fail with a different error than the
+      // initial worker attempt (e.g. a timeout masked by an OOM on retry).
+      // The caller classifies and renders whatever we throw here, so the
+      // LAST error is the accurate one to report.
+      let lastError: unknown = error
       while (this.initRetryCount < this.MAX_INIT_RETRIES) {
         this.initRetryCount++
         const backoff = Math.min(500 * Math.pow(2, this.initRetryCount - 1), 4000)
@@ -735,6 +753,7 @@ class SQLiteDatabaseManager {
           return
         } catch (retryError) {
           console.error('[SQLite] Init retry failed:', retryError)
+          lastError = retryError
           try {
             await this.workerClient?.close()
           } catch {
@@ -753,7 +772,7 @@ class SQLiteDatabaseManager {
       this.initPromise = null
       this.initializing = false
 
-      throw error
+      throw lastError
     }
   }
 

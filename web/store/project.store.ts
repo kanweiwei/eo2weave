@@ -405,6 +405,23 @@ export const useProjectStore = create<ProjectState>()(
         ) {
           const runAutoCreate = async (): Promise<void> => {
             try {
+              // Re-check INSIDE the lock (Sourcery: "Concurrent tabs create
+              // duplicate defaults"): the pre-lock snapshot above can be
+              // stale by the time this callback is granted the lock —
+              // another tab may have created the default project while this
+              // one queued, and a callback whose wait timed out can still be
+              // granted the lock later. Re-reading the shared list + the
+              // first-run flag here makes creation idempotent: only the tab
+              // that observes an empty store under the lock creates.
+              if (localStorage.getItem(AUTO_DEFAULT_CREATED_KEY)) return
+              const freshProjects = await repo.findAllProjects()
+              if (freshProjects.length > 0) {
+                // Another tab already created — adopt its project instead
+                // of duplicating it.
+                normalizedProjects = freshProjects
+                normalizedStats = await repo.findProjectStats()
+                return
+              }
               const defaultName = getLocalizedDefaultProjectName()
               const defaultProject = await repo.createProject({ name: defaultName })
               // Re-throw when createProject returns nothing — the OPFS

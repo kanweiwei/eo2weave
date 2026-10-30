@@ -291,4 +291,49 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     expect(state.error).toBeNull()
     expect(state.initError).toBeNull()
   })
+
+  it('does NOT create a duplicate default when another tab created before the lock was granted (Sourcery round 13)', async () => {
+    // Simulate the race: the PRE-lock snapshot is empty, but by the time the
+    // lock callback runs, another tab has already created the default
+    // project and set the first-run flag. The in-lock re-check must adopt
+    // the other tab's project and skip creation entirely.
+    createProject.mockResolvedValue({
+      id: 'my-duplicate-default',
+      name: 'My Project',
+      status: 'active' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    // First findAllProjects call: pre-lock check (empty). The in-lock
+    // re-check call sees the winner's project.
+    findAllProjects
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'winner-tab-default', name: 'My Project', status: 'active' as const, createdAt: 0, updatedAt: 0 },
+      ])
+    findProjectStats.mockResolvedValue([])
+
+    await useProjectStore.getState().initialize()
+
+    expect(createProject).not.toHaveBeenCalled()
+    const state = useProjectStore.getState()
+    expect(state.projects.map((p) => p.id)).toEqual(['winner-tab-default'])
+    expect(state.initialized).toBe(true)
+    expect(state.initError).toBeNull()
+  })
+
+  it('does NOT create when the first-run flag was set between the pre-lock check and the lock grant', async () => {
+    // The lock callback stub sets the flag (as the winning tab would) just
+    // before granting — the in-lock re-check must bail on the flag alone.
+    const locks = (globalThis.navigator as any).locks
+    locks.request = async (_scope: string, cb: () => Promise<void>) => {
+      localStorage.setItem('creatorweave:auto-default-project-created', '1')
+      await cb()
+    }
+
+    await useProjectStore.getState().initialize()
+
+    expect(createProject).not.toHaveBeenCalled()
+    expect(useProjectStore.getState().initialized).toBe(true)
+  })
 })
