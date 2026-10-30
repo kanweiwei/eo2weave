@@ -57,7 +57,7 @@ vi.mock('@/i18n', () => ({
   },
 }))
 
-import ProjectHomeView from '../ProjectHomeView'
+import ProjectHomeView from '@/components/project/ProjectHomeView'
 import { useProjectStore } from '@/store/project.store'
 
 function setupStore(opts: {

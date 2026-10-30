@@ -254,6 +254,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             return
           }
 
+          // Route the storage-layer failure through the project store so it
+          // gets the same banner + Retry + diagnostics flow as repository
+          // failures (Sourcery: "Worker startup failures bypass the banner").
+          // The retry re-runs the whole bootstrap init below.
+          useProjectStore.getState().reportInitFailure(errorMsg)
+
           const isDatabaseError =
             errorMsg.toLowerCase().includes('database') ||
             errorMsg.toLowerCase().includes('sqlite') ||
@@ -280,6 +286,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           setIsDatabaseInaccessible(true)
           return
         }
+
+        // Route the storage-layer failure through the project store so it
+        // gets the same banner + Retry + diagnostics flow as repository
+        // failures (Sourcery: "Worker startup failures bypass the banner").
+        useProjectStore.getState().reportInitFailure(errorMsg)
 
         const isDatabaseError =
           errorMsg.toLowerCase().includes('database') ||

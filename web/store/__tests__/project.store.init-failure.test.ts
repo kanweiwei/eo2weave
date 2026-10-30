@@ -31,7 +31,7 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), loading: vi.fn(), info: vi.fn() },
 }))
 
-import { useProjectStore } from '../project.store'
+import { useProjectStore } from '@/store/project.store'
 
 describe('project.store initialize() failure semantics (issue #131)', () => {
   beforeEach(() => {
@@ -95,6 +95,50 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     expect(JSON.parse(raw as string)).toMatchObject({ kind: 'corruption' })
   })
 
+  it('classifies persistent open failures (CANTOPEN) as unknown — no reassurance', async () => {
+    // Sourcery round 3 ("Persistent open failures promise safe data"):
+    // CANTOPEN / database_inaccessible can be a persistent path or access
+    // problem, not temporary contention — they must not get the transient
+    // "projects are safe, retrying usually fixes it" classification.
+    findAllProjects.mockRejectedValue(new Error('SQLite error: CANTOPEN'))
+
+    await useProjectStore.getState().initialize()
+
+    const state = useProjectStore.getState()
+    expect(state.initError).toBe('SQLite error: CANTOPEN')
+    expect(state.initErrorKind).toBe('unknown')
+  })
+
+  it('classifies database_inaccessible as unknown — no reassurance', async () => {
+    findAllProjects.mockRejectedValue(new Error('database_inaccessible'))
+
+    await useProjectStore.getState().initialize()
+
+    expect(useProjectStore.getState().initErrorKind).toBe('unknown')
+  })
+
+  it('reportInitFailure surfaces storage-layer startup failures like init failures', () => {
+    // Sourcery round 3 ("Worker startup failures bypass the banner"):
+    // AppBootstrap records initStorage() failures via reportInitFailure —
+    // they must land in the same banner/diagnostics state.
+    useProjectStore.getState().reportInitFailure('OPFS worker failed to start')
+
+    const state = useProjectStore.getState()
+    expect(state.initialized).toBe(false)
+    expect(state.initError).toBe('OPFS worker failed to start')
+    expect(state.initErrorKind).toBe('unknown')
+    expect(state.isLoading).toBe(false)
+    const raw = sessionStorage.getItem('creatorweave:project-store-init-error')
+    expect(JSON.parse(raw as string)).toMatchObject({
+      message: 'OPFS worker failed to start',
+    })
+  })
+
+  it('reportInitFailure classifies contention signatures as transient', () => {
+    useProjectStore.getState().reportInitFailure('opfs pool busy')
+    expect(useProjectStore.getState().initErrorKind).toBe('transient')
+  })
+
   it('retries the full init when initialize() runs again after a failure', async () => {
     findAllProjects.mockRejectedValueOnce(new Error('opfs pool busy'))
     await useProjectStore.getState().initialize()
@@ -132,14 +176,14 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
   })
 
   it('persists the failure to sessionStorage for diagnostics', async () => {
-    findAllProjects.mockRejectedValue(new Error('database_inaccessible'))
+    findAllProjects.mockRejectedValue(new Error('storage I/O failure'))
 
     await useProjectStore.getState().initialize()
 
     const raw = sessionStorage.getItem('creatorweave:project-store-init-error')
     expect(raw).not.toBeNull()
     expect(JSON.parse(raw as string)).toMatchObject({
-      message: 'database_inaccessible',
+      message: 'storage I/O failure',
     })
   })
 

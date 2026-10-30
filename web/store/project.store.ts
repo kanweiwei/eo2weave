@@ -40,9 +40,13 @@ const CORRUPTION_ERROR_PATTERNS = [
 
 /**
  * KNOWN transient (retryable-contention) signatures — kept in sync with the
- * busy-error detection in sqlite-worker.ts (isOpfsBusyError) and
- * storage/init.ts (isDatabaseInaccessibleError). Only these earn the
- * "projects are safe, retrying usually fixes it" reassurance.
+ * busy-error detection in sqlite-worker.ts (isOpfsBusyError). Only these earn
+ * the "projects are safe, retrying usually fixes it" reassurance.
+ *
+ * NOTE (Sourcery: "Persistent open failures promise safe data"): CANTOPEN and
+ * database_inaccessible are deliberately NOT here — they can mean a persistent
+ * path/access problem, not just temporary contention. They fall through to
+ * 'unknown' (neutral copy) in classifyProjectInitError below.
  */
 const TRANSIENT_ERROR_PATTERNS = [
   /opfs\s*pool\s*busy/i,
@@ -54,8 +58,6 @@ const TRANSIENT_ERROR_PATTERNS = [
   /sqlite_locked/i,
   /database\s*is\s*locked/i,
   /result\s*code\s*[56]\b/i,
-  /database_inaccessible/i,
-  /cantopen\b/i,
 ]
 
 export function classifyProjectInitError(message: string): ProjectInitErrorKind {
@@ -184,6 +186,16 @@ interface ProjectState {
   initializingRetry: boolean
 
   initialize: () => Promise<void>
+  /**
+   * Record a storage-layer startup failure (SQLite worker / OPFS) detected
+   * OUTSIDE initialize() — AppBootstrap's initStorage() gate fails before
+   * initialize() ever runs. Routing it through the store gives those
+   * failures the SAME user-visible flow as repository-read failures: the
+   * init banner, a working Retry (initialize() re-opens the SQLite
+   * worker), and the persisted diagnostics record (Sourcery: "Worker
+   * startup failures bypass the banner").
+   */
+  reportInitFailure: (message: string) => void
   setActiveProject: (projectId: string) => Promise<boolean>
   refreshProjects: () => Promise<void>
   createProject: (name: string) => Promise<Project | null>
@@ -422,6 +434,33 @@ export const useProjectStore = create<ProjectState>()(
         // starts a fresh attempt (retry path) instead of joining a dead one.
         initInFlight = undefined
       }
+    },
+
+    reportInitFailure: (message: string) => {
+      // Storage-layer (initStorage) failures arrive here via AppBootstrap.
+      // Same state shape the initialize() catch path sets, so the banner,
+      // Retry and diagnostics treat both failure origins identically.
+      set({
+        error: message,
+        initialized: false,
+        isLoading: false,
+        initError: message,
+        initErrorKind: classifyProjectInitError(message),
+        initializingRetry: false,
+      })
+      try {
+        sessionStorage.setItem(
+          PROJECT_STORE_INIT_ERROR_KEY,
+          JSON.stringify({
+            message,
+            kind: classifyProjectInitError(message),
+            at: new Date().toISOString(),
+          })
+        )
+      } catch {
+        // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+      }
+      console.error('[ProjectStore] storage init failed:', message)
     },
 
     setActiveProject: async (projectId: string) => {
