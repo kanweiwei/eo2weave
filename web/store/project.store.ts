@@ -107,6 +107,70 @@ let initInFlight: Promise<void> | undefined
 const PROJECT_CHANGE_CHANNEL = 'creatorweave-project-changes'
 const PROJECT_PASSIVE_REFRESH_INTERVAL_MS = 1000
 
+/** Cross-tab lock scope + localStorage-mutex fallback (see initialize). */
+const AUTO_DEFAULT_LOCK_SCOPE = 'creatorweave:project-store:auto-default'
+const AUTO_DEFAULT_LOCK_KEY = 'creatorweave:project-store:auto-default-lock'
+const AUTO_DEFAULT_LOCK_TTL_MS = 15000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Serialize first-run auto-create across tabs (Sourcery: "Tabs create
+ * duplicate projects"). Prefers the Web Locks API; falls back to a
+ * localStorage claim+verify mutex with a TTL so browsers without Web Locks
+ * still serialize (the claim window makes simultaneous inserts vanishingly
+ * unlikely and the post-lock re-read heals any residual race).
+ */
+async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    await navigator.locks.request(AUTO_DEFAULT_LOCK_SCOPE, async () => {
+      await fn()
+    })
+    return
+  }
+
+  if (typeof localStorage === 'undefined') {
+    await fn()
+    return
+  }
+
+  const token = Math.random().toString(36).slice(2)
+  const deadline = Date.now() + AUTO_DEFAULT_LOCK_TTL_MS
+  let acquired = false
+  while (Date.now() < deadline && !acquired) {
+    const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
+    if (!raw) {
+      try {
+        localStorage.setItem(AUTO_DEFAULT_LOCK_KEY, JSON.stringify({ token, at: Date.now() }))
+      } catch {
+        break // storage unavailable — proceed unserialized rather than never
+      }
+      await sleep(250)
+      const recheck = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
+      acquired = !!recheck && (JSON.parse(recheck) as { token?: string }).token === token
+      if (acquired) break
+    }
+    await sleep(150)
+  }
+
+  try {
+    await fn()
+  } finally {
+    if (acquired) {
+      try {
+        const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
+        if (raw && (JSON.parse(raw) as { token?: string }).token === token) {
+          localStorage.removeItem(AUTO_DEFAULT_LOCK_KEY)
+        }
+      } catch {
+        // stale lock expires via TTL — nothing to do.
+      }
+    }
+  }
+}
+
 type ProjectChangeMessage =
   | { type: 'created'; projectId: string }
   | { type: 'updated'; projectId: string }
@@ -407,7 +471,7 @@ export const useProjectStore = create<ProjectState>()(
 
           if (typeof navigator !== 'undefined' && navigator.locks) {
             await navigator.locks.request(
-              'creatorweave:project-store:auto-default',
+              AUTO_DEFAULT_LOCK_SCOPE,
               async () => {
                 // Winner creates; loser re-reads — the winner has committed
                 // its row + flag by the time the lock is released.
@@ -426,7 +490,20 @@ export const useProjectStore = create<ProjectState>()(
               normalizedStats = await repo.findProjectStats()
             }
           } else {
-            await runAutoCreate()
+            // No Web Locks API: localStorage claim+verify mutex fallback.
+            await withAutoCreateLock(async () => {
+              if (
+                localStorage.getItem(AUTO_DEFAULT_CREATED_KEY) ||
+                (await repo.findAllProjects()).length > 0
+              ) {
+                return
+              }
+              await runAutoCreate()
+            })
+            if (normalizedProjects.length === 0) {
+              normalizedProjects = await repo.findAllProjects()
+              normalizedStats = await repo.findProjectStats()
+            }
           }
         }
 
@@ -444,11 +521,23 @@ export const useProjectStore = create<ProjectState>()(
           initializingRetry: false,
         })
 
-        // Success clears any failure record persisted by a previous attempt.
+        // Success MARKS the previous failure record resolved instead of
+        // deleting it (Sourcery: "Startup failure details disappear") — a
+        // user who reloaded into a working app and then ran Diagnostics must
+        // still be able to attach the ORIGINAL startup failure report. The
+        // record is only removed by initialize()'s own failure path (which
+        // overwrites it) or a fresh session (sessionStorage lifetime).
         try {
-          sessionStorage.removeItem(PROJECT_STORE_INIT_ERROR_KEY)
+          const raw = sessionStorage.getItem(PROJECT_STORE_INIT_ERROR_KEY)
+          if (raw) {
+            const record = JSON.parse(raw) as { resolved?: boolean }
+            sessionStorage.setItem(
+              PROJECT_STORE_INIT_ERROR_KEY,
+              JSON.stringify({ ...record, resolved: true })
+            )
+          }
         } catch {
-          // sessionStorage unavailable — nothing to clean up.
+          // sessionStorage unavailable / malformed — leave the record as is.
         }
 
         try {

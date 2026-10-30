@@ -24,6 +24,8 @@ interface StoredProjectInitError {
   kind?: string
   stack?: string
   at?: string
+  /** True when a later initialize() succeeded — report kept for context. */
+  resolved?: boolean
 }
 
 /**
@@ -51,9 +53,14 @@ function collectProjectInitErrorSection(): DiagnosticSection {
     status = 'error'
     summary.projectStoreInitErrorAt = stored.at ?? null
     summary.projectStoreInitErrorKind = stored.kind ?? 'unknown'
+    // Sourcery round 7 ("Startup failure details disappear"): a later
+    // successful initialize() marks the record resolved instead of deleting
+    // it — the report still carries the original failure for bug reports.
+    if (stored.resolved) summary.projectStoreInitErrorResolved = true
     lines.push('- Last project-store initialization failure:')
     lines.push(`  - Message: ${stored.message}`)
     if (stored.kind) lines.push(`  - Kind: ${stored.kind}`)
+    if (stored.resolved) lines.push('  - Resolved: yes (a later init succeeded)')
     // Full stack when persisted (Sourcery: "Persist the full stack") —
     // the single most useful signal for debugging a blank-projects report.
     if (stored.stack) lines.push(`  - Stack: ${stored.stack}`)

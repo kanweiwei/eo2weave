@@ -112,7 +112,11 @@ export function InitErrorBanner() {
           <BrandButton
             variant="primary"
             onClick={() => void handleRetry()}
-            disabled={busy}
+            // Disable while diagnostics runs (Sourcery: "Retry discards
+            // running diagnostic report") — a successful retry unmounts this
+            // banner, which would throw away the pending report before the
+            // user can copy it.
+            disabled={busy || diagRunning}
           >
             {busy ? t('app.projectsInitRetrying') : t('app.retry')}
           </BrandButton>

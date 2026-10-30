@@ -10,6 +10,7 @@ import { UnsupportedBrowser } from '@/components/UnsupportedBrowser'
 import { applyServiceWorkerUpdate } from '@/pwa/register-service-worker'
 import { StorageLoading } from '@/components/StorageLoading'
 import { MemoryModeBanner } from '@/components/MemoryModeBanner'
+import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { DatabaseRefreshDialog } from '@/components/DatabaseRefreshDialog'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
@@ -707,6 +708,27 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   }
 
   if (!isStorageReady) {
+    // Storage-layer failure recorded in the project store: show the SAME
+    // InitErrorBanner (Retry re-runs initialize(), which re-opens the SQLite
+    // worker through getReadyWorkerClient) plus the StorageLoading error
+    // card's reset/export actions — instead of reload-only recovery
+    // (Sourcery: "Storage errors bypass recovery banner").
+    const storeInitError = useProjectStore.getState().initError
+    if (storeInitError) {
+      return (
+        <>
+          <InitErrorBanner />
+          <StorageLoading
+            progress={loadingProgress}
+            error={storageError}
+            canReset={canResetDatabase}
+            onReset={handleResetDatabase}
+            onExport={handleExportDatabase}
+          />
+          <StorageInitDiagnosticsActions />
+        </>
+      )
+    }
     return (
       <>
         <StorageLoading
