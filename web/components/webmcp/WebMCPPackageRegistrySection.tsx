@@ -494,6 +494,24 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   }, [refreshInstalled])
 
   useEffect(() => {
+    // Another settings tab may add or remove a registry while this section
+    // stays mounted (finding: "Registry list stays stale across tabs"): the
+    // store's reconciliation state updates on the storage event, but this
+    // component's `registries` state does not — reload both the registry
+    // list and the installed state when the persisted list changes.
+    // The storage event fires only in tabs OTHER than the writer; the
+    // writer updates its own state through its action handlers.
+    const listener = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && event.key === 'webmcp_package_registries') {
+        setRegistries(listRegistries())
+        void refreshInstalled()
+      }
+    }
+    window.addEventListener('storage', listener)
+    return () => window.removeEventListener('storage', listener)
+  }, [refreshInstalled])
+
+  useEffect(() => {
     // The side-panel opt-in flow enables packages OUTSIDE this section. The
     // background announces every catalog change with `webmcp_packages_changed`
     // to extension pages AND to tabs, where the webmcp.content relay
