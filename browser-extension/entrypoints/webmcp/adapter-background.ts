@@ -96,8 +96,15 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       // then fell through the `===` DISPATCH here to the writable `webmcp`
       // provider — one validated mount value must drive both the
       // authorization checks and the dispatch.
-      if (typeof message.mount !== 'string') { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
-      if (message.mount !== undefined && !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(message.mount)) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
+      // An omitted mount means the writable `webmcp` mount (the original
+      // dispatch default) — apply the default BEFORE validating, so callers
+      // relying on it are not rejected with EINVAL (finding: "Omitted mount
+      // is rejected"). Non-string values other than `undefined` stay
+      // rejected: `String(['extension-skills'])` equals the allowed name,
+      // which would let an array slip past validation into the writable
+      // dispatch (round-3 finding: "Sites bypass package consent").
+      const mount = message.mount === undefined ? 'webmcp' : message.mount
+      if (typeof mount !== 'string' || !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(mount)) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
       // SECURITY (finding: "Websites bypass package consent"): the
       // all-sites content relay forwards `webmcp_provider_call` from ANY
       // page, so a hostile page could reach the writable `webmcp` mount
@@ -114,9 +121,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       // could pull package sources and configs straight off the mount.
       // `stat`/`readdir` stay open so the VFS tree still renders (names
       // only); file BYTES require a trusted sender.
-      // One validated mount value drives ALL checks and the dispatch below
-      // (absent mount defaults to the writable `webmcp` mount).
-      const mount = message.mount ?? 'webmcp'
+      // One validated mount value drives ALL checks and the dispatch below.
       const mutating = ['writeFile', 'mkdir', 'remove'].includes(String(message.method))
       const untrusted = !isTrustedCreatorWeaveSenderUrl(sender.url)
       if (
