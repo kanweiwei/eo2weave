@@ -145,7 +145,11 @@ async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
       try {
         localStorage.setItem(AUTO_DEFAULT_LOCK_KEY, JSON.stringify({ token, at: Date.now() }))
       } catch {
-        break // storage unavailable — proceed unserialized rather than never
+        // Storage unavailable — cannot serialize at all. Run fn() so the
+        // first-run flow still works single-tab; duplicate risk is the
+        // pre-existing behavior and the post-lock re-read heals it.
+        await fn()
+        return
       }
       await sleep(250)
       const recheck = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
@@ -155,18 +159,24 @@ async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
     await sleep(150)
   }
 
+  if (!acquired) {
+    // Mutex never acquired before the TTL: do NOT run fn() (Sourcery:
+    // "Default projects get duplicated") — another tab holds the create
+    // window. The caller's post-lock re-read picks up the winner's project,
+    // or the user retries initialize().
+    return
+  }
+
   try {
     await fn()
   } finally {
-    if (acquired) {
-      try {
-        const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
-        if (raw && (JSON.parse(raw) as { token?: string }).token === token) {
-          localStorage.removeItem(AUTO_DEFAULT_LOCK_KEY)
-        }
-      } catch {
-        // stale lock expires via TTL — nothing to do.
+    try {
+      const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
+      if (raw && (JSON.parse(raw) as { token?: string }).token === token) {
+        localStorage.removeItem(AUTO_DEFAULT_LOCK_KEY)
       }
+    } catch {
+      // stale lock expires via TTL — nothing to do.
     }
   }
 }
