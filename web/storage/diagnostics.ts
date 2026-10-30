@@ -22,6 +22,7 @@ import { PROJECT_STORE_INIT_ERROR_KEY } from '@/lib/app-storage-keys'
 interface StoredProjectInitError {
   message: string
   kind?: string
+  stack?: string
   at?: string
 }
 
@@ -53,6 +54,9 @@ function collectProjectInitErrorSection(): DiagnosticSection {
     lines.push('- Last project-store initialization failure:')
     lines.push(`  - Message: ${stored.message}`)
     if (stored.kind) lines.push(`  - Kind: ${stored.kind}`)
+    // Full stack when persisted (Sourcery: "Persist the full stack") —
+    // the single most useful signal for debugging a blank-projects report.
+    if (stored.stack) lines.push(`  - Stack: ${stored.stack}`)
     if (stored.at) lines.push(`  - At: ${stored.at}`)
   } else {
     lines.push('- No project-store initialization failure recorded this session.')

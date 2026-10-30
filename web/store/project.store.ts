@@ -71,6 +71,29 @@ export function classifyProjectInitError(message: string): ProjectInitErrorKind 
 }
 
 /**
+ * Persist an init failure outside the console so it survives into the
+ * diagnostics report (runDiagnostics only reads console-free state) and
+ * users can attach it to bug reports even after a reload. Shared by
+ * initialize()'s catch path and reportInitFailure() so both failure origins
+ * land in the same sessionStorage record.
+ */
+function persistInitErrorRecord(message: string, stack?: string): void {
+  try {
+    sessionStorage.setItem(
+      PROJECT_STORE_INIT_ERROR_KEY,
+      JSON.stringify({
+        message,
+        kind: classifyProjectInitError(message),
+        stack,
+        at: new Date().toISOString(),
+      })
+    )
+  } catch {
+    // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+  }
+}
+
+/**
  * Module-level in-flight marker for initialize(): concurrent callers join the
  * same attempt (see the guard inside initialize). Cleared in a `finally` so
  * a completed/failed attempt never poisons the next retry.
@@ -195,7 +218,7 @@ interface ProjectState {
    * worker), and the persisted diagnostics record (Sourcery: "Worker
    * startup failures bypass the banner").
    */
-  reportInitFailure: (message: string) => void
+  reportInitFailure: (message: string, stack?: string) => void
   setActiveProject: (projectId: string) => Promise<boolean>
   refreshProjects: () => Promise<void>
   createProject: (name: string) => Promise<Project | null>
@@ -347,6 +370,12 @@ export const useProjectStore = create<ProjectState>()(
           try {
             const defaultName = getLocalizedDefaultProjectName()
             const defaultProject = await repo.createProject({ name: defaultName })
+            // Re-throw when createProject returns nothing — the OPFS
+            // bootstrap below needs the id, and silently continuing would
+            // mark init complete with a phantom empty list (Sourcery round 4).
+            if (!defaultProject) {
+              throw new Error('Project store: createProject returned no project')
+            }
             await bootstrapProjectOpfs(defaultProject.id)
             localStorage.setItem(AUTO_DEFAULT_CREATED_KEY, '1')
             normalizedProjects = [defaultProject]
@@ -356,7 +385,12 @@ export const useProjectStore = create<ProjectState>()(
             }]
             console.log('[ProjectStore] Auto-created default project:', defaultProject.id)
           } catch (err) {
-            console.warn('[ProjectStore] Failed to auto-create default project:', err)
+            // Re-throw as an init failure (Sourcery: "First-run storage
+            // failures still look empty"). Swallowing it here used to mark
+            // init complete with an empty list while the created project row
+            // stayed hidden until reload; failing loudly puts the user on the
+            // init banner with a Retry that re-runs the whole flow.
+            throw err instanceof Error ? err : new Error(String(err))
           }
         }
 
@@ -412,17 +446,9 @@ export const useProjectStore = create<ProjectState>()(
           `[ProjectStore] initialize failed (${Math.round(performance.now() - started)}ms):`,
           detail
         )
-        // Persist the failure outside the console so it survives into the
-        // diagnostics report (runDiagnostics only reads console-free state)
-        // and users can attach it to bug reports even after a reload.
-        try {
-          sessionStorage.setItem(
-            PROJECT_STORE_INIT_ERROR_KEY,
-            JSON.stringify({ message, kind: classifyProjectInitError(message), at: new Date().toISOString() })
-          )
-        } catch {
-          // sessionStorage unavailable (SSR / disabled storage) — console is enough.
-        }
+        // Persist the failure (incl. the stack — Sourcery: "Persist the full
+        // stack") so diagnostics reports carry the full failure detail.
+        persistInitErrorRecord(message, e instanceof Error ? e.stack : undefined)
       }
       })()
 
@@ -436,7 +462,7 @@ export const useProjectStore = create<ProjectState>()(
       }
     },
 
-    reportInitFailure: (message: string) => {
+    reportInitFailure: (message: string, stack?: string) => {
       // Storage-layer (initStorage) failures arrive here via AppBootstrap.
       // Same state shape the initialize() catch path sets, so the banner,
       // Retry and diagnostics treat both failure origins identically.
@@ -448,19 +474,8 @@ export const useProjectStore = create<ProjectState>()(
         initErrorKind: classifyProjectInitError(message),
         initializingRetry: false,
       })
-      try {
-        sessionStorage.setItem(
-          PROJECT_STORE_INIT_ERROR_KEY,
-          JSON.stringify({
-            message,
-            kind: classifyProjectInitError(message),
-            at: new Date().toISOString(),
-          })
-        )
-      } catch {
-        // sessionStorage unavailable (SSR / disabled storage) — console is enough.
-      }
-      console.error('[ProjectStore] storage init failed:', message)
+      persistInitErrorRecord(message, stack)
+      console.error('[ProjectStore] storage init failed:', stack ?? message)
     },
 
     setActiveProject: async (projectId: string) => {

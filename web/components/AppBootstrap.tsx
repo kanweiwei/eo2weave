@@ -257,7 +257,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           // Route the storage-layer failure through the project store so it
           // gets the same banner + Retry + diagnostics flow as repository
           // failures (Sourcery: "Worker startup failures bypass the banner").
-          // The retry re-runs the whole bootstrap init below.
           useProjectStore.getState().reportInitFailure(errorMsg)
 
           const isDatabaseError =
@@ -272,6 +271,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             setStorageError(errorMsg)
           }
 
+          // Leave isStorageReady false: the gate keeps rendering StorageLoading
+          // (with its error card: message, optional DB export, page reload).
+          // A retry of initStorage() needs the full worker lifecycle torn down,
+          // so the reliable "Retry" is a page reload — StorageLoading already
+          // offers it (Sourcery: "Storage failures block recovery").
           toast.error(errorMsg, { id: 'storage-init', duration: 10000 })
           console.error('[App] Storage initialization failed:', errorMsg)
           return
@@ -290,7 +294,10 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         // Route the storage-layer failure through the project store so it
         // gets the same banner + Retry + diagnostics flow as repository
         // failures (Sourcery: "Worker startup failures bypass the banner").
-        useProjectStore.getState().reportInitFailure(errorMsg)
+        useProjectStore.getState().reportInitFailure(
+          errorMsg,
+          error instanceof Error ? error.stack : undefined
+        )
 
         const isDatabaseError =
           errorMsg.toLowerCase().includes('database') ||

@@ -8,9 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const {
   findAllProjects,
   findProjectStats,
+  createProject,
 } = vi.hoisted(() => ({
   findAllProjects: vi.fn(),
   findProjectStats: vi.fn(),
+  createProject: vi.fn(),
 }))
 
 vi.mock('@/sqlite/repositories/project.repository', () => ({
@@ -18,7 +20,7 @@ vi.mock('@/sqlite/repositories/project.repository', () => ({
   getProjectRepository: () => ({
     findAllProjects,
     findProjectStats,
-    createProject: vi.fn(),
+    createProject,
     deleteProject: vi.fn(),
   }),
 }))
@@ -51,9 +53,21 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     })
     sessionStorage.clear()
     localStorage.clear()
-    // Default: a healthy repository returning an empty list.
+    // Auto-create now FAILS initialize() (Sourcery round 4), so make sure the
+    // first-run flag from an earlier test never leaks into the next one.
+    localStorage.removeItem('creatorweave:auto-default-project-created')
+    // Default: a healthy repository returning an empty list. createProject
+    // resolves a fresh default project — the auto-create path fires in these
+    // tests (empty list + cleared first-run flag) and must succeed.
     findAllProjects.mockResolvedValue([])
     findProjectStats.mockResolvedValue([])
+    createProject.mockResolvedValue({
+      id: 'default-project',
+      name: 'My Project',
+      status: 'active' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    })
   })
 
   it('does NOT set initialized:true on failure and exposes initError', async () => {
@@ -137,6 +151,47 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
   it('reportInitFailure classifies contention signatures as transient', () => {
     useProjectStore.getState().reportInitFailure('opfs pool busy')
     expect(useProjectStore.getState().initErrorKind).toBe('transient')
+  })
+
+  it('persists the error stack in the diagnostics record when available', () => {
+    // Sourcery round 4 ("Persist the full stack"): the sessionStorage record
+    // must carry the stack so an attached diagnostic report includes the
+    // full failure detail.
+    const err = new Error('boom')
+    useProjectStore.getState().reportInitFailure(err.message, err.stack)
+
+    const raw = sessionStorage.getItem('creatorweave:project-store-init-error')
+    expect(JSON.parse(raw as string)).toMatchObject({ stack: err.stack })
+  })
+
+  it('fails initialization when the first-run auto-create fails', async () => {
+    // Sourcery round 4 ("First-run storage failures still look empty"):
+    // swallowing auto-create errors marked init complete with an empty
+    // list while the created row stayed hidden until reload. The failure
+    // must propagate into the normal init-failure path instead.
+    findAllProjects.mockResolvedValue([])
+    findProjectStats.mockResolvedValue([])
+    // Auto-create only fires for a first-time browser (no localStorage flag).
+    localStorage.removeItem('creatorweave:auto-default-project-created')
+    createProject.mockRejectedValue(new Error('OPFS bootstrap failed'))
+
+    await useProjectStore.getState().initialize()
+
+    const state = useProjectStore.getState()
+    expect(state.initialized).toBe(false)
+    expect(state.initError).toBe('OPFS bootstrap failed')
+    expect(state.projects).toEqual([])
+
+    // A later initialize() must not hit the auto-create path again.
+    createProject.mockResolvedValue({
+      id: 'default-project',
+      name: 'My Project',
+      status: 'active' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    await useProjectStore.getState().initialize()
+    expect(useProjectStore.getState().initialized).toBe(true)
   })
 
   it('retries the full init when initialize() runs again after a failure', async () => {
