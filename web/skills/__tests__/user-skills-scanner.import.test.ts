@@ -305,6 +305,71 @@ describe('importUserSkillZip cleanup safety (issue #128)', () => {
     // memory): content proves the restore path ran.
     expect(contentOf('skill-a', 'SKILL.md')).toBe('# Old A\nkeep me')
   })
+
+  it('restores already-removed targets when backup staging fails midway (no deletion of run dir)', async () => {
+    // Bundle of two installed skills. Stage 1 backs up + removes skill-a,
+    // then hits a REAL read failure on skill-b — the catch must restore
+    // skill-a (already removed!) from its staged backup instead of
+    // deleting the run dir (which would lose the only backup).
+    writeInstalled('skill-a', '# Old A\nkeep me')
+    writeInstalled('skill-b', '# Old B')
+    const raw = {
+      'bundle/skill-a/SKILL.md': new TextEncoder().encode('# New A'),
+      'bundle/skill-b/SKILL.md': new TextEncoder().encode('# New B'),
+    }
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => makeOpfsRoot(undefined, 'skill-b/SKILL.md'),
+    }
+
+    await expect(importUserSkillZip({
+      isBundle: true,
+      skills: [
+        previewEntry('skill-a', 'bundle/skill-a/', 1),
+        previewEntry('skill-b', 'bundle/skill-b/', 1),
+      ],
+      _raw: raw,
+    })).rejects.toThrow(/read failed/)
+
+    // skill-a was pre-removed, then restored from its staged backup.
+    expect(installed('skill-a')).toBe(true)
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Old A\nkeep me')
+    // skill-b was never staged/removed — untouched.
+    expect(installed('skill-b')).toBe(true)
+    expect(contentOf('skill-b', 'SKILL.md')).toBe('# Old B')
+    // All restores succeeded → staging is cleaned up.
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
+  })
+
+  it('keeps the staged backup when the rollback restore itself fails', async () => {
+    // Fail the target write (failure 1) AND the restore write (failure 2):
+    // the rollback cannot restore the skill, so the staged backup must
+    // STAY for the next scan's recovery — deleting it would make the loss
+    // permanent.
+    writeInstalled('skill-a', '# Old A\nkeep me')
+    const raw = {
+      'bundle/skill-a/SKILL.md': new TextEncoder().encode('# New A'),
+    }
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () =>
+        makeOpfsRoot('.skills/user/skill-a', undefined, { failWritesTimes: 2 }),
+    }
+
+    await expect(importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'bundle/skill-a/', 1),
+      _raw: raw,
+    })).rejects.toThrow('OPFS write failed')
+
+    // The staging run directory is retained with the skill's backup...
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(1)
+    const run = [...backups!.dirs.values()][0]
+    expect(run.dirs.has('skill-a')).toBe(true)
+    expect(new TextDecoder().decode(run.dirs.get('skill-a')!.files.get('SKILL.md')!.data)).toBe(
+      '# Old A\nkeep me',
+    )
+  })
 })
 
 // ── Abandoned-backup recovery (High: tab dies mid-import) ────────────

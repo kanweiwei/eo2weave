@@ -263,9 +263,36 @@ async function recoverAbandonedImportBackups(): Promise<void> {
  * died mid-write) are recovered, so restored skills are included in the
  * same scan result.
  *
- * @returns Parsed skills with source='user', resources, and any errors
+ * @returns Parsed skills with source='user', resources, and any errors. When
+ *          two scans overlap, the LATER-started one's result wins: an
+ *          earlier scan that finishes after a newer one must not push a
+ *          stale directory view over the newer result (the caller caches
+ *          whatever this returns, so last-started == last-write).
  */
+let lastScanStartedSeq = 0
+// Serialization chain: each scan waits for the previous scan's OPFS walk to
+// finish before starting its own — two overlapping scans must not interleave
+// their directory reads (walker results are only unsafe to MERGE).
+let scanTail: Promise<unknown> = Promise.resolve()
+// The most recently STARTED scan's result promise — superseded scans adopt
+// it (see below) instead of publishing their own stale view.
+let latestScan: Promise<UserSkillScanResult> | null = null
+
 export async function scanUserSkills(): Promise<UserSkillScanResult> {
+  const seq = ++lastScanStartedSeq
+  const run = scanTail.then(() => scanUserSkillsInner())
+  scanTail = run.catch(() => {}) // never let a failure break the chain
+  latestScan = run
+  const result = await run
+  // A newer scan started while this one queued/ran: report ITS result so an
+  // older refresh never overwrites the manager cache with a stale directory
+  // view (both callers then apply the identical, freshest result — and the
+  // newer scan's own write, being last, wins deterministically).
+  if (seq !== lastScanStartedSeq) return await latestScan!
+  return result
+}
+
+async function scanUserSkillsInner(): Promise<UserSkillScanResult> {
   const skills: Skill[] = []
   const resources: SkillResource[] = []
   const errors: string[] = []
@@ -959,12 +986,42 @@ export async function importUserSkillZip(
       }
     }
   } catch (e) {
-    // Backup staging failed BEFORE anything was removed — abort the import
-    // without touching any existing skill.
-    try {
-      await backupsRoot.removeEntry(runId, { recursive: true })
-    } catch {
-      // Cleanup best-effort.
+    // Backup staging failed. Nothing removed yet is fine (runDir is empty
+    // and can go), but if some targets were ALREADY staged+removed before
+    // the failure they must be restored first — deleting the run dir now
+    // would permanently destroy the only backup of those skills.
+    if (preRemoved.size === 0) {
+      try {
+        await backupsRoot.removeEntry(runId, { recursive: true })
+      } catch {
+        // Cleanup best-effort.
+      }
+      throw e
+    }
+    let restoredAll = true
+    for (const dirName of preRemoved) {
+      if (!backedUp.has(dirName)) continue
+      try {
+        const stagedDir = await runDir.getDirectoryHandle(dirName)
+        const files = await readStagedBackup(stagedDir)
+        await restoreUserSkillDir(userDir, dirName, files)
+      } catch (restoreErr) {
+        restoredAll = false
+        console.warn(
+          `[UserSkillsScanner] Failed to restore ${dirName} after staging failure:`,
+          restoreErr,
+        )
+      }
+    }
+    // Keep the staged backups when any restore failed — the next scan's
+    // recoverAbandonedImportBackups() retries them. Deleting here would
+    // lose the user's existing skills for good.
+    if (restoredAll) {
+      try {
+        await backupsRoot.removeEntry(runId, { recursive: true })
+      } catch {
+        // Cleanup best-effort.
+      }
     }
     throw e
   }
@@ -1015,6 +1072,7 @@ export async function importUserSkillZip(
       const files = await readStagedBackup(stagedDir)
       await restoreUserSkillDir(userDir, dirName, files)
     }
+    let restoredAll = true
     for (const dirName of written) {
       try {
         if (await hasStagedBackup(dirName)) {
@@ -1023,6 +1081,7 @@ export async function importUserSkillZip(
           await userDir.removeEntry(dirName, { recursive: true })
         }
       } catch (restoreErr) {
+        restoredAll = false
         console.warn(
           `[UserSkillsScanner] Failed to roll back ${dirName}:`,
           restoreErr,
@@ -1043,19 +1102,29 @@ export async function importUserSkillZip(
           await userDir.removeEntry(s.dirName, { recursive: true })
         }
       } catch (restoreErr) {
+        restoredAll = false
         console.warn(
           `[UserSkillsScanner] Failed to roll back untouched skill ${s.dirName}:`,
           restoreErr,
         )
       }
     }
-    // Rollback done (best-effort) — clean up the staged run directory.
-    try {
-      await backupsRoot.removeEntry(runId, { recursive: true })
-    } catch (cleanupErr) {
+    // Rollback done (best-effort). Only clean up the staged run directory
+    // when EVERY restore succeeded — a failed restore must leave the backup
+    // in place so the next scan's recoverAbandonedImportBackups() retries
+    // it; deleting here would make the loss permanent.
+    if (restoredAll) {
+      try {
+        await backupsRoot.removeEntry(runId, { recursive: true })
+      } catch (cleanupErr) {
+        console.warn(
+          `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
+          cleanupErr,
+        )
+      }
+    } else {
       console.warn(
-        `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
-        cleanupErr,
+        `[UserSkillsScanner] Kept import backup staging ${runId} — some skills could not be rolled back and will be recovered on the next scan.`,
       )
     }
     throw e
