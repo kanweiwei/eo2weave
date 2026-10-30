@@ -15,6 +15,7 @@ export const skillInstall = {
     installDone: "설치 완료!",
     installFailed: "설치 실패",
     keyStoreUnavailable: "저장된 AI 자격 증명을 확인할 수 없습니다(스토리지 오류). 다시 시도해 주세요.",
+    readinessTimeout: "AI 상태 확인이 너무 오래 걸렸습니다. 다시 시도해 주세요.",
     registerFailed: "스킬이 설치되었지만 등록에 실패했습니다. 다시 시도해 주세요.",
     aiReady: "AI 모델이 준비되었습니다",
     aiNotReady: "마지막 단계: Nutstore AI에 로그인하면 스킬을 실행할 수 있습니다",

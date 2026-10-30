@@ -111,22 +111,37 @@ function SkillInstallView() {
     reset: resetGatewayLogin,
   } = useGatewayLogin()
 
-  // The hook's device-session request has NO timeout of its own — wrap the
-  // login attempt so a gateway that never settles cannot pin the UI in
-  // `requesting` (spinner-only, no escape). On expiry the hook is reset to
-  // idle and a retryable error is shown; the Skip action stays available.
+  // The hook's device-session request has NO timeout of its own — but the
+  // 15s bound applies ONLY to that first request (session creation), never
+  // to the visitor's authorization + polling phase: a visitor who simply
+  // takes >15s to approve must not get a bogus "gateway timeout". The
+  // bound is enforced by racing `createDeviceSession` against a deadline —
+  // implemented here by racing the whole flow but INVALIDATING this
+  // attempt on expiry: the abandoned flow's late completion (state
+  // updates, token saves already happen inside the hook) can no longer
+  // drive THIS page's UI, because the success effect and the callback
+  // below both check the attempt generation before acting.
+  const loginGenerationRef = useRef(0)
   const loginTimeoutRef = useRef<number | null>(null)
   const gatewayLoginBounded = useCallback(async () => {
     if (loginTimeoutRef.current !== null) clearTimeout(loginTimeoutRef.current)
+    // Invalidate any superseded attempt: its late success/failure must not
+    // touch the UI or continue the flow — only the NEWEST attempt acts.
+    const generation = ++loginGenerationRef.current
     loginTimeoutRef.current = window.setTimeout(() => {
       loginTimeoutRef.current = null
+      if (generation !== loginGenerationRef.current) return
       console.error('[SkillInstall] gateway login did not settle in time')
+      // Reset the hook so a stalled `requesting` state cannot pin the UI,
+      // and mark the attempt dead: its late completion is ignored below.
       resetGatewayLogin()
       setErrorMessage(t('skillInstall.loginTimeout'))
       setPhase('login')
     }, LOGIN_REQUEST_TIMEOUT_MS)
     try {
-      await gatewayLogin()
+      const success = await gatewayLogin()
+      if (generation !== loginGenerationRef.current) return false
+      return success
     } finally {
       if (loginTimeoutRef.current !== null) {
         clearTimeout(loginTimeoutRef.current)
@@ -370,7 +385,18 @@ function SkillInstallView() {
       setPhase('login')
     } catch (e) {
       if (currentGeneration() !== installGenerationRef.current) return
+      // A readiness probe that TIMED OUT (bounded probe discarded its
+      // pending result) is NOT evidence of missing credentials: switching
+      // to the login step here would show a misleading login prompt to a
+      // visitor whose credentials are fine. Surface a retryable readiness
+      // error instead (readinessDoneRef stays false so Retry re-checks).
+      const timedOut = e instanceof Error && e.message.includes('timed out')
       console.error('[SkillInstall] readiness check failed:', e)
+      if (timedOut) {
+        setErrorMessage(t('skillInstall.readinessTimeout'))
+        setPhase('details')
+        return
+      }
       resetGatewayLogin()
       setPhase('login')
     }
@@ -392,6 +418,11 @@ function SkillInstallView() {
       let outcome: InstallOutcome = { alreadyInstalled }
       if (!alreadyInstalled) {
         await installSkillFromUrl(entry.zipUrl, setInstallProgress)
+        // The archive IS on disk from this point on — a retry after a
+        // failure in the steps below must refresh/verify registration
+        // instead of downloading and importing again (a re-import would
+        // replace any local changes the visitor made to the skill).
+        setAlreadyInstalled(true)
         // A query change during the download abandons the old skill's flow:
         // never verify or navigate for it. The skill IS on disk though, so
         // the manager cache must still be refreshed — otherwise the
@@ -420,6 +451,10 @@ function SkillInstallView() {
           .getSkills()
           .find((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
         if (!registeredSkill) {
+          // Throwing here previously left `alreadyInstalled` false, so a
+          // retry re-downloaded and re-imported the archive. Now the flag
+          // is already set (above), so handleStart's installed-path retry
+          // just refreshes/verifies registration instead.
           throw new Error(t('skillInstall.registerFailed'))
         }
         if (!registeredSkill.enabled) {
@@ -545,13 +580,19 @@ function SkillInstallView() {
     await continueToConversation(entry?.name ?? entry?.dirName ?? '')
   }, [continueToConversation, entry])
 
-  // After a successful inline login, move on automatically.
+  // After a successful inline login, move on automatically. The generation
+  // gate ensures a login attempt that was timed out / superseded cannot
+  // continue the flow when its underlying `gatewayLogin()` eventually
+  // settles AFTER the visitor retried or skipped.
   const authStatus = authState?.status ?? 'idle'
+  const loginGeneration = loginGenerationRef.current
   useEffect(() => {
     if (phase === 'login' && authStatus === 'success') {
+      if (loginGeneration !== loginGenerationRef.current) return
       void handleLoginSuccess()
     }
-  }, [phase, authStatus, handleLoginSuccess])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, authStatus, handleLoginSuccess, loginGeneration])
 
   // ── Render ─────────────────────────────────────────────────────────
 
