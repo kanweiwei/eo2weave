@@ -1947,16 +1947,23 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // compression loop tolerates a null handle
       }
 
+      // Direct conversations (kind='direct') have no folder authorization:
+      // the compaction loop's ToolContext must carry directMode so the
+      // registry guard rejects folder-dependent tools even on this secondary
+      // loop. Derived via the single kind selector, same as runAgent.
+      const directMode = isDirectConversation(conversationId)
+
       const agentLoop = new AgentLoop({
         provider,
         toolRegistry,
         contextManager,
         toolContext: {
-          directoryHandle,
+          directoryHandle: directMode ? null : directoryHandle,
           workspaceId: conversationId,
           projectId: undefined,
           currentAgentId: 'default',
           agentMode: 'act',
+          directMode: directMode || undefined,
         },
         maxIterations: 1,
         initialConvertCallCount: conv.compressionConvertCallCount ?? 0,
