@@ -32,14 +32,18 @@ function makeProject(id: string) {
   return { id, name: id, status: 'active' as const, createdAt: 1_000, updatedAt: 1_000 }
 }
 
-function setupStore(opts: { initialized: boolean; projects: ReturnType<typeof makeProject>[] }) {
+function setupStore(opts: {
+  initialized: boolean
+  projects: ReturnType<typeof makeProject>[]
+  error?: string | null
+}) {
   useProjectStore.setState({
     projects: opts.projects,
     projectStats: {},
     activeProjectId: opts.projects[0]?.id ?? '',
     initialized: opts.initialized,
     isLoading: false,
-    error: null,
+    error: opts.error ?? null,
   })
 }
 
@@ -61,8 +65,21 @@ describe('(app)/page.tsx first-run redirect', () => {
     routerReplaceMock.mockClear()
     sessionStorage.clear()
     localStorage.clear()
+    useProjectStore.setState({ error: null })
   })
 
+  it('redirects to /projects without the first-run flow when store init failed', async () => {
+    // Issue #131: a SQLite init failure must surface the ProjectHomeView
+    // error banner (via /projects), never the blank page or a redirect into
+    // a "default project" that was never loaded.
+    useProjectStore.setState({ error: 'OPFS pool busy' })
+    localStorage.setItem('creatorweave:auto-default-project-created', '1')
+    setupStore({ initialized: false, projects: [], error: 'OPFS pool busy' })
+    render(<App />)
+
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects/project-fresh')
+  })
   it('redirects to /projects when initialized but the list is terminally empty', async () => {
     // Terminal empty state: the user deleted every project. The auto-default
     // flag stays set, so initialize() will never auto-create again — waiting

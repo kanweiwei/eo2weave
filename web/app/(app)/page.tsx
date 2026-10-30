@@ -15,6 +15,7 @@ export default function RootPage() {
   const router = useRouter()
   const initialized = useProjectStore((s) => s.initialized)
   const projects = useProjectStore((s) => s.projects)
+  const storeError = useProjectStore((s) => s.error)
 
   // Auto-navigate to default project for first-time users ──────────
   // When a brand-new user's default project was auto-created during init,
@@ -32,6 +33,15 @@ export default function RootPage() {
   //     ProjectHome's empty state offers project creation instead of a
   //     blank root page.
   useEffect(() => {
+    // Init failed (e.g. SQLite worker couldn't open OPFS): don't run the
+    // first-run redirect flow. Redirect to /projects so the error banner
+    // with Retry (ProjectHomeView) is what the user sees, not a blank page.
+    // `initialized` stays false on failure, so `initialized && error` means
+    // a failure from an EARLIER session state — surface it the same way.
+    if (storeError) {
+      router.replace(projectsPath())
+      return
+    }
     if (!initialized) return
     if (projects.length === 0) {
       router.replace(projectsPath())
@@ -65,7 +75,7 @@ export default function RootPage() {
     }
     sessionStorage.setItem(JUST_REDIRECTED_KEY, '1')
     router.replace(projectWorkspacePath(targetProject.id))
-  }, [initialized, projects, router])
+  }, [initialized, projects, storeError, router])
 
   return null
 }
