@@ -153,6 +153,49 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
       keyStoreUnavailable: true,
     })
   })
+
+  it('throws a retryable timeout error when the token probe stalls (readiness must not hang)', async () => {
+    vi.useFakeTimers()
+    try {
+      // A probe that NEVER settles: without the deadline readiness would
+      // hang forever, leaving the visitor stuck with Start blocked.
+      getValidAccessTokenMock.mockReturnValue(new Promise(() => {}))
+      const pending = checkAiReadiness()
+      const assertion = expect(pending).rejects.toThrow(/timed out.*try again/i)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('throws a retryable timeout error when the credit probe stalls', async () => {
+    vi.useFakeTimers()
+    try {
+      getValidAccessTokenMock.mockResolvedValue('tok-1')
+      fetchGatewayRateLimitsMock.mockReturnValue(new Promise(() => {}))
+      const pending = checkAiReadiness()
+      const assertion = expect(pending).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('throws a retryable timeout error when the api-key store probe stalls', async () => {
+    vi.useFakeTimers()
+    try {
+      getValidAccessTokenMock.mockResolvedValue(null)
+      getAllApiKeyProvidersMock.mockReturnValue(new Promise(() => {}))
+      const pending = checkAiReadiness()
+      const assertion = expect(pending).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('pickConversationTarget (issue #126 navigation-target selection)', () => {

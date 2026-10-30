@@ -21,6 +21,7 @@ export const skillInstall = {
     aiGatewayUnavailable: "이 빌드에는 AI가 아직 설정되어 있지 않습니다. 설정에서 API 키를 구성한 후 스킬을 실행해 주세요.",
     aiOpenSettings: "AI 설정 열기",
     aiLater: "지금은 건너뛰기",
+    loginTimeout: "로그인이 너무 오래 걸립니다 — 게이트웨이가 응답하지 않습니다. 다시 시도해 주세요.",
     creditExhausted: "Nutstore AI 크레딧 잔액이 0입니다. 실행하기 전에 충전해 주세요.",
     recharge: "충전하기",
     starting: "대화를 열고 있습니다…",

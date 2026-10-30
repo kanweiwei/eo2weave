@@ -36,6 +36,33 @@ export interface AiReadinessResult {
 }
 
 /**
+ * Deadline for each readiness probe (token refresh, rate-limits request,
+ * api-key store read): a probe that stalls without settling must not pin
+ * `checkAiReadiness` forever — the visitor would be stuck on the details
+ * screen with Start blocked by the in-flight guard and no way to retry.
+ */
+const READINESS_PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * Race `p` against a deadline. On expiry the probe's (still pending) result
+ * is discarded and a retryable timeout error is thrown — the caller decides
+ * how to degrade.
+ */
+async function withProbeTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`AI readiness check timed out while ${what}. Please try again.`))
+    }, READINESS_PROBE_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([p, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
  * Decide whether the visitor can run the skill right away.
  *
  * Branches (issue #126):
@@ -56,20 +83,29 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
   if (ENABLE_LLM_GATEWAY && isLLMGatewayConfigured()) {
     // The token lookup itself can throw (storage not ready, corrupted token
     // cache) — treat that as "no gateway token" and keep evaluating the
-    // remaining credential branches instead of aborting readiness.
+    // remaining credential branches instead of aborting readiness. A probe
+    // that STALLS (never settles) is bounded by the deadline below: without
+    // it readiness would hang with Start blocked by the in-flight guard.
     let token: string | null = null
     try {
-      token = await getValidAccessToken(getLLMGatewayBaseURL(), getLLMGatewayClientId())
-    } catch {
+      token = await withProbeTimeout(
+        getValidAccessToken(getLLMGatewayBaseURL(), getLLMGatewayClientId()),
+        'checking the gateway login',
+      )
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('timed out')) throw e
       token = null
     }
     if (token) {
       let creditExhausted = false
       try {
-        const limits = await fetchGatewayRateLimits()
+        const limits = await withProbeTimeout(fetchGatewayRateLimits(), 'checking gateway credit')
         creditExhausted = limits.available_credit <= 0
-      } catch {
-        // Quota probe is informational — a failed probe must not block the flow.
+      } catch (e) {
+        // Quota probe is informational — a failed probe must not block the
+        // flow; a STALLED probe must not hang it either. Surface the
+        // timeout so the page can offer a retry instead of pinning Start.
+        if (e instanceof Error && e.message.includes('timed out')) throw e
       }
       return { ready: true, creditExhausted }
     }
@@ -80,7 +116,10 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
   }
 
   try {
-    const providers = await getAllApiKeyProviders()
+    const providers = await withProbeTimeout(
+      getAllApiKeyProviders(),
+      'reading saved API keys',
+    )
     // A stored gateway token shadow alone does NOT mean usable (the token
     // branch above already proved it invalid) — exclude it.
     const others = providers.filter((p) => p !== LLM_GATEWAY_API_KEY_ID)
@@ -91,7 +130,10 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
     // Key store unavailable (storage not ready): the not-ready verdict
     // below is UNPROVEN — the visitor's usable key may live in that
     // store. Log it and flag it so the page can offer a retry rather
-    // than silently prompting for login.
+    // than silently prompting for login. A STALLED probe is different:
+    // the timeout must propagate so the page surfaces a retryable error
+    // instead of treating readiness as (unproven) not-ready.
+    if (e instanceof Error && e.message.includes('timed out')) throw e
     console.error('[skill-install-flow] api-key store probe failed:', e)
     return { ready: false, creditExhausted: false, keyStoreUnavailable: true }
   }

@@ -37,12 +37,14 @@ vi.mock('@/skills/skill-store', () => ({
 }))
 
 const refreshUserSkillsMock = vi.fn(async () => {})
-const getSkillsMock = vi.fn(() => [] as Array<{ id: string; source: string }>)
+const getSkillsMock = vi.fn(() => [] as Array<{ id: string; source: string; enabled?: boolean }>)
+const setUserSkillEnabledMock = vi.fn()
 
 vi.mock('@/skills/skill-manager', () => ({
   getSkillManager: () => ({
     refreshUserSkills: refreshUserSkillsMock,
     getSkills: getSkillsMock,
+    setUserSkillEnabled: setUserSkillEnabledMock,
   }),
 }))
 
@@ -62,17 +64,39 @@ vi.mock('@/lib/jianguoyun-ai-console', () => ({
   getNutstoreAIConsoleURL: () => 'https://ai.jianguoyun.com',
 }))
 
+// Login-phase tests need the gateway branch (device-code login UI), not the
+// gateway-disabled fallback this test environment would otherwise pick.
+vi.mock('@/lib/deploy-region', () => ({
+  ENABLE_LLM_GATEWAY: true,
+}))
+
+// The test env has no NEXT_PUBLIC_DEPLOY_REGION, so the real module reports
+// a non-CN build — the login step (and InlineGatewayLogin) is gated behind
+// ENABLE_LLM_GATEWAY. Force the CN build for these tests.
+vi.mock('@/lib/deploy-region', () => ({
+  ENABLE_LLM_GATEWAY: true,
+  IS_CN_BUILD: true,
+}))
+
+const saveDraftMock = vi.fn()
+const inputDraftPeekMock = vi.fn<() => InputDraft | null>(() => null)
+
+// Mutable gateway-login auth state so tests can drive the login-success
+// effect (the page keys its post-login behavior on authState.status).
+const { gatewayAuthHolder } = vi.hoisted(() => ({
+  gatewayAuthHolder: { state: { status: 'idle' } as { status: string } },
+}))
+
 vi.mock('@/hooks/useGatewayLogin', () => ({
   useGatewayLogin: () => ({
-    authState: { status: 'idle' as const },
+    authState: gatewayAuthHolder.state as unknown as ReturnType<
+      (typeof import('@/hooks/useGatewayLogin'))['useGatewayLogin']
+    >['authState'],
     isRunning: false,
     login: vi.fn(async () => true),
     reset: vi.fn(),
   }),
 }))
-
-const saveDraftMock = vi.fn()
-const inputDraftPeekMock = vi.fn<() => InputDraft | null>(() => null)
 
 const { setActiveProjectMock, useProjectStoreMock, projectState } = vi.hoisted(() => {
   const projectState = {
@@ -144,6 +168,7 @@ describe('SkillInstallPage (issue #126)', () => {
     // flow skip its refresh-on-miss).
     getSkillsMock.mockReset()
     getSkillsMock.mockReturnValue([])
+    setUserSkillEnabledMock.mockReset()
     projectState.initialized = true
     projectState.activeProjectId = 'proj-1'
     projectState.projects = []
@@ -162,7 +187,7 @@ describe('SkillInstallPage (issue #126)', () => {
         new Promise<void>((resolve) => {
           resolveRefresh = () => {
             getSkillsMock.mockReturnValue([
-              { id: `user:${ENTRY.dirName}`, source: 'user' },
+              { id: `user:${ENTRY.dirName}`, source: 'user', enabled: true },
             ])
             resolve()
           }
@@ -381,7 +406,7 @@ describe('SkillInstallPage (issue #126)', () => {
     // The store fallback (OPFS scan failed) returns skill IDs, not dirNames.
     scanInstalledDirNamesMock.mockResolvedValue(new Set([`user:${ENTRY.dirName}`]))
     // getSkills reports the skill as registered so the flow can proceed.
-    getSkillsMock.mockReturnValue([{ id: `user:${ENTRY.dirName}`, source: 'user' }])
+    getSkillsMock.mockReturnValue([{ id: `user:${ENTRY.dirName}`, source: 'user', enabled: true }])
     render(<SkillInstallPage />)
     // With normalization the badge shows; without it the page would render
     // the install button (treating a skill that IS installed as missing).
@@ -453,5 +478,103 @@ describe('SkillInstallPage (issue #126)', () => {
         expect.objectContaining({ text: '/cw-legal-evidence-chain 整理本案证据' }),
       )
     })
+  })
+
+  it('re-enables an installed-but-disabled skill instead of navigating with a dead command', async () => {
+    // Previously installed, then disabled by the visitor: the registration
+    // check must notice `enabled: false` and re-enable the skill — not
+    // pre-fill the command and navigate into a conversation that cannot
+    // use it.
+    scanInstalledDirNamesMock.mockResolvedValue(new Set([ENTRY.dirName]))
+    getSkillsMock.mockReturnValue([
+      { id: `user:${ENTRY.dirName}`, source: 'user', enabled: false },
+    ])
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.starting'))
+    await waitFor(() => {
+      expect(setUserSkillEnabledMock).toHaveBeenCalledWith(`user:${ENTRY.dirName}`, true)
+    })
+    expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1/workspaces/recent-conv')
+  })
+
+  it('re-checks credit after inline login and shows the recharge hint instead of navigating', async () => {
+    // Visitor was logged out at page load (readiness → login step); after a
+    // successful inline login the readiness re-check finds 0 credit —
+    // navigation must wait behind the recharge hint on the details view.
+    checkAiReadinessMock
+      .mockResolvedValueOnce({ ready: false, creditExhausted: false })
+      .mockResolvedValueOnce({ ready: true, creditExhausted: true })
+    const result = render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    // The fresh-install path awaits registration before readiness.
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
+    await waitFor(() => expect(screen.getByText('skillInstall.aiNotReady')).toBeInTheDocument())
+    expect(checkAiReadinessMock).toHaveBeenCalledTimes(1)
+    // Simulate the login-success effect: flip the mocked auth state (the
+    // hook mock reads the holder on every render) and re-render.
+    gatewayAuthHolder.state = { status: 'success' }
+    result.rerender(<SkillInstallPage />)
+    await waitFor(() => expect(checkAiReadinessMock).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(screen.getByText('skillInstall.creditExhausted')).toBeInTheDocument(),
+    )
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    gatewayAuthHolder.state = { status: 'idle' }
+  })
+
+  it('login-timeout: a stalled gateway login resets the flow with a retryable error', async () => {
+    vi.useFakeTimers()
+    try {
+      checkAiReadinessMock.mockResolvedValue({ ready: false, creditExhausted: false })
+      render(<SkillInstallPage />)
+      await vi.waitFor(() =>
+        expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument(),
+      )
+      fireEvent.click(screen.getByText('skillInstall.installButton'))
+      await vi.waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+      ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
+      await vi.waitFor(() =>
+        expect(screen.getByText('skillInstall.aiNotReady')).toBeInTheDocument(),
+      )
+      // Start the (never-settling) login, then advance past the
+      // login-request timeout: the UI must leave `requesting` and surface
+      // the retryable timeout error instead of pinning the spinner.
+      fireEvent.click(screen.getByText('settings.gateway.login'))
+      vi.advanceTimersByTime(16_000)
+      await vi.waitFor(() =>
+        expect(screen.getByText('skillInstall.loginTimeout')).toBeInTheDocument(),
+      )
+      // The skip escape remains usable afterwards.
+      expect(screen.getAllByText('skillInstall.aiLater').length).toBeGreaterThan(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('unmount invalidates the pending flow (no redirect after leaving the page)', async () => {
+    // Install is pending when the visitor navigates away: the abandoned
+    // flow must never continue into router.replace.
+    let resolveInstall!: () => void
+    installSkillFromUrlMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveInstall = () => resolve({ count: 4, manifest: ENTRY })
+      }),
+    )
+    const { unmount } = render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(installSkillFromUrlMock).toHaveBeenCalled())
+    // Visitor leaves the page mid-install.
+    unmount()
+    resolveInstall()
+    await new Promise((r) => setTimeout(r, 30))
+    // The manager-cache refresh is intentional even for abandoned flows
+    // (the skill IS on disk) — but navigation and prefill must NOT run:
+    // the visitor's route must stay wherever they went.
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    expect(saveDraftMock).not.toHaveBeenCalled()
   })
 })

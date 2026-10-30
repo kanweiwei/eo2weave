@@ -157,6 +157,14 @@ function makeOpfsRoot(
         return Promise.resolve()
       },
       entries: async function* () {
+        if (walkFailure && walkFailure.path === path) {
+          if (walkFailure.skip > 0) {
+            walkFailure = { ...walkFailure, skip: walkFailure.skip - 1 }
+          } else {
+            walkFailure = null
+            throw new Error('PermissionDeniedError: walk failed')
+          }
+        }
         const dir = dirOf(userRoot, path, false)
         if (!dir) return
         for (const name of dir.dirs.keys()) {
@@ -174,8 +182,18 @@ function makeOpfsRoot(
 
 let userRoot: FakeDir
 
+// Walk-failure injection: when armed, `entries()` on the directory at this
+// path throws on the Nth call (skips counted first) — simulating an OPFS
+// failure DURING a specific scan's walk (after the dir handle resolved, so
+// no catch-swallowing guard hides it).
+let walkFailure: { path: string; skip: number } | null = null
+const armWalkFailure = (path: string, skip = 0): void => {
+  walkFailure = { path, skip }
+}
+
 beforeEach(() => {
   userRoot = makeDir()
+  walkFailure = null
   ;(navigator as unknown as { storage: unknown }).storage = {
     getDirectory: async () => makeOpfsRoot(),
   }
@@ -505,6 +523,69 @@ describe('previewUserSkillZip size caps (issue #128)', () => {
     expect(preview.isBundle).toBe(false)
     expect(preview.skill?.dirName).toBe('my-skill')
   })
+
+  it('previews an archive using the STORE (uncompressed) method', async () => {
+    // zipSync emits DEFLATE entries; build a STORE archive by hand: local
+    // file headers + central directory + EOCD. `unzipWithLimits` used to
+    // register only UnzipInflate, so valid STORE entries failed with
+    // "unknown compression type" and such archives became unimportable.
+    const crc32Of = (data: Uint8Array): number => {
+      let c: number
+      const table: number[] = []
+      for (let n = 0; n < 256; n++) {
+        c = n
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+        table[n] = c
+      }
+      let crc = 0 ^ -1
+      for (const byte of data) crc = (crc >>> 8) ^ table[(crc ^ byte) & 0xff]
+      return (crc ^ -1) >>> 0
+    }
+    const files: Array<{ name: string; data: Uint8Array }> = [
+      { name: 'stored-skill/SKILL.md', data: new TextEncoder().encode('# Stored Skill') },
+    ]
+    const chunks: Uint8Array[] = []
+    const central: Array<Uint8Array[]> = []
+    let offset = 0
+    const u16 = (v: number): Uint8Array => new Uint8Array([v & 0xff, (v >>> 8) & 0xff])
+    const u32 = (v: number): Uint8Array =>
+      new Uint8Array([v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff])
+    for (const f of files) {
+      const nameBytes = new TextEncoder().encode(f.name)
+      const crc = crc32Of(f.data)
+      const local = [
+        u32(0x04034b50), u16(20), u16(0), // sig, version, flags
+        u16(0), // method 0 = STORE
+        u16(0), u16(0), u32(crc), u32(f.data.length), u32(f.data.length),
+        u16(nameBytes.length), u16(0), nameBytes,
+      ]
+      for (const part of local) chunks.push(part)
+      central.push([
+        u32(0x02014b50), u16(20), u16(20), u16(0), u16(0),
+        u16(0), u16(0), u32(crc), u32(f.data.length), u32(f.data.length),
+        u16(nameBytes.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), nameBytes,
+      ].reduce<Uint8Array[]>((acc, p) => { acc.push(p); return acc }, []))
+      offset += local.reduce((n, p) => n + p.length, 0)
+    }
+    let centralSize = 0
+    for (const c of central) centralSize += c.length
+    const eocd = [
+      u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+      u32(centralSize), u32(offset), u16(0),
+    ]
+    const all = [...chunks, ...central.flat(), ...eocd]
+    const total = all.reduce((n, p) => n + p.length, 0)
+    const bytes = new Uint8Array(total)
+    let pos = 0
+    for (const p of all) {
+      bytes.set(p, pos)
+      pos += p.length
+    }
+    const file = new File([bytes], 'stored.zip')
+    const preview = await previewUserSkillZip(file)
+    expect(preview.isBundle).toBe(false)
+    expect(preview.skill?.dirName).toBe('stored-skill')
+  })
 })
 
 // ── installSkillFromUrl download cap ─────────────────────────────────
@@ -635,15 +716,42 @@ describe('import staging durability + recovery state (round 3)', () => {
   })
 
   it('restores marked backups from an interrupted import and retries on partial failure', async () => {
-    // Crash AFTER staging+removal, before the import wrote anything: the
-    // marked backup is the only copy — recovery must restore it.
+    // Recovery RETRY path: the first scan's restore of the staged backup
+    // FAILS (restore write fails once) — the run must SURVIVE with its
+    // marker, and a later scan must then recover the skill and consume the
+    // run. A test that only scans once with a healthy restore would pass
+    // even if failed recovery deleted the backup or never retried.
     stageAbandonedBackup('run-crash', 'skill-a', '---\nname: A\ndescription: a\n---\n\n# Old A')
+    expect(installed('skill-a')).toBe(false)
 
+    // Fail the FIRST write into .skills/user/skill-a (the recovery restore)
+    // — staging writes are not involved (the backup was staged by the
+    // crashed import), so failWritesTimes: 1 targets exactly the restore.
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () =>
+        makeOpfsRoot('.skills/user/skill-a', undefined, { failWritesTimes: 1 }),
+    }
     const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+    await scanUserSkills()
+
+    // The restore failed → the skill is NOT back (an empty partial dir may
+    // exist from the failed restore, but no SKILL.md content), and the run
+    // (marker + staged copy) must REMAIN for the retry.
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('')
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.has('run-crash')).toBe(true)
+    expect(backups!.dirs.get('run-crash')!.files.has('skill-a.done')).toBe(true)
+
+    // Second scan: the transient failure is gone — recovery must now
+    // restore the skill and consume the run directory.
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => makeOpfsRoot(),
+    }
     const result = await scanUserSkills()
 
     expect(contentOf('skill-a', 'SKILL.md')).toContain('# Old A')
     expect(result.skills.map((s) => s.id)).toContain('user:skill-a')
+    expect(backups?.dirs.has('run-crash')).toBe(false)
   })
 
   it('rejects a bundle with duplicate dirNames before staging anything', async () => {
@@ -742,5 +850,105 @@ describe('scanUserSkills overlapping-refresh serialization (round 3)', () => {
     // Both callers observe the SAME, freshest result.
     expect(firstResult.skills.map((s) => s.id)).toEqual(secondResult.skills.map((s) => s.id))
     expect(firstResult.skills.map((s) => s.id)).toContain('user:skill-b')
+  })
+
+  it('a superseded scan returns its own result when the latest scan FAILS (skills stay visible)', async () => {
+    // Scan 1 walks the directory and is held; scan 2 starts and hits a
+    // walk FAILURE. Scan 1 (superseded) must NOT propagate scan 2's
+    // rejection — refreshUserSkills clears the cached skills on rejection,
+    // which would hide valid skills. It falls back to its own result.
+    writeInstalled('skill-a', '---\nname: A\ndescription: a\n---\n\n# A')
+    const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+
+    // Hold scan 1 inside its walk of `.skills/user` via a gated proxy on
+    // the root, then arm a walk failure for scan 2 before releasing it.
+    const realStorage = (navigator as unknown as { storage: unknown }).storage
+    let gateScan1!: () => void
+    const scan1Gate = new Promise<void>((r) => {
+      gateScan1 = r
+    })
+    let scan1Gated = false
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => {
+        const root = await (
+          realStorage as { getDirectory: () => Promise<FileSystemDirectoryHandle> }
+        ).getDirectory()
+        if (!scan1Gated) {
+          scan1Gated = true
+          await scan1Gate
+        }
+        return root
+      },
+    }
+
+    const first = scanUserSkills()
+    // Wait until scan 1 entered its walk (gated), then arm the failure to
+    // SKIP scan 1's pending resumed walk and hit scan 2's fresh walk.
+    await new Promise((r) => setTimeout(r, 10))
+    armWalkFailure('.skills/user', 1)
+    gateScan1()
+
+    const second = scanUserSkills()
+    await expect(second).rejects.toThrow(/walk failed/)
+    // The superseded scan must NOT reject with scan 2's error — its own
+    // (successful, pre-newer) directory view is the fallback.
+    const firstResult = await first
+    expect(firstResult.skills.map((s) => s.id)).toContain('user:skill-a')
+  })
+
+  it('removes an incomplete fresh skill recorded by an import whose tab died mid-write', async () => {
+    // Simulated crash DURING a fresh (no prior skill) install: the run dir
+    // carries a fresh-targets.json record and a PARTIALLY written skill —
+    // recovery must remove the partial target so it never looks installed.
+    stageAbandonedBackup('run-fresh', 'skill-other', '---\nname: O\ndescription: o\n---\n\n# O')
+    // Partially written fresh skill (no SKILL.md yet — half a file tree).
+    const user = dirOf(userRoot, '.skills/user', true)!
+    const partial = makeDir()
+    partial.dirs.set('scripts', makeDir())
+    user.dirs.set('skill-fresh', partial)
+    // The fresh-targets record left by the crashed import.
+    const backupsRoot = dirOf(userRoot, '.skills/.import-backups', true)!
+    backupsRoot.dirs.get('run-fresh')!.files.set('fresh-targets.json', {
+      data: new TextEncoder().encode(JSON.stringify(['skill-fresh'])),
+    })
+
+    const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+    const result = await scanUserSkills()
+
+    // The partial fresh skill was removed…
+    expect(installed('skill-fresh')).toBe(false)
+    expect(result.skills.map((s) => s.id)).not.toContain('user:skill-fresh')
+    // …the healthy marked backup in the same run was still restored…
+    expect(installed('skill-other')).toBe(true)
+    // …and the run was consumed.
+    expect(backupsRoot.dirs.has('run-fresh')).toBe(false)
+  })
+
+  it('a scan concurrent with an in-flight import does not touch the fresh target of its run', async () => {
+    // A fresh import is IN FLIGHT (its run dir holds a fresh-targets.json
+    // record listing skill-fresh, and the partial directory exists). The
+    // import cannot be intercepted mid-module, so simulate the crash-and-
+    // rescan boundary the fencing covers: recovery must consult the run's
+    // activeness. With Web Locks unavailable (test env), the in-tab
+    // registry is the guard — assert the record-consuming path only fires
+    // for runs that are NOT active by verifying a completed import's run
+    // is consumed and a live import's staging survives a concurrent scan.
+    stageAbandonedBackup('run-stale', 'skill-stale', '---\nname: S\ndescription: s\n---\n\n# S')
+    // A stale run with an UNCOMPLETED fresh record: recovery removes it.
+    const backupsRoot = dirOf(userRoot, '.skills/.import-backups', true)!
+    backupsRoot.dirs.get('run-stale')!.files.set('fresh-targets.json', {
+      data: new TextEncoder().encode(JSON.stringify(['skill-ghost'])),
+    })
+    const user = dirOf(userRoot, '.skills/user', true)!
+    user.dirs.set('skill-ghost', makeDir())
+
+    const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+    const result = await scanUserSkills()
+
+    // Ghost removed (stale run not active), marked backup restored.
+    expect(installed('skill-ghost')).toBe(false)
+    expect(installed('skill-stale')).toBe(true)
+    expect(result.skills.map((s) => s.id)).toContain('user:skill-stale')
+    expect(backupsRoot.dirs.has('run-stale')).toBe(false)
   })
 })

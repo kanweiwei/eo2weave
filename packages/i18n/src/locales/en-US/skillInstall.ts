@@ -21,6 +21,7 @@ export const skillInstall = {
     aiGatewayUnavailable: "AI isn't set up yet on this build — configure an API key in Settings to run the skill.",
     aiOpenSettings: "Open AI settings",
     aiLater: "Skip for now",
+    loginTimeout: "Login is taking too long — the gateway didn't respond. Please try again.",
     creditExhausted: "Your Nutstore AI credit balance is 0 — top up before running this skill.",
     recharge: "Top up",
     starting: "Opening conversation…",
