@@ -291,6 +291,12 @@ describe('directMode tool filtering', () => {
 
   it('project-bound tools are rejected by execute()/executeNoRetry() in direct mode', async () => {
     const registry = getToolRegistry()
+    // db_query registers only in dev builds; register it here explicitly so
+    // the guard under test (not an 'Unknown tool' miss) produces the error.
+    if (!registry.has('db_query')) {
+      const { dbQueryTool } = await import('@/agent/tools/db-query.tool')
+      registry.register(dbQueryTool.definition, dbQueryTool.executor)
+    }
     const directContext = {
       directoryHandle: null,
       directMode: true,

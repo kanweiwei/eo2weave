@@ -84,10 +84,27 @@ describe('ConversationRepository', () => {
     const [sql, params] = execute.mock.calls[0] as unknown as [string, unknown[]]
     // INSERT carries kind (creating a 'direct' row must persist its kind)…
     expect(sql).toContain('INSERT INTO conversations')
-    // …and binds the REQUESTED kind value positionally: the column list must
-    // declare kind, and the requested value must be among the bound params.
-    expect(sql).toMatch(/INSERT INTO conversations\s*\([^)]*\bkind\b[^)]*\)/i)
-    expect(params).toContain('direct')
+    // …and binds the REQUESTED kind value positionally: assert the FULL
+    // parameter array in column order, so a wrong parameter ORDER (e.g.
+    // 'direct' shifted into another column's slot) cannot pass. The column
+    // list is (id, title, title_mode, context_usage_json,
+    // compressed_context_summary, compressed_context_cutoff_ts, kind,
+    // created_at, updated_at); context_usage_json / summary / cutoff_ts
+    // default to null here, titleMode defaults to 'manual'.
+    expect(sql).toMatch(
+      /INSERT INTO conversations\s*\(\s*id,\s*title,\s*title_mode,\s*context_usage_json,\s*compressed_context_summary,\s*compressed_context_cutoff_ts,\s*kind,\s*created_at,\s*updated_at\s*\)/i
+    )
+    expect(params).toEqual([
+      'conv-1', // id
+      'stale snapshot', // title
+      'manual', // title_mode
+      'null', // context_usage_json
+      null, // compressed_context_summary
+      null, // compressed_context_cutoff_ts
+      'direct', // kind — bound to the kind column position
+      1, // created_at
+      2, // updated_at
+    ])
     // …but the conflict UPDATE must NEVER write kind at all — not via
     // excluded.kind, not via a positional parameter, not via a literal. Any
     // kind assignment in the ON CONFLICT clause would let a stale snapshot
