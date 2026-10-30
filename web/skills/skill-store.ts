@@ -198,14 +198,23 @@ export async function installSkillFromUrl(
         `Skill archive is too large (${formatBytes(contentLength)}; limit: ${formatBytes(ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE)}).`,
       )
     }
-    const blob = await streamToBlob(resp, contentLength, controller.signal, (loaded, total) => {
-      onProgress?.({
-        phase: 'fetching',
-        message: `Downloading… (${formatBytes(loaded)} / ${formatBytes(total || contentLength)})`,
-        bytesLoaded: loaded,
-        bytesTotal: total || contentLength,
-      })
-    })
+    // Trusting Content-Length alone is not enough: a server may omit it or
+    // lie — the cumulative cap inside streamToBlob is the real guard.
+    const maxBytes = contentLength > 0 ? contentLength : ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE
+    const blob = await streamToBlob(
+      resp,
+      contentLength,
+      maxBytes,
+      controller.signal,
+      (loaded, total) => {
+        onProgress?.({
+          phase: 'fetching',
+          message: `Downloading… (${formatBytes(loaded)} / ${formatBytes(total || contentLength)})`,
+          bytesLoaded: loaded,
+          bytesTotal: total || contentLength,
+        })
+      },
+    )
     clearTimeout(timeoutId)
 
     // Wrap as File (previewUserSkillZip expects File)
@@ -253,6 +262,7 @@ export async function installSkillFromUrl(
 async function streamToBlob(
   resp: Response,
   total: number,
+  maxBytes: number,
   signal: AbortSignal,
   onProgress: (loaded: number, total: number) => void,
 ): Promise<Blob> {
@@ -272,6 +282,17 @@ async function streamToBlob(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      // Cumulative guard BEFORE buffering the chunk: a response that omits
+      // or understates Content-Length (chunked transfer, lying server) can
+      // stream far beyond the declared size — stop reading the moment the
+      // limit is crossed instead of buffering the whole body and letting
+      // previewUserSkillZip find out afterwards.
+      if (loaded + value.length > maxBytes) {
+        void reader.cancel()
+        throw new Error(
+          `Skill archive exceeded the download size limit (${formatBytes(maxBytes)}) while streaming.`,
+        )
+      }
       chunks.push(value)
       loaded += value.length
       onProgress(loaded, total)
