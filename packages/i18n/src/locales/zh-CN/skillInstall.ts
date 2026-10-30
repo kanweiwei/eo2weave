@@ -21,6 +21,7 @@ export const skillInstall = {
     aiGatewayUnavailable: "此版本尚未配置 AI——请在设置中配置 API Key 后运行该技能。",
     aiOpenSettings: "打开 AI 设置",
     aiLater: "暂时跳过",
+    loginTimeout: "登录耗时过长——网关未响应，请重试。",
     creditExhausted: "你的坚果云 AI 积分余额为 0，请先充值再运行该技能。",
     recharge: "去充值",
     starting: "正在打开对话…",

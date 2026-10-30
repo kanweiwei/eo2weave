@@ -13,7 +13,7 @@
 import type { Skill, SkillResource } from './skill-types'
 import { parseSkillMd, slugify } from './skill-parser'
 import { copyDirectoryRecursive } from './skill-folder-utils'
-import { Unzip, UnzipInflate } from 'fflate'
+import { Unzip, UnzipInflate, UnzipPassThrough } from 'fflate'
 import {
   getResourceType,
   getMimeType,
@@ -34,6 +34,118 @@ const USER_SKILLS_DIR = 'user'
  * finishes; a crashed import leaves the backup behind as recovery data.
  */
 const IMPORT_BACKUPS_DIR = '.import-backups'
+
+/**
+ * Minimal structural typing for the Web Locks API (not every TS lib target
+ * ships `navigator.locks`): used to serialize same-skill imports across
+ * tabs and to fence import-backup recovery away from runs that are still
+ * actively importing.
+ */
+interface WebLockLike {
+  release(): void
+}
+interface WebLocksLike {
+  request(
+    name: string,
+    callback: (lock: WebLockLike | null) => void | Promise<unknown>,
+  ): Promise<unknown>
+  request(
+    name: string,
+    options: { ifAvailable: boolean },
+    callback: (lock: WebLockLike | null) => void | Promise<unknown>,
+  ): Promise<unknown>
+}
+
+/** Web Lock name prefixes: `dir:` serializes same-target imports across
+ * tabs; `run:<runId>` fences recovery away from an in-flight import. */
+const IMPORT_LOCK_DIR_PREFIX = 'eo2weave-skill-import-dir:'
+const IMPORT_LOCK_RUN_PREFIX = 'eo2weave-skill-import-run:'
+
+function getWebLocks(): WebLocksLike | null {
+  if (typeof navigator === 'undefined') return null
+  return (navigator as Navigator & { locks?: WebLocksLike }).locks ?? null
+}
+
+// Runs of imports currently executing in THIS tab. Their staged backup is
+// the live rollback copy — recovery (which may run in a concurrent scan)
+// must never restore/consume it mid-import.
+const activeImportRunIds = new Set<string>()
+
+// In-tab serialization chains keyed by target directory: two concurrent
+// imports of the same skill in one tab run strictly one after the other.
+const importMutexChains = new Map<string, Promise<unknown>>()
+
+/**
+ * Run `fn` as a serialized import of `dirKey` (sorted unique dirNames):
+ *  - in-tab: chained behind any prior import of the same directories;
+ *  - cross-tab: holding an exclusive Web Lock on `dir:<dirKey>` for the
+ *    whole import, so imports of the same skill in two tabs cannot
+ *    interleave their remove/write phases;
+ *  - fencing: holding `run:<runId>` so recovery (either tab) skips this
+ *    run's staging while the import is in flight, and registering the run
+ *    in `activeImportRunIds` for environments without Web Locks.
+ */
+async function withImportSerialization<T>(
+  runId: string,
+  dirKey: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  activeImportRunIds.add(runId)
+  try {
+    const prev = importMutexChains.get(dirKey) ?? Promise.resolve()
+    const run = prev.catch(() => {}).then(fn)
+    importMutexChains.set(dirKey, run.catch(() => {}))
+    const locks = getWebLocks()
+    if (!locks) return await run
+    let result!: T
+    await locks.request(`${IMPORT_LOCK_DIR_PREFIX}${dirKey}`, () => {
+      // Nested run lock: recovery probes this name with `ifAvailable` to
+      // detect an in-flight import. Acquisition order (dir → run) is
+      // consistent everywhere, so no lock-ordering deadlock is possible.
+      return locks.request(`${IMPORT_LOCK_RUN_PREFIX}${runId}`, async () => {
+        result = await run
+      })
+    })
+    return result
+  } finally {
+    activeImportRunIds.delete(runId)
+  }
+}
+
+/** True when `runId` belongs to an import that is still executing — in this
+ * tab (registry) or another (its `run:<runId>` Web Lock is held). */
+async function isImportRunActive(runId: string): Promise<boolean> {
+  if (activeImportRunIds.has(runId)) return true
+  const locks = getWebLocks()
+  if (!locks) return false
+  try {
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (v: boolean): void => {
+        if (!settled) {
+          settled = true
+          resolve(v)
+        }
+      }
+      locks
+        .request(`${IMPORT_LOCK_RUN_PREFIX}${runId}`, { ifAvailable: true }, (lock) => {
+          if (lock) {
+            // Lock acquired → the import is NOT running elsewhere.
+            done(false)
+            setTimeout(() => lock.release(), 0)
+          } else {
+            // Held by someone else → an import is in flight.
+            done(true)
+          }
+        })
+        .catch(() => done(false))
+    })
+  } catch {
+    // Lock probing is best-effort; on failure assume not active (the run's
+    // own state markers still guard the restore path).
+    return false
+  }
+}
 
 /** True when the error is an OPFS "not found" (absence — not a failure). */
 function isNotFoundError(e: unknown): boolean {
@@ -95,7 +207,10 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
   let failure: Error | null = null
 
   const unzipper = new Unzip()
+  // UnzipPassThrough handles entries stored WITHOUT compression (method 0);
+  // without it a valid STORE archive fails with "unknown compression type".
   unzipper.register(UnzipInflate)
+  unzipper.register(UnzipPassThrough)
   unzipper.onfile = (file) => {
     // Directory entries carry no payload in practice, but a crafted archive
     // can attach data to them (or ship an enormous number of them) — count
@@ -126,6 +241,7 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
           failure = new Error(
             'ZIP archive expands beyond the import size limit — it may be a decompression bomb.',
           )
+          file.terminate()
           return
         }
         // Decoded directory payload is discarded (not buffered).
@@ -171,6 +287,12 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
         failure = new Error(
           'ZIP archive expands beyond the import size limit — it may be a decompression bomb.',
         )
+        // Stop feeding the decoder NOW: fflate keeps inflating the current
+        // compressed chunk after ondata returns, so a highly compressible
+        // entry would keep burning CPU on the rest of this chunk (and every
+        // later push) until the outer loop observes the failure.
+        file.terminate()
+        entryChunks = []
         return
       }
       entryChunks.push(data)
@@ -252,16 +374,40 @@ type ImportRunState = {
 async function readImportRunState(
   runDir: FileSystemDirectoryHandle,
 ): Promise<ImportRunState | null> {
+  let handle: FileSystemFileHandle
   try {
-    const handle = await runDir.getFileHandle(RUN_STATE_FILE)
-    const file = await handle.getFile()
-    const text = await file.text()
+    handle = await runDir.getFileHandle(RUN_STATE_FILE)
+  } catch (e) {
+    // Absence = no state file (normal for an interrupted import). Any other
+    // error is a REAL read failure and must propagate: recovery deciding
+    // "no state" on a transient failure could misclassify the run and
+    // delete its staged backups.
+    if (isNotFoundError(e)) return null
+    throw e
+  }
+  let file
+  try {
+    file = await handle.getFile()
+  } catch (e) {
+    if (isNotFoundError(e)) return null
+    throw e
+  }
+  let text: string
+  try {
+    text = await file.text()
+  } catch (e) {
+    if (isNotFoundError(e)) return null
+    throw e
+  }
+  try {
     const parsed = JSON.parse(text) as Partial<ImportRunState>
     if (parsed.status === 'import-complete' || parsed.status === 'failed-rollback') {
       return { status: parsed.status }
     }
     return null
   } catch {
+    // Written but unparseable — the file EXISTS and was readable, so this
+    // is corruption, not a transient failure; treat as "no state".
     return null
   }
 }
@@ -290,8 +436,12 @@ async function isStagedMarked(runDir: FileSystemDirectoryHandle, dirName: string
   try {
     await runDir.getFileHandle(stagedMarkerName(dirName))
     return true
-  } catch {
-    return false
+  } catch (e) {
+    // Absence = not marked. A real read failure must propagate: treating it
+    // as "unmarked" would make recovery DROP a staged backup that is the
+    // only remaining copy of the skill.
+    if (isNotFoundError(e)) return false
+    throw e
   }
 }
 
@@ -320,12 +470,66 @@ async function recoverAbandonedImportBackups(): Promise<void> {
   for (const runId of runIds) {
     try {
       const runDir = await backupsRoot.getDirectoryHandle(runId)
+      // An import still executing (this tab, or another holding its run
+      // Web Lock) has staged its backup as the LIVE rollback copy —
+      // restoring/consuming it mid-import would leave the import without
+      // a rollback path. Leave the run untouched; if the import finishes
+      // it cleans up after itself, and if it crashes the NEXT scan (after
+      // the lock is released) recovers it.
+      if (await isImportRunActive(runId)) continue
       const state = await readImportRunState(runDir)
       if (state?.status === 'import-complete') {
         // The import finished successfully; only its cleanup crashed.
         // Restoring the backups would REVERT the good import — drop them.
         await backupsRoot.removeEntry(runId, { recursive: true })
         continue
+      }
+      // A FRESH-target record (written before any bytes hit a new skill's
+      // directory) means an interrupted import may have left a PARTIALLY
+      // written fresh skill: recovery must remove those incomplete targets
+      // so they never look installed.
+      let incompleteFresh: string[] = []
+      try {
+        const freshHandle = await runDir.getFileHandle('fresh-targets.json')
+        const freshFile = await freshHandle.getFile()
+        const parsed: unknown = JSON.parse(await freshFile.text())
+        if (Array.isArray(parsed)) {
+          incompleteFresh = parsed.filter(
+            (n): n is string => typeof n === 'string' && n.length > 0,
+          )
+        }
+      } catch (e) {
+        if (!isNotFoundError(e)) {
+          // Unreadable record: leave the whole run for a later retry rather
+          // than risking a partial fresh skill being treated as installed.
+          console.warn(
+            `[UserSkillsScanner] Failed to read fresh-target record of run ${runId}:`,
+            e,
+          )
+          continue
+        }
+      }
+      for (const dirName of incompleteFresh) {
+        try {
+          await userDir.removeEntry(dirName, { recursive: true })
+          console.log(
+            `[UserSkillsScanner] Removed incomplete fresh skill "${dirName}" from interrupted import (run ${runId}).`,
+          )
+        } catch (removeErr) {
+          if (!isNotFoundError(removeErr)) {
+            console.warn(
+              `[UserSkillsScanner] Failed to remove incomplete fresh skill "${dirName}" (run ${runId}):`,
+              removeErr,
+            )
+          }
+        }
+      }
+      if (incompleteFresh.length > 0) {
+        try {
+          await runDir.removeEntry('fresh-targets.json')
+        } catch {
+          // Best-effort — the run dir removal below covers it anyway.
+        }
       }
       // Interrupted staging / import, or a failed rollback: restore only the
       // MARKED staged entries (a `<dirName>.done` marker proves that backup
@@ -406,7 +610,17 @@ export async function scanUserSkills(): Promise<UserSkillScanResult> {
   // older refresh never overwrites the manager cache with a stale directory
   // view (both callers then apply the identical, freshest result — and the
   // newer scan's own write, being last, wins deterministically).
-  if (seq !== lastScanStartedSeq) return await latestScan!
+  if (seq !== lastScanStartedSeq) {
+    // The newer scan FAILED: its rejection must not propagate into THIS
+    // caller — refreshUserSkills clears the cached user skills on rejection,
+    // so rethrowing would hide valid skills that this scan already read.
+    // Fall back to this scan's own (successful, pre-newer) directory view.
+    try {
+      return await latestScan!
+    } catch {
+      return result
+    }
+  }
   return result
 }
 
@@ -1048,6 +1262,12 @@ async function readStagedBackup(
  * For single-skill zips, imports the one skill.
  * For bundle zips, imports all skills.
  *
+ * Imports of the SAME target directories are SERIALIZED across callers and
+ * tabs (in-tab promise chain + cross-tab Web Lock on `dir:<dirKey>`): two
+ * concurrent imports of one skill must not interleave their remove/write
+ * phases, or both can report success while the installed directory holds a
+ * mix of files from both archives.
+ *
  * Backups are DURABLE: before any original is removed, the previous content
  * is staged on disk under `.skills/.import-backups/<runId>/<dirName>/`, so a
  * tab close between removal and rollback cannot lose the skill — the backup
@@ -1067,7 +1287,6 @@ async function readStagedBackup(
 export async function importUserSkillZip(
   preview: ZipSkillPreview,
 ): Promise<number> {
-  const { _raw } = preview
   const skills = preview.isBundle ? (preview.skills ?? []) : preview.skill ? [preview.skill] : []
 
   if (skills.length === 0) return 0
@@ -1087,11 +1306,24 @@ export async function importUserSkillZip(
     seenDirNames.add(s.dirName)
   }
 
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const dirKey = [...seenDirNames].sort().join('+')
+  return withImportSerialization(runId, dirKey, () =>
+    importUserSkillZipInner(preview, skills, runId),
+  )
+}
+
+async function importUserSkillZipInner(
+  preview: ZipSkillPreview,
+  skills: ZipSkillEntry[],
+  runId: string,
+): Promise<number> {
+  const { _raw } = preview
+
   const opfsRoot = await navigator.storage.getDirectory()
   const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
   const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
   const backupsRoot = await skillsDir.getDirectoryHandle(IMPORT_BACKUPS_DIR, { create: true })
-  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const runDir = await backupsRoot.getDirectoryHandle(runId, { create: true })
 
   // Aggregate size of an existing skill BEFORE reading it into memory: a
@@ -1150,12 +1382,13 @@ export async function importUserSkillZip(
         const stagedDir = await runDir.getDirectoryHandle(s.dirName, { create: true })
         await writeSkillFiles(stagedDir, existing!)
         backedUp.add(s.dirName)
-        try {
-          await userDir.removeEntry(s.dirName, { recursive: true })
-          preRemoved.add(s.dirName)
-        } catch {
-          // Nothing to remove — fine.
-        }
+        // The target directory EXISTS (we just read it) — a removal failure
+        // here is a real error, not absence: suppressing it would leave the
+        // OLD files in place and let the import write into the surviving
+        // directory, so files absent from the new archive stay installed as
+        // stale content. Abort instead (the backup is staged, nothing lost).
+        await userDir.removeEntry(s.dirName, { recursive: true })
+        preRemoved.add(s.dirName)
         // Only NOW is this skill's backup complete and its target gone:
         // the marker is what lets recovery restore this entry (and ONLY
         // this entry) if the tab dies before the import finishes.
@@ -1213,6 +1446,35 @@ export async function importUserSkillZip(
     }
   }
 
+  // Durable record of FRESH targets (no pre-existing skill): a tab close
+  // mid-write leaves no staged backup and no in-memory set, so recovery
+  // would otherwise keep the partially written directory and treat it as
+  // an installed skill. The record is written BEFORE any bytes hit the
+  // target and cleared after the last file lands.
+  const freshTargetsFile = 'fresh-targets.json'
+  const freshTargets: string[] = skills
+    .map((s) => s.dirName)
+    .filter((d) => !backedUp.has(d))
+  const writeFreshTargets = async (names: string[]): Promise<void> => {
+    const handle = await runDir.getFileHandle(freshTargetsFile, { create: true })
+    const writable = await handle.createWritable()
+    await writable.write(JSON.stringify(names))
+    await writable.close()
+  }
+  if (freshTargets.length > 0) {
+    try {
+      await writeFreshTargets(freshTargets)
+    } catch (recordErr) {
+      // Cannot record → a crash mid-write could leave an unrecoverable
+      // partial fresh skill. Abort BEFORE touching the target.
+      throw new Error(
+        `Failed to record fresh-import targets for recovery: ${
+          recordErr instanceof Error ? recordErr.message : String(recordErr)
+        }`,
+      )
+    }
+  }
+
   // Stage 2: write each skill, tracking exactly what this import wrote.
   const written = new Set<string>()
   try {
@@ -1225,6 +1487,20 @@ export async function importUserSkillZip(
         : undefined
       total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
       written.add(s.dirName)
+      // Fresh skill fully written — drop it from the durable recovery
+      // record so a LATER crash cannot delete the completed skill.
+      if (freshTargets.includes(s.dirName)) {
+        try {
+          await writeFreshTargets(freshTargets.filter((d) => d !== s.dirName))
+        } catch (recordErr) {
+          // Best-effort: the run state below (import-complete) still
+          // clears the record on the success path.
+          console.warn(
+            `[UserSkillsScanner] Failed to update fresh-target record for ${s.dirName}:`,
+            recordErr,
+          )
+        }
+      }
     }
     // Success: the staged backups are no longer needed. Mark the run
     // import-complete FIRST (best-effort) so a cleanup crash can never make

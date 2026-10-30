@@ -74,6 +74,15 @@ type ErrorKind = 'missing-param' | 'not-found' | 'load-failed'
  */
 const MANIFEST_TIMEOUT_MS = 15_000
 
+/**
+ * Bound for the inline device-code login's FIRST request (device-session
+ * creation): `gatewayFetch` has no request timeout, so a gateway that never
+ * settles the response would leave the hook in `requesting` forever —
+ * spinner only, no escape. On expiry the login attempt is abandoned and the
+ * visitor is returned to the error/skip state.
+ */
+const LOGIN_REQUEST_TIMEOUT_MS = 15_000
+
 interface InstallOutcome {
   alreadyInstalled: boolean
 }
@@ -101,6 +110,37 @@ function SkillInstallView() {
     login: gatewayLogin,
     reset: resetGatewayLogin,
   } = useGatewayLogin()
+
+  // The hook's device-session request has NO timeout of its own — wrap the
+  // login attempt so a gateway that never settles cannot pin the UI in
+  // `requesting` (spinner-only, no escape). On expiry the hook is reset to
+  // idle and a retryable error is shown; the Skip action stays available.
+  const loginTimeoutRef = useRef<number | null>(null)
+  const gatewayLoginBounded = useCallback(async () => {
+    if (loginTimeoutRef.current !== null) clearTimeout(loginTimeoutRef.current)
+    loginTimeoutRef.current = window.setTimeout(() => {
+      loginTimeoutRef.current = null
+      console.error('[SkillInstall] gateway login did not settle in time')
+      resetGatewayLogin()
+      setErrorMessage(t('skillInstall.loginTimeout'))
+      setPhase('login')
+    }, LOGIN_REQUEST_TIMEOUT_MS)
+    try {
+      await gatewayLogin()
+    } finally {
+      if (loginTimeoutRef.current !== null) {
+        clearTimeout(loginTimeoutRef.current)
+        loginTimeoutRef.current = null
+      }
+    }
+  }, [gatewayLogin, resetGatewayLogin, t])
+
+  useEffect(
+    () => () => {
+      if (loginTimeoutRef.current !== null) clearTimeout(loginTimeoutRef.current)
+    },
+    [],
+  )
 
   // Monotonic request generation: when the `skill` query param changes
   // (or a retry fires) while an earlier lookup/install/continuation is
@@ -178,6 +218,15 @@ function SkillInstallView() {
 
   useEffect(() => {
     void loadEntry()
+    // Unmount must invalidate the CURRENT generation too: a pending
+    // install/readiness continuation (capturing this generation) would
+    // otherwise run to completion after the visitor left the page and
+    // still call router.replace — redirecting them from wherever they
+    // navigated to. Bumping the generation marks every in-flight flow
+    // stale; a remount's loadEntry() re-bumps it for the new visit.
+    return () => {
+      loadGenerationRef.current++
+    }
   }, [loadEntry])
 
   // ── Steps 3-5: readiness → navigate → prefill ─────────────────────
@@ -356,15 +405,21 @@ function SkillInstallView() {
         // rescans OPFS and re-syncs the slash-command registry.
         await getSkillManager().refreshUserSkills()
         if (isStale()) return
-        // The skill must be REGISTERED (visible to the agent) after the
-        // refresh — a directory alone is not enough: refreshUserSkills()
-        // swallows scan failures, and a dir-only check would let the page
-        // navigate with a slash command that has nothing behind it.
-        const registered = getSkillManager()
+        // The skill must be REGISTERED and ENABLED after the refresh — a
+        // directory alone is not enough: refreshUserSkills() swallows scan
+        // failures, and a dir-only check would let the page navigate with
+        // a slash command that has nothing behind it. A registered-but-
+        // disabled skill (installed, then disabled before this install)
+        // must be re-enabled for the promoted flow to work.
+        const freshInstallManager = getSkillManager()
+        const registeredSkill = freshInstallManager
           .getSkills()
-          .some((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
-        if (!registered) {
+          .find((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
+        if (!registeredSkill) {
           throw new Error(t('skillInstall.registerFailed'))
+        }
+        if (!registeredSkill.enabled) {
+          freshInstallManager.setUserSkillEnabled(`user:${entry.dirName}`, true)
         }
         outcome = { alreadyInstalled: false }
       }
@@ -400,16 +455,20 @@ function SkillInstallView() {
    * something behind it.
    */
   const ensureRegistered = useCallback(
-    async (dirName: string, isStale: () => boolean): Promise<boolean> => {
+    async (dirName: string, isStale: () => boolean): Promise<boolean | 'disabled'> => {
       const manager = getSkillManager()
-      const isRegistered = () =>
+      const findRegistered = () =>
         manager
           .getSkills()
-          .some((s) => s.source === 'user' && s.id === `user:${dirName}`)
-      if (isRegistered()) return true
+          .find((s) => s.source === 'user' && s.id === `user:${dirName}`)
+      if (findRegistered()) {
+        return findRegistered()!.enabled ? true : 'disabled'
+      }
       await manager.refreshUserSkills()
       if (isStale()) return false
-      return isRegistered()
+      const found = findRegistered()
+      if (!found) return false
+      return found.enabled ? true : 'disabled'
     },
     [],
   )
@@ -430,9 +489,17 @@ function SkillInstallView() {
       // gates below compare against this click, not an older install.
       installGenerationRef.current = currentGeneration()
       const installGeneration = installGenerationRef.current
-      if (
-        !(await ensureRegistered(entry.dirName, () => currentGeneration() !== installGeneration))
-      ) {
+      const registration = await ensureRegistered(
+        entry.dirName,
+        () => currentGeneration() !== installGeneration,
+      )
+      if (registration === 'disabled') {
+        // The skill is installed but the visitor disabled it earlier: the
+        // flow must not pre-fill its command and navigate — the conversation
+        // could not use the skill. Re-enable it so the promoted flow works,
+        // then proceed.
+        getSkillManager().setUserSkillEnabled(`user:${entry.dirName}`, true)
+      } else if (registration === false) {
         if (currentGeneration() !== installGeneration) return
         setErrorMessage(t('skillInstall.registerFailed'))
         setPhase('details')
@@ -446,6 +513,25 @@ function SkillInstallView() {
 
   const handleLoginSuccess = useCallback(async () => {
     setCreditExhausted(false)
+    // A visitor who was logged OUT at page load skipped the initial
+    // readiness check (the flow went straight to login). Re-check now that
+    // credentials exist — otherwise a zero-credit account navigates
+    // directly and never sees the early recharge hint on this page.
+    try {
+      const readiness = await checkAiReadiness()
+      if (readiness.creditExhausted) {
+        setCreditExhausted(true)
+        // Back to the details view where the recharge hint renders; the
+        // next Start proceeds (readinessDoneRef is already true).
+        setPhase('details')
+        return
+      }
+    } catch (e) {
+      // Readiness re-check is best-effort: a failed probe must not trap the
+      // visitor mid-flow — proceed (the conversation's recharge card
+      // remains the backstop).
+      console.warn('[SkillInstall] post-login readiness re-check failed:', e)
+    }
     await continueToConversation(entry?.name ?? entry?.dirName ?? '')
   }, [continueToConversation, entry])
 
@@ -585,11 +671,16 @@ function SkillInstallView() {
             ? t('skillInstall.aiNotReady')
             : t('skillInstall.aiGatewayUnavailable')}
         </p>
+        {errorMessage && (
+          <p className="max-w-sm text-xs text-red-600 dark:text-red-400" role="alert">
+            {errorMessage}
+          </p>
+        )}
         {ENABLE_LLM_GATEWAY ? (
           <InlineGatewayLogin
             authState={authState}
             isRunning={isLoginRunning}
-            onLogin={() => void gatewayLogin()}
+            onLogin={() => void gatewayLoginBounded()}
             onSkip={() => void handleSkipLogin()}
             onCopyCode={() => {
               if (authState?.userCode) void navigator.clipboard.writeText(authState.userCode)
@@ -663,10 +754,21 @@ function InlineGatewayLogin(props: {
         </>
       )}
       {status === 'requesting' && (
-        <div className="flex items-center gap-2 text-sm text-secondary">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          {t('settings.gateway.creatingSession')}
-        </div>
+        <>
+          <div className="flex items-center gap-2 text-sm text-secondary">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {t('settings.gateway.creatingSession')}
+          </div>
+          {/* A stalled gateway must never trap the visitor in the spinner:
+              the skip escape stays reachable while the request is pending. */}
+          <button
+            type="button"
+            onClick={props.onSkip}
+            className="text-xs text-muted-foreground underline underline-offset-2 hover:text-secondary"
+          >
+            {t('skillInstall.aiLater')}
+          </button>
+        </>
       )}
       {(status === 'waiting' || status === 'polling') && authState?.userCode && (
         <div className="w-full space-y-3">
