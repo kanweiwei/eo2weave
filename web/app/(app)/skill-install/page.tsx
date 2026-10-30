@@ -106,6 +106,9 @@ function SkillInstallView() {
   // (or a retry fires) while an earlier lookup/install/continuation is
   // still pending, the stale completion must not overwrite the newer
   // entry/phase state nor navigate for the OLD skill.
+  // The generation must key on BOTH query params: a changed `prompt` is as
+  // much a new request as a changed `skill` — a pending flow captured the
+  // OLD prompt and must not navigate with stale link content.
   const loadGenerationRef = useRef(0)
   const currentGeneration = () => loadGenerationRef.current
 
@@ -158,7 +161,7 @@ function SkillInstallView() {
       setErrorMessage(e instanceof Error ? e.message : String(e))
       setPhase('error')
     }
-  }, [skillParam])
+  }, [skillParam, promptParam])
 
   useEffect(() => {
     void loadEntry()
@@ -351,6 +354,25 @@ function SkillInstallView() {
           throw new Error(t('skillInstall.registerFailed'))
         }
         outcome = { alreadyInstalled: false }
+      } else {
+        // "Already installed" (the dir was seen in the load scan) does NOT
+        // imply the skill is REGISTERED in this tab: the SkillManager cache
+        // is populated by an OPFS rescan that may not have run here yet
+        // (e.g. the install happened in another tab, or the scan failed
+        // earlier). Verify registration and refresh-on-miss so the flow
+        // never navigates with a slash command that has nothing behind it.
+        const manager = getSkillManager()
+        const isRegistered = () =>
+          manager
+            .getSkills()
+            .some((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
+        if (!isRegistered()) {
+          await manager.refreshUserSkills()
+          if (isStale()) return
+          if (!isRegistered()) {
+            throw new Error(t('skillInstall.registerFailed'))
+          }
+        }
       }
       setAlreadyInstalled(true)
       setInstallProgress(null)
