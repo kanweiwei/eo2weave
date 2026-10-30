@@ -10,6 +10,8 @@ export const app = {
     retry: "重试",
     projectsInitErrorHint:
       "你的项目数据是安全的——本次本地存储未能打开，通常重试即可恢复。",
+    projectsInitCorruptionHint:
+      "本地存储报告了可能的数据问题，项目可能无法正常打开。请勿清除浏览器数据，并运行「诊断」生成报告，以便附在问题反馈中。",
     projectsInitRetrying: "重试中...",
     sessionStorageOnly: "数据仅在当前会话保存，刷新后将丢失",
     localStorageMode: "使用本地存储模式",

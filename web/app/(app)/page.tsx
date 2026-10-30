@@ -15,7 +15,7 @@ export default function RootPage() {
   const router = useRouter()
   const initialized = useProjectStore((s) => s.initialized)
   const projects = useProjectStore((s) => s.projects)
-  const storeError = useProjectStore((s) => s.error)
+  const initError = useProjectStore((s) => s.initError)
 
   // Auto-navigate to default project for first-time users ──────────
   // When a brand-new user's default project was auto-created during init,
@@ -36,9 +36,10 @@ export default function RootPage() {
     // Init failed (e.g. SQLite worker couldn't open OPFS): don't run the
     // first-run redirect flow. Redirect to /projects so the error banner
     // with Retry (ProjectHomeView) is what the user sees, not a blank page.
-    // `initialized` stays false on failure, so `initialized && error` means
-    // a failure from an EARLIER session state — surface it the same way.
-    if (storeError) {
+    // Keyed on initError — the init-specific field — so an unrelated
+    // project-action failure (`error`) can never lock the root page into
+    // the /projects redirect (Sourcery: "Project actions lock the page").
+    if (initError) {
       router.replace(projectsPath())
       return
     }
@@ -75,7 +76,7 @@ export default function RootPage() {
     }
     sessionStorage.setItem(JUST_REDIRECTED_KEY, '1')
     router.replace(projectWorkspacePath(targetProject.id))
-  }, [initialized, projects, storeError, router])
+  }, [initialized, projects, initError, router])
 
   return null
 }

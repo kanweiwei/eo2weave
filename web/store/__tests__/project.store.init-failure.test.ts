@@ -40,6 +40,9 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
       initialized: false,
       isLoading: false,
       error: null,
+      initError: null,
+      initErrorKind: 'transient',
+      initializingRetry: false,
     })
     sessionStorage.clear()
     localStorage.clear()
@@ -48,7 +51,7 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     findProjectStats.mockResolvedValue([])
   })
 
-  it('does NOT set initialized:true on failure and exposes the error', async () => {
+  it('does NOT set initialized:true on failure and exposes initError', async () => {
     findAllProjects.mockRejectedValue(new Error('OPFS pool busy'))
 
     await useProjectStore.getState().initialize()
@@ -56,7 +59,20 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     const state = useProjectStore.getState()
     expect(state.initialized).toBe(false)
     expect(state.error).toBe('OPFS pool busy')
+    expect(state.initError).toBe('OPFS pool busy')
+    expect(state.initErrorKind).toBe('transient')
     expect(state.isLoading).toBe(false)
+  })
+
+  it('classifies corruption-class errors as kind:"corruption"', async () => {
+    findAllProjects.mockRejectedValue(new Error('Database file is corrupt'))
+
+    await useProjectStore.getState().initialize()
+
+    const state = useProjectStore.getState()
+    expect(state.initErrorKind).toBe('corruption')
+    const raw = sessionStorage.getItem('creatorweave:project-store-init-error')
+    expect(JSON.parse(raw as string)).toMatchObject({ kind: 'corruption' })
   })
 
   it('retries the full init when initialize() runs again after a failure', async () => {
@@ -71,6 +87,28 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     const state = useProjectStore.getState()
     expect(state.initialized).toBe(true)
     expect(state.error).toBeNull()
+    expect(state.initError).toBeNull()
+    expect(state.initializingRetry).toBe(false)
+  })
+
+  it('de-duplicates concurrent initialize() calls into one attempt', async () => {
+    // Sourcery "Retry can become a no-op": overlapping calls must JOIN one
+    // attempt, never race a success against a later failure. The shared
+    // in-flight promise eliminates the overlap race at the source.
+    let calls = 0
+    findAllProjects.mockImplementation(async () => {
+      calls += 1
+      await new Promise((r) => setTimeout(r, 10))
+      return []
+    })
+
+    await Promise.all([
+      useProjectStore.getState().initialize(),
+      useProjectStore.getState().initialize(),
+    ])
+
+    expect(calls).toBe(1)
+    expect(useProjectStore.getState().initialized).toBe(true)
   })
 
   it('persists the failure to sessionStorage for diagnostics', async () => {
@@ -105,5 +143,6 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     const state = useProjectStore.getState()
     expect(state.initialized).toBe(true)
     expect(state.error).toBeNull()
+    expect(state.initError).toBeNull()
   })
 })

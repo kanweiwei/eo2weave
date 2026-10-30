@@ -10,6 +10,8 @@ export const app = {
     retry: "再試行",
     projectsInitErrorHint:
       "プロジェクトデータは安全です。今回はローカルストレージを開けませんでした。再試行で通常は復旧します。",
+    projectsInitCorruptionHint:
+      "ローカルストレージがデータの問題を検出した可能性があります。プロジェクトが正しく開けない場合があります。ブラウザデータの消去は行わず、診断を実行してレポートを不具合報告に添付してください。",
     projectsInitRetrying: "再試行中...",
     sessionStorageOnly:
       "データは現在のセッションのみ保存され、更新時に失われます",

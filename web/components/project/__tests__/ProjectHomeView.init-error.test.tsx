@@ -29,6 +29,7 @@ vi.mock('@/i18n', () => ({
       'app.initFailed': 'Initialization failed',
       'app.retry': 'Retry',
       'app.projectsInitErrorHint': 'Your projects are safe',
+      'app.projectsInitCorruptionHint': 'Possible data problem',
       'app.projectsInitRetrying': 'Retrying...',
     }
     let text = messages[key] ?? key
@@ -52,9 +53,12 @@ import ProjectHomeView from '../ProjectHomeView'
 import { useProjectStore } from '@/store/project.store'
 
 function setupStore(opts: {
-  error: string | null
+  initError: string | null
+  initErrorKind?: 'transient' | 'corruption'
   initialized?: boolean
   isLoading?: boolean
+  initializingRetry?: boolean
+  error?: string | null
   projects?: { id: string; name: string; status: 'active'; createdAt: number; updatedAt: number }[]
 }) {
   useProjectStore.setState({
@@ -63,7 +67,10 @@ function setupStore(opts: {
     projectStats: {},
     initialized: opts.initialized ?? false,
     isLoading: opts.isLoading ?? false,
-    error: opts.error,
+    error: opts.error ?? null,
+    initError: opts.initError,
+    initErrorKind: opts.initErrorKind ?? 'transient',
+    initializingRetry: opts.initializingRetry ?? false,
   })
 }
 
@@ -76,11 +83,14 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
       initialized: false,
       isLoading: false,
       error: null,
+      initError: null,
+      initErrorKind: 'transient',
+      initializingRetry: false,
     })
   })
 
   it('renders an error banner with the error message instead of an empty project list', () => {
-    setupStore({ error: 'OPFS pool busy' })
+    setupStore({ initError: 'OPFS pool busy' })
 
     render(<ProjectHomeView />)
 
@@ -91,9 +101,9 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
     expect(screen.queryByText('projectHome.empty.noProjects')).toBeNull()
   })
 
-  it('does not render the banner when there is no error', () => {
+  it('does not render the banner when there is no init error', () => {
     setupStore({
-      error: null,
+      initError: null,
       initialized: true,
       projects: [{ id: 'p1', name: 'P1', status: 'active', createdAt: 1, updatedAt: 1 }],
     })
@@ -103,12 +113,54 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('does NOT render the banner for an action-level error (only init failures lock the page)', () => {
+    // Sourcery High: `error` also carries project-action failures — a failed
+    // rename/delete must never lock the whole projects page into the banner.
+    setupStore({
+      initError: null,
+      error: 'Failed to rename project',
+      initialized: true,
+      projects: [{ id: 'p1', name: 'P1', status: 'active', createdAt: 1, updatedAt: 1 }],
+    })
+
+    render(<ProjectHomeView />)
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    // The project card list renders (name appears in card title AND heading
+    // region — assert ANY occurrence, not a unique one).
+    expect(screen.getAllByText('P1').length).toBeGreaterThan(0)
+  })
+
+  it('shows the corruption guidance instead of reassurance for corruption-classified errors', () => {
+    setupStore({ initError: 'database file is corrupt', initErrorKind: 'corruption' })
+
+    render(<ProjectHomeView />)
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Possible data problem')
+    expect(alert).not.toHaveTextContent('Your projects are safe')
+  })
+
+  it('keeps the banner (with Retrying...) visible while a retry is in flight', () => {
+    // Sourcery Medium: initialize() clears the error only when it resolves —
+    // meanwhile the banner must stay (initializingRetry) so the empty list
+    // never flashes "No projects yet".
+    setupStore({ initError: 'transient', initializingRetry: true })
+
+    render(<ProjectHomeView />)
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retrying...' })).toBeDisabled()
+    expect(screen.queryByText('projectHome.empty.noProjects')).toBeNull()
+  })
+
   it('re-runs initialize() when the Retry button is clicked', async () => {
     const user = userEvent.setup()
     const initializeSpy = vi
       .spyOn(useProjectStore.getState(), 'initialize')
       .mockResolvedValue(undefined)
-    setupStore({ error: 'transient failure' })
+    setupStore({ initError: 'transient failure' })
 
     render(<ProjectHomeView />)
 

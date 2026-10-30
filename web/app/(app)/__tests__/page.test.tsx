@@ -44,6 +44,8 @@ function setupStore(opts: {
     initialized: opts.initialized,
     isLoading: false,
     error: opts.error ?? null,
+    initError: opts.error ?? null,
+    initErrorKind: 'transient',
   })
 }
 
@@ -65,15 +67,13 @@ describe('(app)/page.tsx first-run redirect', () => {
     routerReplaceMock.mockClear()
     sessionStorage.clear()
     localStorage.clear()
-    useProjectStore.setState({ error: null })
+    useProjectStore.setState({ error: null, initError: null, initErrorKind: 'transient' })
   })
 
   it('redirects to /projects without the first-run flow when store init failed', async () => {
     // Issue #131: a SQLite init failure must surface the ProjectHomeView
     // error banner (via /projects), never the blank page or a redirect into
     // a "default project" that was never loaded.
-    useProjectStore.setState({ error: 'OPFS pool busy' })
-    localStorage.setItem('creatorweave:auto-default-project-created', '1')
     setupStore({ initialized: false, projects: [], error: 'OPFS pool busy' })
     render(<App />)
 

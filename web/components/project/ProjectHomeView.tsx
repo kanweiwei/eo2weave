@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { BrandButton } from '@creatorweave/ui'
 import { useT, useLocale } from '@/i18n'
 import { useProjectStore } from '@/store/project.store'
+import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useConversationStore } from '@/store/conversation.store'
@@ -31,24 +31,12 @@ export default function ProjectHomeView() {
   const projects = useProjectStore((s) => s.projects)
   const projectStats = useProjectStore((s) => s.projectStats)
   const projectLoading = useProjectStore((s) => s.isLoading)
-  const projectError = useProjectStore((s) => s.error)
-  const initializeProjects = useProjectStore((s) => s.initialize)
+  const initError = useProjectStore((s) => s.initError)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const createProject = useProjectStore((s) => s.createProject)
   const renameProject = useProjectStore((s) => s.renameProject)
   const setProjectArchived = useProjectStore((s) => s.setProjectArchived)
   const deleteProject = useProjectStore((s) => s.deleteProject)
-
-  const [isRetrying, setIsRetrying] = useState(false)
-
-  const handleRetryInit = async () => {
-    setIsRetrying(true)
-    try {
-      await initializeProjects()
-    } finally {
-      setIsRetrying(false)
-    }
-  }
 
   const [isClearingLocalData, setIsClearingLocalData] = useState(false)
 
@@ -195,36 +183,11 @@ export default function ProjectHomeView() {
   }
 
   // Init failure: never render the "No projects yet" empty state — that
-  // reads as data loss (issue #131). Show an error banner with a Retry that
-  // re-runs initialize() instead.
-  if (projectError) {
-    return (
-      <div className="relative flex min-h-screen flex-col items-center justify-center bg-background px-6">
-        <div
-          role="alert"
-          className="w-full max-w-md rounded-xl border border-destructive/40 bg-destructive/5 p-6 text-center"
-        >
-          <h1 className="mb-2 text-base font-semibold text-foreground">
-            {t('app.initFailed')}
-          </h1>
-          <p className="mb-1 break-words text-sm text-muted-foreground">
-            {projectError}
-          </p>
-          <p className="mb-5 text-sm text-muted-foreground">
-            {t('app.projectsInitErrorHint')}
-          </p>
-          <BrandButton
-            variant="primary"
-            onClick={() => void handleRetryInit()}
-            disabled={isRetrying || projectLoading}
-          >
-            {isRetrying || projectLoading
-              ? t('app.projectsInitRetrying')
-              : t('app.retry')}
-          </BrandButton>
-        </div>
-      </div>
-    )
+  // reads as data loss (issue #131). Show the shared error banner with a
+  // Retry that re-runs initialize() instead. Keyed on initError (NOT the
+  // action-level `error`), so a failed rename/delete never locks the page.
+  if (initError) {
+    return <InitErrorBanner />
   }
 
   return (

@@ -10,6 +10,8 @@ export const app = {
     retry: "재시도",
     projectsInitErrorHint:
       "프로젝트 데이터는 안전합니다. 이번에는 로컬 저장소를 열 수 없었으며, 보통 재시도하면 복구됩니다.",
+    projectsInitCorruptionHint:
+      "로컬 저장소에서 데이터 문제가 감지되었을 수 있습니다. 프로젝트가 정상적으로 열리지 않을 수 있으니, 브라우저 데이터를 지우지 말고 진단을 실행해 보고서를 버그 보고에 첨부해 주세요.",
     projectsInitRetrying: "재시도 중...",
     sessionStorageOnly:
       "데이터는 현재 세션에만 저장되며, 새로고침 시 사라집니다",

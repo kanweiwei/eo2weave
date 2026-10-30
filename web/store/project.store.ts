@@ -13,6 +13,39 @@ import {
   DEFAULT_PROJECT_ID,
 } from '@/sqlite/repositories/project.repository'
 import { ProjectManager } from '@/opfs'
+import { PROJECT_STORE_INIT_ERROR_KEY } from '@/lib/app-storage-keys'
+
+/**
+ * Classification of a project-store initialization failure.
+ *
+ * 'transient'  — storage could not be opened this time (OPFS pool busy,
+ *                worker startup hiccup). Retrying usually fixes it; user
+ *                data is safe.
+ * 'corruption' — the error text matches a known database/storage corruption
+ *                signature. Data may NOT be safe — copy must not reassure.
+ */
+export type ProjectInitErrorKind = 'transient' | 'corruption'
+
+const CORRUPTION_ERROR_PATTERNS = [
+  /database\s*(?:file\s*)?(?:is\s*)?corrupt/i,
+  /corrupt(?:ed)?\s*database/i,
+  /malformed/i,
+  /not\s*a\s*database/i,
+  /sqlite\[(?:SQLITE_CORRUPT|SQLITE_NOTADB)\]/i,
+]
+
+export function classifyProjectInitError(message: string): ProjectInitErrorKind {
+  return CORRUPTION_ERROR_PATTERNS.some((p) => p.test(message))
+    ? 'corruption'
+    : 'transient'
+}
+
+/**
+ * Module-level in-flight marker for initialize(): concurrent callers join the
+ * same attempt (see the guard inside initialize). Cleared in a `finally` so
+ * a completed/failed attempt never poisons the next retry.
+ */
+let initInFlight: Promise<void> | undefined
 
 //=============================================================================
 // Cross-Tab Synchronization
@@ -105,6 +138,22 @@ interface ProjectState {
   initialized: boolean
   isLoading: boolean
   error: string | null
+  /**
+   * Initialization-specific failure (issue #131). Deliberately SEPARATE from
+   * `error`, which also carries project-action failures (rename/delete/…):
+   * gating the init-failure UI on `error` locked the whole projects page
+   * whenever any later project action failed. Only `initError` shows the
+   * init banner / drives the root-page redirect.
+   */
+  initError: string | null
+  /** Classification of the current initError (copy tone: reassurance vs corruption guidance). */
+  initErrorKind: ProjectInitErrorKind
+  /**
+   * True from the moment a retry attempt STARTS until it resolves. The init
+   * banner must stay visible during a retry (Sourcery: clearing the error
+   * upfront makes an empty list flash "No projects yet" while loading).
+   */
+  initializingRetry: boolean
 
   initialize: () => Promise<void>
   setActiveProject: (projectId: string) => Promise<boolean>
@@ -180,6 +229,9 @@ export const useProjectStore = create<ProjectState>()(
     initialized: false,
     isLoading: false,
     error: null,
+    initError: null,
+    initErrorKind: 'transient',
+    initializingRetry: false,
 
     initialize: async () => {
       // setupProjectSync is idempotent — returns the previous cleanup if already
@@ -188,10 +240,25 @@ export const useProjectStore = create<ProjectState>()(
         void get().refreshProjects()
       })
       if (get().initialized) return
+      // Concurrent-attempt guard (Sourcery: "Retry can become a no-op"): two
+      // overlapping initialize() calls could otherwise race — one succeeds
+      // and pins `initialized: true`, the later one fails afterwards and sets
+      // the error without resetting the flag, leaving Retry dead at the guard
+      // above. Sharing ONE in-flight promise makes concurrent callers join the
+      // same attempt instead of racing.
+      if (initInFlight) return initInFlight
 
       const started = performance.now()
       console.log('[ProjectStore] initialize start')
-      set({ isLoading: true, error: null })
+      // initializingRetry keeps the init-failure banner rendered while a retry
+      // is in flight (Sourcery: without it, clearing the error upfront lets
+      // the "No projects yet" empty state flash while the DB reads finish).
+      set({
+        isLoading: true,
+        error: null,
+        initializingRetry: get().initError !== null,
+      })
+      const attempt = (async () => {
       try {
         const repo = getProjectRepository()
         const [projects, stats] = await Promise.all([
@@ -263,11 +330,13 @@ export const useProjectStore = create<ProjectState>()(
           activeProjectId: normalizedActiveProjectId,
           initialized: true,
           isLoading: false,
+          initError: null,
+          initializingRetry: false,
         })
 
         // Success clears any failure record persisted by a previous attempt.
         try {
-          sessionStorage.removeItem('creatorweave:project-store-init-error')
+          sessionStorage.removeItem(PROJECT_STORE_INIT_ERROR_KEY)
         } catch {
           // sessionStorage unavailable — nothing to clean up.
         }
@@ -287,10 +356,16 @@ export const useProjectStore = create<ProjectState>()(
         // failure terminal for the whole session: no route change, redirect,
         // or consumer (ProjectHomeView) would ever re-run initialize() and
         // the projects page would stay silently blank. Leaving it false lets
-        // any subsequent initialize() call retry (issue #131).
+        // any subsequent initialize() call retry (issue #131). Belt-and-braces
+        // for the overlap case: a failed attempt also invalidates `initialized`
+        // pinned by a concurrent attempt that already returned (Sourcery).
         set({
           error: message,
+          initialized: false,
           isLoading: false,
+          initError: message,
+          initErrorKind: classifyProjectInitError(message),
+          initializingRetry: false,
         })
         const detail = e instanceof Error ? (e.stack ?? message) : message
         console.error(
@@ -302,12 +377,22 @@ export const useProjectStore = create<ProjectState>()(
         // and users can attach it to bug reports even after a reload.
         try {
           sessionStorage.setItem(
-            'creatorweave:project-store-init-error',
-            JSON.stringify({ message, at: new Date().toISOString() })
+            PROJECT_STORE_INIT_ERROR_KEY,
+            JSON.stringify({ message, kind: classifyProjectInitError(message), at: new Date().toISOString() })
           )
         } catch {
           // sessionStorage unavailable (SSR / disabled storage) — console is enough.
         }
+      }
+      })()
+
+      initInFlight = attempt
+      try {
+        await attempt
+      } finally {
+        // Clear the in-flight marker regardless of outcome so the NEXT call
+        // starts a fresh attempt (retry path) instead of joining a dead one.
+        initInFlight = undefined
       }
     },
 

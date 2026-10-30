@@ -101,10 +101,41 @@ describe('storage diagnostics', () => {
     const report = await runDiagnostics()
     expect(report.markdown).toContain('# 怡氧知知诊断报告')
     expect(report.markdown).toContain('## SQLite')
+    expect(report.markdown).toContain('## Project Store Init')
     expect(report.markdown).toContain('## Browser Runtime')
     expect(report.markdown).toContain('## Storage Quota')
     expect(report.markdown).toContain('## Service Worker')
     expect(report.markdown).toContain('## Environment')
     expect(report.markdown).toContain('请把以上内容完整复制给开发者')
+  })
+
+  it('includes the persisted project-store init failure when present', async () => {
+    // Sourcery: a saved init failure (sessionStorage) must appear in the
+    // report users attach to bug reports — it is the primary signal for
+    // "blank projects page" reports.
+    sessionStorage.setItem(
+      'creatorweave:project-store-init-error',
+      JSON.stringify({ message: 'OPFS pool busy', kind: 'transient', at: '2026-10-30T10:00:00.000Z' })
+    )
+    try {
+      const { runDiagnostics } = await import('../diagnostics')
+      const report = await runDiagnostics()
+      const section = report.sections.find((s) => s.label === 'Project Store Init')
+      expect(section?.status).toBe('error')
+      expect(section?.lines.join('\n')).toContain('OPFS pool busy')
+      expect(report.summary.projectStoreInitFailed).toBe(true)
+      expect(report.markdown).toContain('OPFS pool busy')
+    } finally {
+      sessionStorage.removeItem('creatorweave:project-store-init-error')
+    }
+  })
+
+  it('marks the project-store init section clean when no failure is recorded', async () => {
+    sessionStorage.removeItem('creatorweave:project-store-init-error')
+    const { runDiagnostics } = await import('../diagnostics')
+    const report = await runDiagnostics()
+    const section = report.sections.find((s) => s.label === 'Project Store Init')
+    expect(section?.status).toBe('info')
+    expect(report.summary.projectStoreInitFailed).toBe(false)
   })
 })
