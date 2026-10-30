@@ -601,6 +601,27 @@ class SQLiteDatabaseManager {
   private initPromise: Promise<void> | null = null
   private initializing = false // Guard for StrictMode double init
   /**
+   * Issue #131 req 5: Web Locks scope serializing SQLite initialization
+   * ACROSS TABS. OPFS sync handles are per-origin exclusive resources; when
+   * two tabs spawn their init workers at the same moment they contend for
+   * the same handles and both fail (the cascade the retry budget below
+   * defends against). Holding a cross-tab lock for the duration of init
+   * lets the losing tab simply wait instead of fighting for the handle.
+   */
+  private static readonly SQLITE_INIT_LOCK_SCOPE = 'creatorweave:sqlite-init'
+  /**
+   * Bounded wait for the cross-tab init lock (same precedent as the
+   * auto-create lock in project.store.ts). This is a contention-reduction,
+   * NOT a data-integrity gate: if the lock cannot be acquired within the
+   * deadline (old browser without Web Locks, or a hung holder), we PROCEED
+   * with initialization anyway — in-flight init still has its own in-tab
+   * guard and retry budget, so the worst case is the pre-existing
+   * contention behavior, not a lost create. Fail-open keeps init live on
+   * browsers without Web Locks.
+   */
+  private static readonly SQLITE_INIT_LOCK_TIMEOUT_MS = 10000
+
+  /**
    * Retry tracking to prevent worker-spawn storms after transient failures
    * (e.g. OPFS sync-handle contention when multiple tabs init simultaneously).
    *
@@ -610,7 +631,13 @@ class SQLiteDatabaseManager {
    * released yet, so the new worker fails too — a cascade.
    */
   private initRetryCount = 0
-  private readonly MAX_INIT_RETRIES = 2
+  /**
+   * Issue #131 req 4: three retry attempts with exponential backoff
+   * (500ms → 1s → 2s). The old budget of 2 was still too tight when several
+   * tabs open simultaneously and OPFS sync handles take longer than one
+   * backoff window to be released by the losing workers.
+   */
+  private readonly MAX_INIT_RETRIES = 3
 
   private constructor() {}
 
@@ -641,53 +668,123 @@ class SQLiteDatabaseManager {
 
     this.initializing = true
 
-    this.initPromise = (async () => {
-      try {
-        if (!this.workerClient) {
-          this.workerClient = new SQLiteWorkerClient()
-        }
-        await this.workerClient.initialize(onMigrationProgress)
-        this.initialized = true
-        this.initializing = false
-        this.initRetryCount = 0 // Reset on success
-      } catch (error) {
-        console.error('[SQLite] Failed to initialize:', error)
-        try {
-          await this.workerClient?.close()
-        } catch {
-          // Ignore cleanup failures; we'll recreate worker on next init.
-        }
+    // Create the worker client synchronously (as the old inline IIFE did) so
+    // callers that immediately query join the in-flight initPromise instead
+    // of seeing "Database not initialized" during the lock-acquire microtask.
+    if (!this.workerClient) {
+      this.workerClient = new SQLiteWorkerClient()
+    }
 
-        // CRITICAL: keep `initPromise`/`initializing` set across the backoff so
-        // that callers arriving during the window join THIS in-flight promise
-        // instead of bypassing the gate and spawning their own worker. Clear
-        // state AFTER the backoff completes (or after max retries). Failing
-        // to do this re-creates the exact cascade we're trying to prevent.
-        if (this.initRetryCount < this.MAX_INIT_RETRIES) {
-          this.initRetryCount++
-          const backoff = Math.min(500 * Math.pow(2, this.initRetryCount - 1), 4000)
-          console.warn(
-            `[SQLite] Init failed (attempt ${this.initRetryCount}/${this.MAX_INIT_RETRIES}). ` +
-              `Waiting ${backoff}ms before allowing retry...`
-          )
-          await new Promise((resolve) => setTimeout(resolve, backoff))
-        } else {
-          console.error(
-            `[SQLite] Max init retries (${this.MAX_INIT_RETRIES}) exhausted. ` +
-              'Deferring to caller for user-facing error handling.'
-          )
-          this.initRetryCount = 0 // Reset so user-triggered retries get a fresh budget
-        }
-
-        this.workerClient = null
-        this.initPromise = null
-        this.initializing = false
-
-        throw error
-      }
-    })()
+    this.initPromise = this.acquireInitLock().then((releaseInitLock) =>
+      this.runInitialization(onMigrationProgress).finally(() => releaseInitLock())
+    )
 
     return this.initPromise
+  }
+
+  /**
+   * The former initialize() body: create the worker client, run worker init,
+   * and apply the retry/backoff budget on failure. Split out so the
+   * cross-tab init lock (acquireInitLock) can wrap it cleanly.
+   */
+  private async runInitialization(
+    onMigrationProgress?: (progress: {
+      step: string
+      details: string
+      current: number
+      total: number
+    }) => void
+  ): Promise<void> {
+    try {
+      if (!this.workerClient) {
+        this.workerClient = new SQLiteWorkerClient()
+      }
+      await this.workerClient.initialize(onMigrationProgress)
+      this.initialized = true
+      this.initializing = false
+      this.initRetryCount = 0 // Reset on success
+    } catch (error) {
+      console.error('[SQLite] Failed to initialize:', error)
+      try {
+        await this.workerClient?.close()
+      } catch {
+        // Ignore cleanup failures; we'll recreate worker on next init.
+      }
+
+      // CRITICAL: keep `initPromise`/`initializing` set across the backoff so
+      // that callers arriving during the window join THIS in-flight promise
+      // instead of bypassing the gate and spawning their own worker. Clear
+      // state AFTER the backoff completes (or after max retries). Failing
+      // to do this re-creates the exact cascade we're trying to prevent.
+      if (this.initRetryCount < this.MAX_INIT_RETRIES) {
+        this.initRetryCount++
+        const backoff = Math.min(500 * Math.pow(2, this.initRetryCount - 1), 4000)
+        console.warn(
+          `[SQLite] Init failed (attempt ${this.initRetryCount}/${this.MAX_INIT_RETRIES}). ` +
+            `Waiting ${backoff}ms before allowing retry...`
+        )
+        await new Promise((resolve) => setTimeout(resolve, backoff))
+      } else {
+        console.error(
+          `[SQLite] Max init retries (${this.MAX_INIT_RETRIES}) exhausted. ` +
+            'Deferring to caller for user-facing error handling.'
+        )
+        this.initRetryCount = 0 // Reset so user-triggered retries get a fresh budget
+      }
+
+      this.workerClient = null
+      this.initPromise = null
+      this.initializing = false
+
+      throw error
+    }
+  }
+
+  /**
+   * Issue #131 req 5: hold a cross-tab Web Lock around the whole
+   * initialization (including its internal retry backoff) so a second tab
+   * queues here instead of racing for the same OPFS sync handles.
+   *
+   * Returns a release function; callers MUST invoke it when done.
+   *
+   * Fail-open on contention: the wait is bounded by
+   * SQLITE_INIT_LOCK_TIMEOUT_MS (same Promise.race precedent as the
+   * auto-create lock in project.store.ts) and a missing Web Locks API
+   * proceeds immediately with a no-op release. Unlike auto-create (a
+   * data-integrity concern, fail-closed), init serialization is a
+   * performance/liveness concern — the existing in-tab guards and the
+   * retry budget above make the unserialized path safe, just more
+   * contention-prone.
+   */
+  private acquireInitLock(): Promise<() => void> {
+    if (typeof navigator === 'undefined' || !navigator.locks) {
+      return Promise.resolve(() => {})
+    }
+    const noopRelease = () => {}
+    let onAcquired: () => void = noopRelease
+    const acquiredPromise = new Promise<void>((resolve) => {
+      onAcquired = resolve
+    })
+    let releaseLock: () => void = noopRelease
+    const releasedPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    void navigator.locks.request(SQLiteDatabaseManager.SQLITE_INIT_LOCK_SCOPE, async () => {
+      onAcquired()
+      await releasedPromise
+    })
+    return Promise.race([
+      acquiredPromise.then(() => releaseLock),
+      new Promise<() => void>((resolve) =>
+        setTimeout(() => {
+          // Deadline hit before grant: if the grant arrives later, release
+          // it immediately so this tab never wedges other tabs behind a
+          // lock it no longer needs.
+          onAcquired = () => releaseLock()
+          resolve(noopRelease)
+        }, SQLiteDatabaseManager.SQLITE_INIT_LOCK_TIMEOUT_MS)
+      ),
+    ])
   }
 
   private async getReadyWorkerClient(): Promise<SQLiteWorkerClient> {
