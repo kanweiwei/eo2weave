@@ -711,28 +711,45 @@ class SQLiteDatabaseManager {
         // Ignore cleanup failures; we'll recreate worker on next init.
       }
 
-      // CRITICAL: keep `initPromise`/`initializing` set across the backoff so
-      // that callers arriving during the window join THIS in-flight promise
-      // instead of bypassing the gate and spawning their own worker. Clear
-      // state AFTER the backoff completes (or after max retries). Failing
-      // to do this re-creates the exact cascade we're trying to prevent.
-      if (this.initRetryCount < this.MAX_INIT_RETRIES) {
+      // Issue #131 / Sourcery: the retry budget below only re-arms the GATE
+      // (initPromise/initializing) so the next caller may retry — it never
+      // re-attempted the worker init itself, so a single transient worker
+      // failure surfaced straight to the user's storage-error screen despite
+      // the configured budget. Consume the budget HERE: recreate the worker
+      // and re-run initialize() with the same backoff before giving up.
+      this.workerClient = null
+      while (this.initRetryCount < this.MAX_INIT_RETRIES) {
         this.initRetryCount++
         const backoff = Math.min(500 * Math.pow(2, this.initRetryCount - 1), 4000)
         console.warn(
           `[SQLite] Init failed (attempt ${this.initRetryCount}/${this.MAX_INIT_RETRIES}). ` +
-            `Waiting ${backoff}ms before allowing retry...`
+            `Retrying in ${backoff}ms...`
         )
         await new Promise((resolve) => setTimeout(resolve, backoff))
-      } else {
-        console.error(
-          `[SQLite] Max init retries (${this.MAX_INIT_RETRIES}) exhausted. ` +
-            'Deferring to caller for user-facing error handling.'
-        )
-        this.initRetryCount = 0 // Reset so user-triggered retries get a fresh budget
+        try {
+          this.workerClient = new SQLiteWorkerClient()
+          await this.workerClient.initialize(onMigrationProgress)
+          this.initialized = true
+          this.initializing = false
+          this.initRetryCount = 0 // Reset on success
+          return
+        } catch (retryError) {
+          console.error('[SQLite] Init retry failed:', retryError)
+          try {
+            await this.workerClient?.close()
+          } catch {
+            // Ignore cleanup failures; we'll recreate worker on next init.
+          }
+          this.workerClient = null
+        }
       }
 
-      this.workerClient = null
+      console.error(
+        `[SQLite] Max init retries (${this.MAX_INIT_RETRIES}) exhausted. ` +
+          'Deferring to caller for user-facing error handling.'
+      )
+      this.initRetryCount = 0 // Reset so user-triggered retries get a fresh budget
+
       this.initPromise = null
       this.initializing = false
 
