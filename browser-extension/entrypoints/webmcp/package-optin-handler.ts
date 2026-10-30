@@ -160,6 +160,20 @@ async function writePackageActivation(mount: string, directory: string, signal?:
   // commit a config under the new owner's lease. The caller also fences its
   // own steps; this is the commit-point backstop inside the write itself.
   await provider.writeFile(`${directory}/config.json`, bytes)
+  // Commit-time fence (finding: "Stale consent enables replacement"): if the
+  // lease was lost WHILE the write was pending — the window the pre-write
+  // checks cannot close — another operation may have replaced the package in
+  // the meantime. Roll our activation write back instead of letting it commit
+  // onto a package version the user never consented to.
+  if (signal?.aborted) {
+    try {
+      await provider.remove(`${directory}/config.json`)
+    } catch (rollbackError) {
+      const e = rollbackError as { code?: string; name?: string }
+      if (e.code !== 'ENOENT' && e.name !== 'NotFoundError') throw rollbackError
+    }
+    throw Object.assign(new Error('Package lease lost while the activation write was in flight; the write was rolled back'), { code: 'LOCK_LOST' })
+  }
   try {
     await provider.stat(`${directory}/manifest.json`)
   } catch {
