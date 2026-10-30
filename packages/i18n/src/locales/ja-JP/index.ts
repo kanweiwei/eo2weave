@@ -34,6 +34,7 @@ import { assets } from './assets'
 import { processes } from './processes'
 import { sidePanelRecipe } from './sidePanelRecipe'
 import { sidePanelPackage } from './sidePanelPackage'
+import { webmcpPackages } from './webmcpPackages'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
@@ -95,6 +96,7 @@ export const jaJP = {
   processes,
   sidePanelRecipe,
   sidePanelPackage,
+  webmcpPackages,
   execPolicy,
   extension,
   tools,

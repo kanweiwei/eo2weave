@@ -198,7 +198,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
       })
       setErrorMessage(t('sidePanelPackage.enableTimeoutToast'))
       return
-    } else if (result.errorCode === 'VERIFY_INCOMPLETE') {
+    } else if (result.errorCode === 'VERIFY_INCOMPLETE' || result.errorCode === 'ENABLE_NOTIFY_FAILED') {
       // Finding "Enabled package reported failed": the background wrote the
       // config AND reloaded the tab, but the post-write verification read
       // kept failing transiently — the enable itself is committed and the
@@ -206,6 +206,10 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
       // branch below) would record the 1-day cooldown for a done deal and
       // claim "Failed to enable" while the tools are already active. Show
       // honest guidance instead, no dismissal.
+      // ENABLE_NOTIFY_FAILED (finding: "Enable reports failure after
+      // committing") is the same partial-success shape one step earlier: the
+      // config write committed but the catalog-refresh sentinel could not be
+      // delivered — the tools register on the next unrelated refresh.
       // eslint-disable-next-line no-console
       console.warn('[PackageOptInModal] enable landed but could not be verified — no cooldown recorded', {
         packageId: packageInfo.id,

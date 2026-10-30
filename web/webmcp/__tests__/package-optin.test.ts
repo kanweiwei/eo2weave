@@ -60,8 +60,10 @@ describe('findPackageOptInCandidate', () => {
     expect(findPackageOptInCandidate([entry()], 'https://example.com/')).toBeNull()
   })
 
-  it('ignores user-mounted packages', () => {
-    expect(findPackageOptInCandidate([entry({ mount: 'webmcp' })], 'https://jmail.world/')).toBeNull()
+  it('offers user-mounted (registry-installed) packages too (issue #117 Tier 1)', () => {
+    const candidate = findPackageOptInCandidate([entry({ mount: 'webmcp', directory: 'world.jmail.archive' })], 'https://jmail.world/')
+    expect(candidate?.id).toBe('world.jmail.archive')
+    expect(candidate?.mount).toBe('webmcp')
   })
 
   it('ignores packages with blocking diagnostics', () => {
@@ -177,6 +179,16 @@ describe('createPackageOptInHandler', () => {
     alarmClear.mockResolvedValue(undefined)
     vi.stubGlobal('chrome', {
       tabs: { get, reload },
+      // The enable path holds the cross-context package lease while writing
+      // (chrome.storage.local-backed); a real map keeps the lock working.
+      storage: { local: (() => {
+        const data = new Map<string, unknown>()
+        return {
+          get: vi.fn(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {})),
+          set: vi.fn(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) }),
+          remove: vi.fn(async (key: string) => { data.delete(key) }),
+        }
+      })() },
       // Recovery reloads are scheduled as DURABLE alarms (finding: "Reload
       // test leaves retry timers running") — no setTimeout chains to leak
       // into later tests; the stub records the scheduling instead.
@@ -486,12 +498,14 @@ describe('createPackageOptInHandler', () => {
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     // The token was minted for world.jmail.archive; presenting it for a
-    // different package fails the token's package binding (finding: "Consent
-    // transfers across packages") before any candidate matching happens.
+    // different package fails at the CANDIDATE lookup — the re-derived
+    // candidate list does not contain com.douban.movie (it is not offered
+    // for this tab), so the mismatch is reported before the token binding
+    // is even consulted. The token stays unconsumed either way.
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.douban.movie', consentToken: token }, respond)
     expect(setBuiltinConfig).not.toHaveBeenCalled()
     expect(reload).not.toHaveBeenCalled()
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'CONSENT_REQUIRED' }))
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'PACKAGE_MISMATCH' }))
   })
 
   it('revalidates the LIVE tab url after reading the catalog and cancels on navigation', async () => {

@@ -862,6 +862,31 @@ export default defineContentScript({
       },
 
       /**
+       * Cross-context package-transaction lock (background-owned
+       * chrome.storage lease). The settings page wraps each install/
+       * uninstall transaction in acquire → heartbeat → release so a
+       * concurrent operation in ANOTHER context cannot interleave its
+       * remove/write sequences and corrupt the package directory. The
+       * background restricts this message to trusted CreatorWeave pages —
+       * a hostile site can neither pin a package lock nor release someone
+       * else's lease (the owner token is minted background-side).
+       */
+      async webMCPPackageLock(packageId: string, action: 'acquire' | 'heartbeat' | 'release', owner?: string, timeoutMs?: number) {
+        return sendToBridge('webmcp_package_lock', { packageId, action, owner, timeoutMs });
+      },
+
+      /**
+       * Announce an install/uninstall of an EXTERNAL package completed in
+       * this tab so the background re-reads its catalog immediately (the
+       * removed package's tools are withdrawn / the new package's tools
+       * register without waiting for an unrelated refresh). Trusted-page
+       * gated background-side.
+       */
+      async webMCPPackagesChangedNotify() {
+        return sendToBridge('webmcp_packages_changed_notify', {});
+      },
+
+      /**
        * Pull page context from the upstream tab that opened this CreatorWeave
        * side panel. Used by workspace-assistant-context.ts at system-prompt
        * build time. The extension executes

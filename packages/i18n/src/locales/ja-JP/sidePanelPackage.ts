@@ -20,4 +20,5 @@ export const sidePanelPackage = {
   enabledToast: "{name} を有効にしました。ページを再読み込みしてツールを反映します",
   enableFailedToast: "有効化に失敗しました。拡張機能が最新版か確認して再度お試しください。",
   consentRetryToast: "確認トークンの有効期限が切れました。このダイアログを閉じると再試行できます（クールダウンは記録されません）。",
+  enabledVerificationUnavailableToast: "{name} を有効にしてページを再読み込みしましたが、書き込みの検証を完了できませんでした——ツールが表示されない場合は拡張機能の「対応サイト」管理ページで確認してください。",
 }

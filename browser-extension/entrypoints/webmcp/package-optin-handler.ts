@@ -55,8 +55,12 @@ import {
   findPackageOptInCandidates,
   type PackageOptInCandidate,
 } from './package-optin'
+import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 import { readWebMCPCatalog, readWebMCPCatalogDetailed } from './package-repository'
 import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
+import { serializeWebMCPConfig, parseWebMCPConfig } from '@creatorweave/shared/webmcp-config'
+import { getAdapterStorage } from './provider-storage'
+import { withPackageLock } from './package-lock'
 
 export interface PackageOptInStatus {
   ok: boolean
@@ -78,6 +82,146 @@ export interface PackageOptInStatus {
 export interface PackageOptInDependencies {
   /** Resolve the bound tab id for this request (null when unauthorized). */
   resolveBoundTab: () => Promise<number | null>
+}
+
+/**
+ * Read the activation config of a package on EITHER mount. Builtin overrides
+ * live in chrome.storage.local (`setBuiltinConfig`); user-mount packages
+ * (registry installs, issue #117) carry their config.json inside the package
+ * directory itself — the same file the extension's package-management page
+ * writes. The consent-token protocol is identical for both.
+ */
+async function readPackageActivation(
+  mount: string,
+  directory: string,
+): Promise<{ activation?: string } | null> {
+  if (mount === 'builtin-webmcp') return readBuiltinConfig(directory)
+  const provider = await getAdapterStorage()
+  try {
+    const bytes = await provider.readFile(`${directory}/config.json`)
+    return parseWebMCPConfig(JSON.parse(new TextDecoder().decode(bytes)))
+  } catch (error) {
+    // The File System Access provider reports absence as a DOMException
+    // (NotFoundError) — normalize it like `providerMount` does. A package
+    // without config.json is simply at its disabled default.
+    const name = (error as { name?: string }).name
+    if ((error as { code?: string }).code === 'ENOENT' || name === 'NotFoundError') return null
+    throw error
+  }
+}
+
+/**
+ * Sentinel key prefix used to announce a USER-mount package activation
+ * change. The user mount's config.json lives in the extension's OPFS, which
+ * has no storage.onChanged hook, so the write is announced through
+ * chrome.storage.local. The adapter background listens for this prefix and
+ * refreshes the catalog, so the newly enabled tools register immediately
+ * (and an uninstalled package's routes are withdrawn).
+ */
+export const USER_PACKAGE_CONFIG_SENTINEL_PREFIX = 'webmcp_user_package_config_'
+
+/** Enable a package on EITHER mount (see `readPackageActivation` for the split). */
+async function writePackageActivation(mount: string, directory: string, signal?: AbortSignal): Promise<void> {
+  if (mount === 'builtin-webmcp') {
+    // The builtin override write touches chrome.storage.local, whose
+    // onChanged listener in the adapter background triggers a catalog
+    // refresh — routes update without extra work here.
+    await setBuiltinConfig(directory, { activation: 'enabled' })
+    return
+  }
+  const provider = await getAdapterStorage()
+  // A lease lost while the provider bridge was being resolved must stop the
+  // transaction BEFORE any mutation (finding: "Lost lease does not stop
+  // mutations") — the caller fences its own steps, this is the backstop
+  // inside the write itself.
+  if (signal?.aborted) throw Object.assign(new Error('Package lease lost during enable'), { code: 'LOCK_LOST' })
+  // Race guard (finding: "Uninstall leaves a phantom package"): between the
+  // caller's presence check and the write below an uninstall can remove the
+  // package directory — and the provider CREATES missing parent directories
+  // for config.json, which would leave a directory holding ONLY activation
+  // state (a "phantom package" the catalog then reports as installed). Stat
+  // the manifest immediately before the write and re-stat it after; if the
+  // manifest is gone post-write, remove the orphaned config.json (ENOENT-
+  // tolerant) so the race degrades to a clean enable failure instead of a
+  // resurrected directory.
+  try {
+    await provider.stat(`${directory}/manifest.json`)
+  } catch {
+    throw Object.assign(new Error('Package directory vanished before enable'), { code: 'PACKAGE_UNINSTALLED' })
+  }
+  // Recheck the lease AFTER the presence stat: an abort landing while the
+  // stat was pending must stop the transaction here, before the write
+  // (finding: "Lost lease does not stop mutations").
+  if (signal?.aborted) throw Object.assign(new Error('Package lease lost during enable'), { code: 'LOCK_LOST' })
+  const bytes = new TextEncoder().encode(serializeWebMCPConfig({ activation: 'enabled' }))
+  // Finding: "Lease-lost writes still execute" — the activation write is the
+  // transaction's last mutation; a lease lost while earlier awaits (the
+  // presence stat, the catalog re-read) were pending must stop HERE, not
+  // commit a config under the new owner's lease. The caller also fences its
+  // own steps; this is the commit-point backstop inside the write itself.
+  await provider.writeFile(`${directory}/config.json`, bytes)
+  // Commit-time fence (finding: "Stale consent enables replacement"): if the
+  // lease was lost WHILE the write was pending — the window the pre-write
+  // checks cannot close — another operation may have replaced the package in
+  // the meantime. Roll our activation write back instead of letting it commit
+  // onto a package version the user never consented to.
+  if (signal?.aborted) {
+    try {
+      await provider.remove(`${directory}/config.json`)
+    } catch (rollbackError) {
+      const e = rollbackError as { code?: string; name?: string }
+      if (e.code !== 'ENOENT' && e.name !== 'NotFoundError') throw rollbackError
+    }
+    throw Object.assign(new Error('Package lease lost while the activation write was in flight; the write was rolled back'), { code: 'LOCK_LOST' })
+  }
+  try {
+    await provider.stat(`${directory}/manifest.json`)
+  } catch {
+    // The uninstall removed the directory between our two operations (or the
+    // write itself recreated a hollow one). Roll the orphaned config.json
+    // back — a missing file is fine (the uninstall won), anything else
+    // propagates.
+    try {
+      await provider.remove(`${directory}/config.json`)
+    } catch (cleanupError) {
+      const e = cleanupError as { code?: string; name?: string }
+      if (e.code !== 'ENOENT' && e.name !== 'NotFoundError') throw cleanupError
+    }
+    throw Object.assign(new Error('Package directory vanished during enable; the orphaned activation file was removed'), { code: 'PACKAGE_UNINSTALLED' })
+  }
+  // The user-mount write has no storage.onChanged hook (the file lives in
+  // OPFS, not chrome.storage). Bounce through chrome.storage.local — the same
+  // key the builtin watcher listens on — so the adapter background refreshes
+  // the catalog and the newly enabled tools register immediately instead of
+  // waiting for an unrelated refresh. Only AFTER the write actually stuck.
+  //
+  // Finding: "Enable reports failure after committing" — the activation
+  // config has COMMITTED by this point, so a failing sentinel must not
+  // surface as a failed enable: the caller would report ENABLE_FAILED for a
+  // package that is in fact enabled. Retry the bounce a few times (a
+  // transient storage error must not leave the tools unregistered), and on
+  // persistent failure report a DISTINCT code so the UI can say
+  // "enabled, catalog refresh unconfirmed" instead of recording a failure
+  // cooldown for a done deal.
+  const sentinel = `${USER_PACKAGE_CONFIG_SENTINEL_PREFIX}${directory}`
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await chrome.storage.local.set({ [sentinel]: Date.now() })
+      await chrome.storage.local.remove(sentinel)
+      return
+    } catch (error) {
+      lastError = error
+      // eslint-disable-next-line no-console
+      console.warn('[PackageOptIn] activation sentinel bounce failed (the enable IS committed):', error)
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+  void lastError
+  throw Object.assign(
+    new Error('The package was enabled, but the catalog refresh notification could not be delivered; the tools may register late.'),
+    { code: 'ENABLE_NOTIFY_FAILED' },
+  )
 }
 
 /**
@@ -115,7 +259,77 @@ interface ConsentTokenRecord {
   tabId: number
   /** The package the token was minted for — a token never enables a sibling. */
   packageId: string
+  /**
+   * Fingerprint of the package the user actually saw in the modal (manifest
+   * version + tool names/paths). A package replaced under the same id between
+   * the status probe and the confirmation carries a different fingerprint, so
+   * the stale confirmation is rejected instead of enabling the replacement's
+   * tools (finding: "Stale consent enables replaced tools").
+   */
+  fingerprint: string
   issuedAt: number
+}
+
+/**
+ * Fingerprint of a package candidate: SHA-256 over the manifest version plus
+ * a JSON record per tool (`name`, `path`, `urlRegex`, the ACTUAL SOURCE
+ * bytes of the tool, and the tool DESCRIPTION — finding: "Changed tool
+ * descriptions reuse consent": the opt-in modal DISPLAYS the description, so
+ * a package that swaps descriptions under stable names/paths/source would
+ * otherwise pass old consent while showing the user something it no longer
+ * is — plus the package-level description) — finding: "Changed packages
+ * reuse old consent" —
+ * version, tool names and paths alone do not change when a repackaged
+ * module swaps the workflow source under the same names, so the old consent
+ * tokens kept working; tool NAMES belong in the fingerprint too — a rename
+ * under a stable path changes what the user is consenting to). The digest is
+ * cryptographic (round-3 finding: "Stale consent accepts changed code" — a
+ * 32-bit FNV-1a truncation collides for crafted source swaps, which would
+ * let a replacement pass the old consent) and deterministic across contexts;
+ * Web Crypto is available in every extension context. Records are serialized
+ * with `JSON.stringify` rather than delimiter joins — an unescaped `:`/`,`
+ * join is injective only for delimiter-free fields, so different tool lists
+ * could otherwise hash to the same input (round-5 finding: "Old consent
+ * enables unseen tools").
+ */
+async function packageFingerprint(candidate: PackageOptInCandidate, entry?: WebMCPPackageEntry): Promise<string> {
+  const manifest = entry?.package?.manifest
+  const version = manifest?.version ?? ''
+  const sources = entry?.package?.sources
+  const sha256Hex = async (text: string): Promise<string> => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text) as BufferSource)
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+  }
+  // Each tool is serialized as a JSON record instead of being joined with
+  // raw `:`/`,` delimiters (finding: "Old consent enables unseen tools"):
+  // delimiter joins are ambiguous — a tool field CONTAINING the delimiters
+  // can make two different tool lists produce the same hash input, so a
+  // consent token minted for one list would validate against another and
+  // enable tools the user never saw. JSON encoding is injective for these
+  // string-keyed records and byte-deterministic, so the fingerprint stays
+  // comparable across contexts.
+  const records: Array<Record<string, string>> = manifest?.tools
+    ? manifest.tools.map(tool => ({
+        name: tool.name,
+        path: tool.path,
+        urlRegex: tool.urlRegex,
+        source: sources?.[tool.path] ?? '',
+        description: tool.description ?? '',
+      }))
+    : candidate.tools.map(tool => tool.name).sort().map(name => ({ name }))
+  // Bytewise ordering (NOT localeCompare — that is environment-dependent):
+  // the sort only fixes record order so the digest is stable.
+  records.sort((a, b) => {
+    const left = JSON.stringify(a)
+    const right = JSON.stringify(b)
+    return left < right ? -1 : left > right ? 1 : 0
+  })
+  // The PACKAGE description is consent-visible too (finding: "Changed tool
+  // descriptions reuse consent" — the modal shows it above the tool list), so
+  // it joins the digest as its own record; a description swap under a stable
+  // tool list must invalidate stale tokens the same way.
+  records.push({ description: manifest?.description ?? '' })
+  return `${version}|${await sha256Hex(JSON.stringify(records))}`
 }
 
 /**
@@ -140,14 +354,14 @@ function pruneConsentTokens(now: number): void {
   }
 }
 
-function issueConsentToken(tabId: number, packageId: string): string {
+function issueConsentToken(tabId: number, packageId: string, fingerprint: string): string {
   const now = Date.now()
   pruneConsentTokens(now)
   const token =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `ct_${now}_${Math.random().toString(36).slice(2)}`
-  consentTokens.set(token, { tabId, packageId, issuedAt: now })
+  consentTokens.set(token, { tabId, packageId, fingerprint, issuedAt: now })
   return token
 }
 
@@ -156,8 +370,18 @@ function issueConsentToken(tabId: number, packageId: string): string {
  * AND this package (finding: "Consent transfers across packages" — a tab
  * navigating between two supported sites must not carry consent from one
  * package to another).
+ *
+ * The token is also bound to the package FINGERPRINT (finding: "Stale
+ * consent enables replaced tools"): if the package was replaced under the
+ * same id between the probe and the confirmation, the fingerprint differs
+ * and the stale confirmation is rejected.
  */
-function consumeConsentToken(token: string, tabId: number, packageId: string): boolean {
+function consumeConsentToken(
+  token: string,
+  tabId: number,
+  packageId: string,
+  fingerprint: string,
+): boolean {
   const record = consentTokens.get(token)
   if (!record) return false
   consentTokens.delete(token)
@@ -165,6 +389,7 @@ function consumeConsentToken(token: string, tabId: number, packageId: string): b
   return (
     record.tabId === tabId &&
     record.packageId === packageId &&
+    record.fingerprint === fingerprint &&
     now - record.issuedAt <= CONSENT_TOKEN_TTL_MS &&
     now - record.issuedAt >= CONSENT_TOKEN_MIN_AGE_MS
   )
@@ -307,7 +532,11 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // consent must cover them.
         const consentToken =
           candidate.activation === 'disabled'
-            ? issueConsentToken(tabId, candidate.id)
+            ? issueConsentToken(
+                tabId,
+                candidate.id,
+                await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
+              )
             : undefined
         // Sibling candidates for the dismissed-best case (finding: "Dismissal
         // hides other package prompts"): the web client picks the best
@@ -324,20 +553,25 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // enable packages, so offering an enabled sibling as an alternative
         // either re-enables and reloads it redundantly (grace mode) or fails
         // the consent check (strict mode).
-        const alternatives = findPackageOptInCandidates(entries, statusUrl)
-          .filter(item => item.directory !== candidate.directory)
-          .filter(item => item.activation === 'disabled')
-          .slice(0, 8)
-          // Each DISABLED sibling gets its OWN package-bound consent token
-          // (findings: "Sibling consent cannot complete" / "Sibling opt-in
-          // is rejected"): a token never enables a package other than the
-          // one it was minted for, so the client must be able to echo a
-          // sibling-bound token back on confirm.
-          .map(item => ({
-            ...item,
-            consentToken:
-              item.activation === 'disabled' ? issueConsentToken(tabId, item.id) : undefined,
-          }))
+        const alternatives = await Promise.all(
+          findPackageOptInCandidates(entries, statusUrl)
+            .filter(item => item.directory !== candidate.directory)
+            .filter(item => item.activation === 'disabled')
+            .slice(0, 8)
+            // Each DISABLED sibling gets its OWN package-bound consent token
+            // (findings: "Sibling consent cannot complete" / "Sibling opt-in
+            // is rejected"): a token never enables a package other than the
+            // one it was minted for, so the client must be able to echo a
+            // sibling-bound token back on confirm.
+            .map(item => ({ item, directory: entries.find(e => e.directory === item.directory) }))
+            .map(async ({ item, directory }) => ({
+              ...item,
+              consentToken:
+                item.activation === 'disabled'
+                  ? issueConsentToken(tabId, item.id, await packageFingerprint(item, directory))
+                  : undefined,
+            })),
+        )
         // Tokens minted for alternatives the client may never offer would
         // linger until TTL expiry; acceptable (bounded, in-memory, single
         // use) and far cheaper than a callback channel for revocation.
@@ -371,6 +605,12 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
       // with a warn log so the migration can be measured. A PRESENT but
       // wrong token is never downgraded to legacy — a supplied token means
       // the caller claims the token protocol, so a bad one is tampering.
+      // SECURITY (round-3 finding: "External activation skips consent"):
+      // the tokenless grace path exists ONLY for BUILTIN packages — old
+      // extension builds never saw external (registry-installed) packages,
+      // so there is no legacy caller to keep working for them. Whether the
+      // requested package is EXTERNAL is decided below against the
+      // re-derived candidate (never the web-supplied id alone).
       if (!packageId || (!hasConsentToken && activeEnforcement() === 'strict')) {
         sendResponse({
           ok: false,
@@ -393,19 +633,6 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         )
       }
       try {
-        // Consume first (fail-closed): an invalid/expired/replayed token must
-        // never reach the config write. Only reached with a token present.
-        // The token is consumed against the WEB-SUPPLIED package id — the
-        // package the modal showed when the user confirmed. If the re-derived
-        // candidate below turns out to differ, the mismatch path rejects.
-        if (hasConsentToken && !consumeConsentToken(consentToken, tabId, packageId)) {
-          sendResponse({
-            ok: false,
-            errorCode: 'CONSENT_REQUIRED',
-            error: 'Consent token missing, expired, already used, or bound to another tab/package.',
-          })
-          return false
-        }
         // Re-derive the candidates from the LIVE tab URL — never trust the
         // web-app-supplied id alone. The requested package must be AMONG the
         // candidates the bound tab actually hosts (finding: "Sibling opt-in
@@ -451,6 +678,51 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
+        // SECURITY (round-3 finding: "External activation skips consent"):
+        // the tokenless grace path is a compatibility shim for clients that
+        // predate consent tokens — those clients never knew about EXTERNAL
+        // packages, so a registry-installed package must ALWAYS present a
+        // valid consent token, even while builtin enables are still accepted
+        // tokenless in grace mode. Checked against the RE-DERIVED candidate
+        // (mount = `webmcp`), never the web-supplied id alone.
+        if (!hasConsentToken && candidate.mount !== 'builtin-webmcp') {
+          // eslint-disable-next-line no-console
+          console.warn('[PackageOptIn] tokenless enable of an EXTERNAL package refused (no legacy caller exists)', {
+            packageId,
+            timestamp: new Date().toISOString(),
+          })
+          sendResponse({
+            ok: false,
+            errorCode: 'CONSENT_REQUIRED',
+            error: 'packageId and a consent token from webmcp_package_optin_status are required.',
+          })
+          return false
+        }
+        // Fail-closed token consumption happens only NOW, against the
+        // RE-DERIVED candidate: the token must match the package the user
+        // ACTUALLY saw in the modal — tab, id AND fingerprint (finding:
+        // "Stale consent enables replaced tools"). A package replaced under
+        // the same id between the status probe and this confirmation carries
+        // a different fingerprint, so the stale confirmation is rejected
+        // instead of enabling the replacement's tools. Consuming after the
+        // candidate lookup (not before) keeps a wrong-token request from
+        // burning a valid token for a DIFFERENT package.
+        if (
+          hasConsentToken &&
+          !consumeConsentToken(
+            consentToken,
+            tabId,
+            packageId,
+            await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory)),
+          )
+        ) {
+          sendResponse({
+            ok: false,
+            errorCode: 'CONSENT_REQUIRED',
+            error: 'Consent token missing, expired, already used, or bound to another tab/package/version.',
+          })
+          return false
+        }
         // The duplicate-namespace diagnostic only exists when BOTH twins are
         // in the catalog. Read the mount ids of every entry sharing the
         // candidate's manifest id: if a user-mounted twin is present, the
@@ -486,7 +758,94 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
-        await setBuiltinConfig(candidate.directory, { activation: 'enabled' })
+        // Revalidate package PRESENCE immediately before the activation
+        // write (finding: "Uninstall races can recreate packages"): an
+        // uninstall that removed the directory after the catalog read above
+        // must not be resurrected by this write — the provider creates
+        // missing parent directories for config.json, which would leave a
+        // directory holding ONLY activation state, and the post-reload
+        // verification would then report a package whose manifest and tools
+        // are gone as "enabled". For builtin packages the config lives in
+        // chrome.storage.local, not the package directory, so there is
+        // nothing to resurrect.
+        // SECURITY (finding: "Replacement receives old consent", round 3):
+        // presence check + fresh-fingerprint + activation write must be
+        // ATOMIC with respect to install/uninstall transactions. "Fresh" is
+        // not "atomic": a swap landing between the re-read and the write
+        // still armed a replacement. Hold the SAME cross-context lease the
+        // installer takes, so a replacement cannot land mid-enable.
+        // The enable is executed INSIDE the lease below; failures inside
+        // respond and return false through the lock wrapper's callback.
+        const enableFailure = (errorCode: string, error: string) => {
+          sendResponse({ ok: false, errorCode, error })
+        }
+        const enableResult = await withPackageLock(candidate.directory, async (lockSignal): Promise<boolean> => {
+          // Guard every step (finding: "Lost lease does not stop
+          // mutations"): when the heartbeat loses the lease the signal
+          // aborts, and the transaction stops BEFORE the next mutation
+          // instead of writing a config under the new owner's lease.
+          const lost = () => {
+            enableFailure('LOCK_LOST', 'The package lease was lost while enabling; nothing was enabled.')
+            return false
+          }
+          if (lockSignal.aborted) return lost()
+          if (candidate.mount !== 'builtin-webmcp') {
+            const provider = await getAdapterStorage()
+            try {
+              await provider.stat(`${candidate.directory}/manifest.json`)
+            } catch {
+              enableFailure('PACKAGE_UNINSTALLED', 'The package was removed while enabling; nothing was enabled.')
+              return false
+            }
+            if (lockSignal.aborted) return lost()
+          }
+          // Re-check the package CONTENT under the lock (finding:
+          // "Replacement receives old consent"): the fingerprint in the
+          // token was validated against the catalog read ABOVE, but an
+          // install replacing the package between that read and this write
+          // would receive the OLD consent. Re-read the catalog fresh and
+          // recompute the fingerprint from the live entry; a change rejects
+          // with PACKAGE_MISMATCH instead of arming the replacement.
+          const [freshEntries, { userMountComplete: freshMountComplete }] = await readWebMCPCatalogDetailed()
+          // An incomplete fresh read can hide a user-mounted duplicate of a
+          // builtin candidate (finding: "Incomplete fresh catalog permits
+          // enable") — refuse rather than enable into a conflict.
+          if (!freshMountComplete) {
+            enableFailure('PACKAGE_CONFLICT', 'User packages could not be listed while enabling; nothing was enabled.')
+            return false
+          }
+          const freshEntry = freshEntries.find(e => e.directory === candidate.directory && e.mount === candidate.mount)
+          // Fingerprint EACH entry against its OWN manifest/sources (round-3
+          // finding: "Replacement bypasses fresh consent check"): the
+          // manifest portion of the digest comes from the ENTRY passed in,
+          // so a replacement that changed tool names or URL rules (while
+          // keeping paths + source bytes) now yields a different fingerprint
+          // and the old consent is rejected instead of arming it.
+          if (lockSignal.aborted) return lost()
+          const freshFingerprint = freshEntry ? await packageFingerprint(candidate, freshEntry) : null
+          const oldFingerprint = await packageFingerprint(candidate, entries.find(e => e.directory === candidate.directory))
+          if (lockSignal.aborted) return lost()
+          if (freshFingerprint === null || freshFingerprint !== oldFingerprint) {
+            enableFailure('PACKAGE_MISMATCH', 'The package changed while enabling; nothing was enabled.')
+            return false
+          }
+          // The activation write is the mutation: an aborted transaction
+          // must not perform it (finding: "Lost lease does not stop
+          // mutations").
+          if (lockSignal.aborted) return lost()
+          await writePackageActivation(candidate.mount, candidate.directory, lockSignal)
+          // Finding: "Enable reports failure after committing" — the sentinel
+          // bounce is a NOTIFICATION, not part of the activation state: the
+          // config write has already committed when it runs. A storage
+          // failure here must not flip a committed enable into ENABLE_FAILED
+          // (which records a cooldown and claims the enable failed); the
+          // storage.onChanged listener ALSO refreshes on the set/remove
+          // lifecycle, so report the partial state honestly instead.
+          return true
+        })
+        if (!enableResult) {
+          return false
+        }
         // Reload FIRST, then verify, then respond (finding: "Disabled package
         // reported enabled"): a disable that commits after our enable write
         // must be OBSERVED before success is reported, and the reload must
@@ -540,7 +899,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           let stored: { activation?: string } | null
           try {
-            stored = await readBuiltinConfig(candidate.directory)
+            stored = await readPackageActivation(candidate.mount, candidate.directory)
           } catch (verifyErr: unknown) {
             // eslint-disable-next-line no-console
             console.warn(
@@ -567,6 +926,33 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         }
         sendResponse({ ok: true, packageId, hostname: candidate.hostname, reloaded })
       } catch (err: unknown) {
+        // The write path's race guards (finding: "Uninstall leaves a phantom
+        // package") signal a clean enable failure with a dedicated code —
+        // report that honestly instead of the generic ENABLE_FAILED (which
+        // records a cooldown as if storage were broken).
+        const raceCode = (err as { code?: string }).code
+        if (raceCode === 'PACKAGE_UNINSTALLED') {
+          sendResponse({
+            ok: false,
+            errorCode: 'PACKAGE_UNINSTALLED',
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return false
+        }
+        // Finding: "Enable reports failure after committing" — a failed
+        // sentinel bounce after a COMMITTED activation write is a partial
+        // success, not a failed enable: the config on disk is `enabled`.
+        // Report the dedicated code (the UI treats it like VERIFY_INCOMPLETE:
+        // guidance, no failure cooldown) so the user is not told the enable
+        // failed when the tools are (or will be) active.
+        if (raceCode === 'ENABLE_NOTIFY_FAILED') {
+          sendResponse({
+            ok: false,
+            errorCode: 'ENABLE_NOTIFY_FAILED',
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return false
+        }
         sendResponse({
           ok: false,
           errorCode: 'ENABLE_FAILED',
