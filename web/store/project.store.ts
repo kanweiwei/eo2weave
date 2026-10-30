@@ -18,13 +18,17 @@ import { PROJECT_STORE_INIT_ERROR_KEY } from '@/lib/app-storage-keys'
 /**
  * Classification of a project-store initialization failure.
  *
- * 'transient'  — storage could not be opened this time (OPFS pool busy,
- *                worker startup hiccup). Retrying usually fixes it; user
- *                data is safe.
+ * 'transient'  — the error matches a KNOWN retryable-contention signature
+ *                (OPFS sync-handle busy, SQLITE_BUSY/LOCKED, worker startup
+ *                hiccup). Retrying usually fixes it; user data is safe.
  * 'corruption' — the error text matches a known database/storage corruption
  *                signature. Data may NOT be safe — copy must not reassure.
+ * 'unknown'    — anything else (I/O errors, unrecognized failures). There is
+ *                no basis to promise the data is safe, so the copy must be
+ *                neutral: state what happened and offer Retry + Diagnostics
+ *                WITHOUT the "projects are safe" reassurance.
  */
-export type ProjectInitErrorKind = 'transient' | 'corruption'
+export type ProjectInitErrorKind = 'transient' | 'corruption' | 'unknown'
 
 const CORRUPTION_ERROR_PATTERNS = [
   /database\s*(?:file\s*)?(?:is\s*)?corrupt/i,
@@ -34,10 +38,34 @@ const CORRUPTION_ERROR_PATTERNS = [
   /sqlite\[(?:SQLITE_CORRUPT|SQLITE_NOTADB)\]/i,
 ]
 
+/**
+ * KNOWN transient (retryable-contention) signatures — kept in sync with the
+ * busy-error detection in sqlite-worker.ts (isOpfsBusyError) and
+ * storage/init.ts (isDatabaseInaccessibleError). Only these earn the
+ * "projects are safe, retrying usually fixes it" reassurance.
+ */
+const TRANSIENT_ERROR_PATTERNS = [
+  /opfs\s*pool\s*busy/i,
+  /nomodificationallowederror/i,
+  /modifications\s*are\s*not\s*allowed/i,
+  /sync\s*handle/i,
+  /getsynchandleerror/i,
+  /sqlite_busy/i,
+  /sqlite_locked/i,
+  /database\s*is\s*locked/i,
+  /result\s*code\s*[56]\b/i,
+  /database_inaccessible/i,
+  /cantopen\b/i,
+]
+
 export function classifyProjectInitError(message: string): ProjectInitErrorKind {
-  return CORRUPTION_ERROR_PATTERNS.some((p) => p.test(message))
-    ? 'corruption'
-    : 'transient'
+  if (CORRUPTION_ERROR_PATTERNS.some((p) => p.test(message))) return 'corruption'
+  // Only explicitly recognized contention failures get the reassurance
+  // classification. Unknown storage failures (e.g. I/O errors) fall through
+  // to 'unknown' — the copy must not promise the data is safe (Sourcery:
+  // "Storage damage gets reassurance").
+  if (TRANSIENT_ERROR_PATTERNS.some((p) => p.test(message))) return 'transient'
+  return 'unknown'
 }
 
 /**

@@ -29,8 +29,16 @@ vi.mock('@/i18n', () => ({
       'app.initFailed': 'Initialization failed',
       'app.retry': 'Retry',
       'app.projectsInitErrorHint': 'Your projects are safe',
+      'app.projectsInitUnknownHint': 'Unexpected storage error — data safety unconfirmed',
       'app.projectsInitCorruptionHint': 'Possible data problem',
       'app.projectsInitRetrying': 'Retrying...',
+      'projectHome.sidebar.runDiagnostics': 'Run Diagnostics',
+      'projectHome.dialogs.diagnosticsInProgress': 'Running…',
+      'projectHome.dialogs.diagnosticsRunning': 'Collecting diagnostic information...',
+      'projectHome.dialogs.diagnosticsFailed': 'Diagnostics failed',
+      'projectHome.dialogs.copyReport': 'Copy Report',
+      'projectHome.dialogs.copied': 'Copied',
+      'common.close': 'Close',
     }
     let text = messages[key] ?? key
     if (params) {
@@ -54,7 +62,7 @@ import { useProjectStore } from '@/store/project.store'
 
 function setupStore(opts: {
   initError: string | null
-  initErrorKind?: 'transient' | 'corruption'
+  initErrorKind?: 'transient' | 'corruption' | 'unknown'
   initialized?: boolean
   isLoading?: boolean
   initializingRetry?: boolean
@@ -139,6 +147,45 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('Possible data problem')
     expect(alert).not.toHaveTextContent('Your projects are safe')
+  })
+
+  it('shows neutral (non-reassuring) copy for unknown-classified init errors', () => {
+    // Sourcery round 2 ("Storage damage gets reassurance"): an unclassified
+    // storage failure (e.g. I/O error) must not claim the projects are safe.
+    setupStore({ initError: 'Storage I/O error', initErrorKind: 'unknown' })
+
+    render(<ProjectHomeView />)
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Unexpected storage error — data safety unconfirmed')
+    expect(alert).not.toHaveTextContent('Your projects are safe')
+  })
+
+  it('keeps Diagnostics reachable while the init-error banner is shown', async () => {
+    // Sourcery round 2 ("Diagnostics become inaccessible"): when init fails,
+    // the banner replaces ProjectHome — and with it the settings drawer that
+    // hosts the Diagnostics entry. The banner itself must expose a Diagnostics
+    // action so the user can still generate and copy the report.
+    const user = userEvent.setup()
+    const diagnosticsSpy = vi
+      .spyOn(await import('@/storage/diagnostics'), 'runDiagnostics')
+      .mockResolvedValue({
+        markdown: '# Diagnostic Report\n\nok',
+        sections: [],
+      } as never)
+    setupStore({ initError: 'database file is corrupt', initErrorKind: 'corruption' })
+
+    render(<ProjectHomeView />)
+
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Run Diagnostics' }))
+
+    await waitFor(() => expect(diagnosticsSpy).toHaveBeenCalledTimes(1))
+    // The report becomes copyable so it can be attached to a bug report.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Copy Report' })).toBeEnabled()
+    )
   })
 
   it('keeps the banner (with Retrying...) visible while a retry is in flight', () => {

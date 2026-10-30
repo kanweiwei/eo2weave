@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { BrandButton } from '@creatorweave/ui'
+import { BrandButton, BrandDialog, BrandDialogBody, BrandDialogFooter } from '@creatorweave/ui'
 import { useT } from '@/i18n'
 import { useProjectStore } from '@/store/project.store'
+import { runDiagnostics, copyMarkdownToClipboard } from '@/storage/diagnostics'
 
 /**
  * Shared initialization-failure banner (issue #131).
@@ -14,9 +15,17 @@ import { useProjectStore } from '@/store/project.store'
  * workspace route stayed unusable with no error and no action (Sourcery:
  * "Workspace route stays unusable").
  *
- * Copy tone follows initErrorKind: transient failures reassure ("projects
- * are safe, retrying usually fixes it"); corruption-classified errors tell
- * the user data may be damaged and to preserve diagnostics instead.
+ * Diagnostics stay reachable (Sourcery round 2: "Diagnostics become
+ * inaccessible"): the banner carries its own Run Diagnostics action — run
+ * + copy-report dialog — so users can collect and attach the requested
+ * report even when the init failure hides the normal ProjectHome (and with
+ * it the HomeSettingsDrawer entry point).
+ *
+ * Copy tone follows initErrorKind: known transient contention failures
+ * reassure ("projects are safe, retrying usually fixes it"); corruption and
+ * UNCLASSIFIED failures get neutral, non-reassuring copy — the code has no
+ * basis to promise the data is safe (Sourcery: "Storage damage gets
+ * reassurance").
  *
  * Retry semantics (Sourcery "Retry shows a misleading empty state" +
  * "Retry can become a no-op"):
@@ -36,6 +45,10 @@ export function InitErrorBanner() {
   const initializeProjects = useProjectStore((s) => s.initialize)
 
   const [isRetrying, setIsRetrying] = useState(false)
+  const [diagOpen, setDiagOpen] = useState(false)
+  const [diagRunning, setDiagRunning] = useState(false)
+  const [diagReport, setDiagReport] = useState('')
+  const [diagCopied, setDiagCopied] = useState(false)
 
   if (!initError) return null
 
@@ -50,6 +63,38 @@ export function InitErrorBanner() {
     }
   }
 
+  const handleRunDiagnostics = async () => {
+    setDiagOpen(true)
+    setDiagRunning(true)
+    setDiagReport('')
+    setDiagCopied(false)
+    try {
+      const report = await runDiagnostics()
+      setDiagReport(report.markdown)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setDiagReport(`${t('projectHome.dialogs.diagnosticsFailed')}\n\n${detail}`)
+    } finally {
+      setDiagRunning(false)
+    }
+  }
+
+  const handleCopyReport = async () => {
+    if (!diagReport) return
+    const ok = await copyMarkdownToClipboard(diagReport)
+    if (ok) {
+      setDiagCopied(true)
+      window.setTimeout(() => setDiagCopied(false), 2000)
+    }
+  }
+
+  const hintKey =
+    initErrorKind === 'corruption'
+      ? 'app.projectsInitCorruptionHint'
+      : initErrorKind === 'transient'
+        ? 'app.projectsInitErrorHint'
+        : 'app.projectsInitUnknownHint'
+
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center bg-background px-6">
       <div
@@ -62,19 +107,54 @@ export function InitErrorBanner() {
         <p className="mb-1 break-words text-sm text-muted-foreground">
           {initError}
         </p>
-        <p className="mb-5 text-sm text-muted-foreground">
-          {initErrorKind === 'corruption'
-            ? t('app.projectsInitCorruptionHint')
-            : t('app.projectsInitErrorHint')}
-        </p>
-        <BrandButton
-          variant="primary"
-          onClick={() => void handleRetry()}
-          disabled={busy}
-        >
-          {busy ? t('app.projectsInitRetrying') : t('app.retry')}
-        </BrandButton>
+        <p className="mb-5 text-sm text-muted-foreground">{t(hintKey)}</p>
+        <div className="flex flex-col items-center gap-2">
+          <BrandButton
+            variant="primary"
+            onClick={() => void handleRetry()}
+            disabled={busy}
+          >
+            {busy ? t('app.projectsInitRetrying') : t('app.retry')}
+          </BrandButton>
+          <BrandButton
+            variant="outline"
+            onClick={() => void handleRunDiagnostics()}
+            disabled={diagRunning}
+          >
+            {diagRunning
+              ? t('projectHome.dialogs.diagnosticsInProgress')
+              : t('projectHome.sidebar.runDiagnostics')}
+          </BrandButton>
+        </div>
       </div>
+
+      {/* Run-diagnostics report dialog (Sourcery: keep Diagnostics reachable
+          even when the init failure hides the settings drawer). */}
+      <BrandDialog open={diagOpen} onOpenChange={setDiagOpen}>
+        <BrandDialogBody>
+          {diagRunning ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              {t('projectHome.dialogs.diagnosticsRunning')}
+            </p>
+          ) : (
+            <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed text-secondary">
+              {diagReport}
+            </pre>
+          )}
+        </BrandDialogBody>
+        <BrandDialogFooter>
+          <BrandButton variant="ghost" onClick={() => setDiagOpen(false)} disabled={diagRunning}>
+            {t('common.close')}
+          </BrandButton>
+          <BrandButton
+            variant="primary"
+            onClick={() => void handleCopyReport()}
+            disabled={diagRunning || !diagReport}
+          >
+            {diagCopied ? t('projectHome.dialogs.copied') : t('projectHome.dialogs.copyReport')}
+          </BrandButton>
+        </BrandDialogFooter>
+      </BrandDialog>
     </div>
   )
 }

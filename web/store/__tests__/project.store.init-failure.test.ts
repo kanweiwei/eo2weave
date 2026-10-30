@@ -5,8 +5,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // ProjectManager (OPFS), and — on the success path — agent stores via
 // dynamic import. Only the repository matters for these tests.
 
-const findAllProjects = vi.fn()
-const findProjectStats = vi.fn()
+const {
+  findAllProjects,
+  findProjectStats,
+} = vi.hoisted(() => ({
+  findAllProjects: vi.fn(),
+  findProjectStats: vi.fn(),
+}))
 
 vi.mock('@/sqlite/repositories/project.repository', () => ({
   DEFAULT_PROJECT_ID: 'default-project',
@@ -60,8 +65,23 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
     expect(state.initialized).toBe(false)
     expect(state.error).toBe('OPFS pool busy')
     expect(state.initError).toBe('OPFS pool busy')
+    // Known retryable-contention signature → reassurance classification.
     expect(state.initErrorKind).toBe('transient')
     expect(state.isLoading).toBe(false)
+  })
+
+  it('classifies unrecognizable storage failures as kind:"unknown" (no reassurance)', async () => {
+    // Sourcery round 2 ("Storage damage gets reassurance"): an I/O error or
+    // any unrecognized storage failure must NOT get the transient
+    // "projects are safe, retrying usually fixes it" classification — the
+    // code has no basis to promise the data is safe.
+    findAllProjects.mockRejectedValue(new Error('Storage I/O error'))
+
+    await useProjectStore.getState().initialize()
+
+    const state = useProjectStore.getState()
+    expect(state.initError).toBe('Storage I/O error')
+    expect(state.initErrorKind).toBe('unknown')
   })
 
   it('classifies corruption-class errors as kind:"corruption"', async () => {
@@ -76,7 +96,7 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
   })
 
   it('retries the full init when initialize() runs again after a failure', async () => {
-    findAllProjects.mockRejectedValueOnce(new Error('transient'))
+    findAllProjects.mockRejectedValueOnce(new Error('opfs pool busy'))
     await useProjectStore.getState().initialize()
     expect(useProjectStore.getState().initialized).toBe(false)
 
@@ -124,7 +144,7 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
   })
 
   it('clears the persisted failure record after a successful init', async () => {
-    findAllProjects.mockRejectedValueOnce(new Error('transient'))
+    findAllProjects.mockRejectedValueOnce(new Error('opfs pool busy'))
     await useProjectStore.getState().initialize()
     expect(
       sessionStorage.getItem('creatorweave:project-store-init-error')

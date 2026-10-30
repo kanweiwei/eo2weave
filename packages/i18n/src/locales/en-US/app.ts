@@ -10,6 +10,8 @@ export const app = {
     retry: "Retry",
     projectsInitErrorHint:
       "Your projects are safe — local storage could not be opened this time. Retrying usually fixes it.",
+    projectsInitUnknownHint:
+      "Local storage reported an unexpected error. Your projects may be unaffected, but we can't confirm that — run Diagnostics and retry; if the problem persists, attach the report to a bug report.",
     projectsInitCorruptionHint:
       "Local storage reported a possible data problem. Your projects may not open correctly — avoid clearing browser data and run Diagnostics so the report can be attached to a bug report.",
     projectsInitRetrying: "Retrying...",
