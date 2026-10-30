@@ -7,6 +7,10 @@ export const app = {
     productName: "EO2Weave",
     initComplete: "초기화 완료",
     initFailed: "초기화 실패",
+    retry: "재시도",
+    projectsInitErrorHint:
+      "프로젝트 데이터는 안전합니다. 이번에는 로컬 저장소를 열 수 없었으며, 보통 재시도하면 복구됩니다.",
+    projectsInitRetrying: "재시도 중...",
     sessionStorageOnly:
       "데이터는 현재 세션에만 저장되며, 새로고침 시 사라집니다",
     localStorageMode: "로컬 스토리지 모드 사용 중",

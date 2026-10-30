@@ -7,6 +7,10 @@ export const app = {
     productName: "EO2Weave",
     initComplete: "初期化完了",
     initFailed: "初期化に失敗しました",
+    retry: "再試行",
+    projectsInitErrorHint:
+      "プロジェクトデータは安全です。今回はローカルストレージを開けませんでした。再試行で通常は復旧します。",
+    projectsInitRetrying: "再試行中...",
     sessionStorageOnly:
       "データは現在のセッションのみ保存され、更新時に失われます",
     localStorageMode: "ローカルストレージモードを使用中",

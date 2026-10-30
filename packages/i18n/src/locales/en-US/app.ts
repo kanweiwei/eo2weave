@@ -7,6 +7,10 @@ export const app = {
     productName: "EO2Weave",
     initComplete: "Initialization complete",
     initFailed: "Initialization failed",
+    retry: "Retry",
+    projectsInitErrorHint:
+      "Your projects are safe — local storage could not be opened this time. Retrying usually fixes it.",
+    projectsInitRetrying: "Retrying...",
     sessionStorageOnly:
       "Data is saved for current session only, will be lost on refresh",
     localStorageMode: "Using local storage mode",

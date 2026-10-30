@@ -7,6 +7,10 @@ export const app = {
     productName: "怡氧知知",
     initComplete: "初始化完成",
     initFailed: "初始化失败",
+    retry: "重试",
+    projectsInitErrorHint:
+      "你的项目数据是安全的——本次本地存储未能打开，通常重试即可恢复。",
+    projectsInitRetrying: "重试中...",
     sessionStorageOnly: "数据仅在当前会话保存，刷新后将丢失",
     localStorageMode: "使用本地存储模式",
     migrationInProgress: "正在迁移数据",
