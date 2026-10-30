@@ -138,6 +138,12 @@ const ENTRY = {
 describe('SkillInstallPage (issue #126)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // clearAllMocks keeps implementations — reset the registration cache
+    // explicitly so tests start with an EMPTY manager (leftover
+    // mockReturnValue from an earlier test would make the already-installed
+    // flow skip its refresh-on-miss).
+    getSkillsMock.mockReset()
+    getSkillsMock.mockReturnValue([])
     projectState.initialized = true
     projectState.activeProjectId = 'proj-1'
     projectState.projects = []
@@ -335,19 +341,101 @@ describe('SkillInstallPage (issue #126)', () => {
     inputDraftPeekMock.mockReturnValue(null)
   })
 
-  it('idempotent for installed skills: no re-install, "already installed" badge', async () => {
+  it('idempotent for installed skills: no re-install, "already installed" badge, registration verified', async () => {
     scanInstalledDirNamesMock.mockResolvedValue(new Set([ENTRY.dirName]))
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
 
-    // The single click (start) runs readiness only — never a re-install.
+    // The single click (start) verifies registration (refresh-on-miss) and
+    // runs readiness — never a re-install.
     fireEvent.click(screen.getByText('skillInstall.starting'))
-    await waitFor(() => expect(checkAiReadinessMock).toHaveBeenCalled())
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     expect(installSkillFromUrlMock).not.toHaveBeenCalled()
-    expect(refreshUserSkillsMock).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(checkAiReadinessMock).toHaveBeenCalled()
+    })
     await waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1/workspaces/recent-conv')
     })
+  })
+
+  it('already-installed flow aborts with registerFailed when the skill never registers', async () => {
+    // Fresh session: the manager cache stays empty even after the refresh —
+    // navigation with a dead slash command must NOT happen.
+    scanInstalledDirNamesMock.mockResolvedValue(new Set([ENTRY.dirName]))
+    // refreshUserSkills "succeeds" but the scan failed silently — the skill
+    // never appears in getSkills() even at resolution time.
+    refreshUserSkillsMock.mockImplementation(async () => {
+      getSkillsMock.mockReturnValue([])
+    })
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.starting'))
+    await waitFor(() => expect(screen.getByText('skillInstall.registerFailed')).toBeInTheDocument())
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    expect(installSkillFromUrlMock).not.toHaveBeenCalled()
+  })
+
+  it('normalizes user: skill IDs in the installed-dir fallback (installed skills appear installed)', async () => {
+    // The store fallback (OPFS scan failed) returns skill IDs, not dirNames.
+    scanInstalledDirNamesMock.mockResolvedValue(new Set([`user:${ENTRY.dirName}`]))
+    // getSkills reports the skill as registered so the flow can proceed.
+    getSkillsMock.mockReturnValue([{ id: `user:${ENTRY.dirName}`, source: 'user' }])
+    render(<SkillInstallPage />)
+    // With normalization the badge shows; without it the page would render
+    // the install button (treating a skill that IS installed as missing).
+    await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
+  })
+
+  it('resets a stale credit warning when the skill param changes', async () => {
+    checkAiReadinessMock.mockResolvedValue({ ready: true, creditExhausted: true })
+    const { rerender } = render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
+    await waitFor(() => expect(screen.getByText('skillInstall.creditExhausted')).toBeInTheDocument())
+
+    // Visitor changes the skill query → new entry loads; the OLD credit
+    // warning must not linger on the new details view.
+    checkAiReadinessMock.mockResolvedValue({ ready: true, creditExhausted: false })
+    searchParamsMock.mockReturnValue(new URLSearchParams('skill=other-skill'))
+    fetchSkillStoreManifestMock.mockResolvedValue({
+      skills: [{ ...ENTRY, dirName: 'other-skill', name: 'other-skill', zipUrl: '/skills/other-skill.zip' }],
+    })
+    // A search-param change only reaches the component on a re-render.
+    rerender(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('other-skill')).toBeInTheDocument())
+    expect(screen.queryByText('skillInstall.creditExhausted')).not.toBeInTheDocument()
+  })
+
+  it('invalidates the pending flow when the prompt param changes (no stale-prefill navigation)', async () => {
+    let resolveInstall!: () => void
+    installSkillFromUrlMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveInstall = () => resolve({ count: 4, manifest: ENTRY })
+      }),
+    )
+    const { rerender } = render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => expect(installSkillFromUrlMock).toHaveBeenCalled())
+
+    // The prompt param changes while the install is pending: the OLD flow
+    // must abandon (no navigation, no stale prefill draft).
+    searchParamsMock.mockReturnValue(
+      new URLSearchParams('skill=cw-legal-evidence-chain&prompt=new-question'),
+    )
+    rerender(<SkillInstallPage />)
+    resolveInstall()
+    await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+    ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
+    // Registration refresh for the abandoned flow still ran (defensive),
+    // but navigation must NOT: the flow belongs to the old generation.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+    expect(saveDraftMock).not.toHaveBeenCalled()
   })
 
   it('prompt param is appended to the prefill', async () => {

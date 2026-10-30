@@ -120,11 +120,15 @@ function SkillInstallView() {
     setErrorMessage(null)
     setEntry(null)
     setAlreadyInstalled(false)
-    // The cached readiness verdict belongs to the PREVIOUS skill: without
-    // this reset, a changed `skill` query would take runAiReadiness's
+    // Stale UI flags from the PREVIOUS skill: the cached readiness verdict
+    // and the zero-credit warning both belong to the old entry. Without
+    // this reset, a changed `skill` query would (a) take runAiReadiness's
     // fast path and never re-check current credentials (a visitor who
-    // since logged out would skip the required login step).
+    // since logged out would skip the required login step), and (b) keep
+    // rendering the old skill's credit warning on the new details view
+    // before the new readiness check runs.
     readinessDoneRef.current = false
+    setCreditExhausted(false)
     if (!skillParam) {
       setErrorKind('missing-param')
       setPhase('error')
@@ -153,7 +157,16 @@ function SkillInstallView() {
       const installed = await scanInstalledDirNames()
       if (isStale()) return
       setEntry(found)
-      setAlreadyInstalled(installed.has(found.dirName))
+      // The fallback set contains skill IDs (`user:<dirName>`), not bare
+      // directory names — normalise before the membership check, or a skill
+      // that IS installed looks uninstalled when OPFS scanning failed and
+      // the page offers a second install that would overwrite it.
+      const installedDirNames = new Set(
+        [...installed].map((idOrDir) =>
+          idOrDir.startsWith('user:') ? idOrDir.slice('user:'.length) : idOrDir,
+        ),
+      )
+      setAlreadyInstalled(installedDirNames.has(found.dirName))
       setPhase('details')
     } catch (e) {
       if (isStale()) return
@@ -354,25 +367,6 @@ function SkillInstallView() {
           throw new Error(t('skillInstall.registerFailed'))
         }
         outcome = { alreadyInstalled: false }
-      } else {
-        // "Already installed" (the dir was seen in the load scan) does NOT
-        // imply the skill is REGISTERED in this tab: the SkillManager cache
-        // is populated by an OPFS rescan that may not have run here yet
-        // (e.g. the install happened in another tab, or the scan failed
-        // earlier). Verify registration and refresh-on-miss so the flow
-        // never navigates with a slash command that has nothing behind it.
-        const manager = getSkillManager()
-        const isRegistered = () =>
-          manager
-            .getSkills()
-            .some((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
-        if (!isRegistered()) {
-          await manager.refreshUserSkills()
-          if (isStale()) return
-          if (!isRegistered()) {
-            throw new Error(t('skillInstall.registerFailed'))
-          }
-        }
       }
       setAlreadyInstalled(true)
       setInstallProgress(null)
@@ -394,6 +388,32 @@ function SkillInstallView() {
   // list and create duplicate conversations.
   const startingRef = useRef(false)
 
+  /**
+   * The already-installed flow must never navigate with an unregistered
+   * slash command: "the dir was seen in the load scan" does NOT imply the
+   * skill is registered in THIS tab — the SkillManager cache is populated
+   * by an OPFS rescan that may not have run here yet (the install happened
+   * in another tab, the scan failed earlier, or this is a fresh session
+   * where SkillManager.initialize() has not completed). Verify
+   * registration, refresh-on-miss, and abort if the skill still is not
+   * registered — the command the visitor is about to send must have
+   * something behind it.
+   */
+  const ensureRegistered = useCallback(
+    async (dirName: string, isStale: () => boolean): Promise<boolean> => {
+      const manager = getSkillManager()
+      const isRegistered = () =>
+        manager
+          .getSkills()
+          .some((s) => s.source === 'user' && s.id === `user:${dirName}`)
+      if (isRegistered()) return true
+      await manager.refreshUserSkills()
+      if (isStale()) return false
+      return isRegistered()
+    },
+    [],
+  )
+
   // "Already installed" path skips straight past install + login checks
   // (the acceptance criteria: returning users are done in 2 clicks) — but
   // still runs readiness so a since-logged-out visitor gets the login step.
@@ -409,11 +429,20 @@ function SkillInstallView() {
       // CURRENT entry — stamp its generation so the readiness/navigation
       // gates below compare against this click, not an older install.
       installGenerationRef.current = currentGeneration()
+      const installGeneration = installGenerationRef.current
+      if (
+        !(await ensureRegistered(entry.dirName, () => currentGeneration() !== installGeneration))
+      ) {
+        if (currentGeneration() !== installGeneration) return
+        setErrorMessage(t('skillInstall.registerFailed'))
+        setPhase('details')
+        return
+      }
       await runAiReadiness()
     } finally {
       startingRef.current = false
     }
-  }, [alreadyInstalled, entry, runAiReadiness, runInstall])
+  }, [alreadyInstalled, ensureRegistered, entry, runAiReadiness, runInstall, t])
 
   const handleLoginSuccess = useCallback(async () => {
     setCreditExhausted(false)

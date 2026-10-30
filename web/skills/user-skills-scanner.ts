@@ -97,9 +97,39 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
   const unzipper = new Unzip()
   unzipper.register(UnzipInflate)
   unzipper.onfile = (file) => {
-    // Directory entries carry no data.
+    // Directory entries carry no payload in practice, but a crafted archive
+    // can attach data to them (or ship an enormous number of them) — count
+    // them against MAX_ENTRIES and enforce the size caps on their decoded
+    // output before discarding it.
     if (file.name.endsWith('/')) {
-      file.ondata = () => {}
+      entryCount++
+      if (entryCount > limits.MAX_ENTRIES) {
+        failure = new Error(
+          `ZIP archive has too many entries (limit: ${limits.MAX_ENTRIES}).`,
+        )
+        file.terminate()
+        return
+      }
+      let dirEntrySize = 0
+      file.ondata = (err, data) => {
+        if (err) {
+          failure = err instanceof Error ? err : new Error(String(err))
+          return
+        }
+        if (failure) return
+        totalSize += data.length
+        dirEntrySize += data.length
+        if (
+          dirEntrySize > limits.MAX_ENTRY_SIZE ||
+          totalSize > limits.MAX_TOTAL_SIZE
+        ) {
+          failure = new Error(
+            'ZIP archive expands beyond the import size limit — it may be a decompression bomb.',
+          )
+          return
+        }
+        // Decoded directory payload is discarded (not buffered).
+      }
       file.start()
       return
     }
@@ -200,6 +230,71 @@ async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
  * not break the scan. (A concurrent import in ANOTHER tab is not fenced —
  * same pre-existing limitation as the import itself.)
  */
+/**
+ * Import-backup run bookkeeping (see `importUserSkillZip`):
+ *  - `<dirName>.done` marker file: that skill's backup was FULLY staged and
+ *    its target directory removed — only marked entries are ever restored.
+ *  - `state.json` with status `import-complete`: the import finished
+ *    successfully but its cleanup crashed — recovery must DROP the backups
+ *    (restoring them would revert a good import).
+ *  - `state.json` with status `failed-rollback`: rollback ran but some
+ *    restores failed — recovery must (re)try the marked restores.
+ *  - No state file: staging or the import was interrupted — restore the
+ *    marked entries (their targets were removed) and drop the rest.
+ */
+const RUN_STATE_FILE = 'state.json'
+
+type ImportRunState = {
+  status: 'import-complete' | 'failed-rollback'
+}
+
+/** Read a run's state.json; null when absent/unparseable. */
+async function readImportRunState(
+  runDir: FileSystemDirectoryHandle,
+): Promise<ImportRunState | null> {
+  try {
+    const handle = await runDir.getFileHandle(RUN_STATE_FILE)
+    const file = await handle.getFile()
+    const text = await file.text()
+    const parsed = JSON.parse(text) as Partial<ImportRunState>
+    if (parsed.status === 'import-complete' || parsed.status === 'failed-rollback') {
+      return { status: parsed.status }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function writeImportRunState(
+  runDir: FileSystemDirectoryHandle,
+  state: ImportRunState,
+): Promise<void> {
+  const handle = await runDir.getFileHandle(RUN_STATE_FILE, { create: true })
+  const writable = await handle.createWritable()
+  await writable.write(JSON.stringify(state))
+  await writable.close()
+}
+
+/** Marker written after a skill's backup is fully staged AND its target removed. */
+const stagedMarkerName = (dirName: string): string => `${dirName}.done`
+
+async function markStaged(runDir: FileSystemDirectoryHandle, dirName: string): Promise<void> {
+  const handle = await runDir.getFileHandle(stagedMarkerName(dirName), { create: true })
+  const writable = await handle.createWritable()
+  await writable.write('1')
+  await writable.close()
+}
+
+async function isStagedMarked(runDir: FileSystemDirectoryHandle, dirName: string): Promise<boolean> {
+  try {
+    await runDir.getFileHandle(stagedMarkerName(dirName))
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function recoverAbandonedImportBackups(): Promise<void> {
   let backupsRoot: FileSystemDirectoryHandle
   let userDir: FileSystemDirectoryHandle
@@ -225,21 +320,44 @@ async function recoverAbandonedImportBackups(): Promise<void> {
   for (const runId of runIds) {
     try {
       const runDir = await backupsRoot.getDirectoryHandle(runId)
+      const state = await readImportRunState(runDir)
+      if (state?.status === 'import-complete') {
+        // The import finished successfully; only its cleanup crashed.
+        // Restoring the backups would REVERT the good import — drop them.
+        await backupsRoot.removeEntry(runId, { recursive: true })
+        continue
+      }
+      // Interrupted staging / import, or a failed rollback: restore only the
+      // MARKED staged entries (a `<dirName>.done` marker proves that backup
+      // was fully staged AND its target removed). Unmarked staged dirs belong
+      // to targets that were never removed — restoring their possibly PARTIAL
+      // contents would overwrite an intact skill, so they are dropped.
       const stagedNames: string[] = []
       for await (const [name, entry] of runDir.entries()) {
         if (entry.kind === 'directory') stagedNames.push(name)
       }
+      let restoredAll = true
       for (const dirName of stagedNames) {
-        const stagedDir = await runDir.getDirectoryHandle(dirName)
-        const files = await readStagedBackup(stagedDir)
-        if (Object.keys(files).length === 0) continue
-        await restoreUserSkillDir(userDir, dirName, files)
-        console.log(
-          `[UserSkillsScanner] Restored skill "${dirName}" from abandoned import backup (run ${runId}).`,
-        )
+        if (!(await isStagedMarked(runDir, dirName))) continue
+        try {
+          const stagedDir = await runDir.getDirectoryHandle(dirName)
+          const files = await readStagedBackup(stagedDir)
+          if (Object.keys(files).length === 0) continue
+          await restoreUserSkillDir(userDir, dirName, files)
+          console.log(
+            `[UserSkillsScanner] Restored skill "${dirName}" from abandoned import backup (run ${runId}).`,
+          )
+        } catch (restoreErr) {
+          restoredAll = false
+          console.warn(
+            `[UserSkillsScanner] Failed to restore "${dirName}" from abandoned import backup run ${runId}:`,
+            restoreErr,
+          )
+        }
       }
-      // Fully recovered (or empty) — drop the run directory.
-      await backupsRoot.removeEntry(runId, { recursive: true })
+      if (restoredAll) {
+        await backupsRoot.removeEntry(runId, { recursive: true })
+      }
     } catch (e) {
       // Leave this run's backup in place — the next scan retries recovery.
       console.warn(
@@ -954,12 +1072,66 @@ export async function importUserSkillZip(
 
   if (skills.length === 0) return 0
 
+  // A bundle whose SKILL.md files live under different paths but collapse to
+  // the SAME final folder name would funnel every entry into one target
+  // directory: later entries overwrite matching files while files unique to
+  // earlier entries survive — an incoherent merge of distinct skills. Reject
+  // the bundle before ANY staging/writing.
+  const seenDirNames = new Set<string>()
+  for (const s of skills) {
+    if (seenDirNames.has(s.dirName)) {
+      throw new Error(
+        `ZIP bundle contains duplicate skill folders ("${s.dirName}") — each skill must live in its own folder.`,
+      )
+    }
+    seenDirNames.add(s.dirName)
+  }
+
   const opfsRoot = await navigator.storage.getDirectory()
   const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
   const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
   const backupsRoot = await skillsDir.getDirectoryHandle(IMPORT_BACKUPS_DIR, { create: true })
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const runDir = await backupsRoot.getDirectoryHandle(runId, { create: true })
+
+  // Aggregate size of an existing skill BEFORE reading it into memory: a
+  // huge installed tree (grown outside the import pipeline) must not be
+  // buffered wholesale for backup — the incoming ZIP's caps say nothing
+  // about the size of the skill it overwrites. Skills beyond the same
+  // aggregate cap cannot be backed up safely and the import aborts before
+  // touching anything.
+  const backupSizeOf = async (dirName: string): Promise<number | null> => {
+    let skillDir: FileSystemDirectoryHandle
+    try {
+      skillDir = await userDir.getDirectoryHandle(dirName)
+    } catch (e) {
+      if (isNotFoundError(e)) return null
+      throw e
+    }
+    let total = 0
+    let count = 0
+    const measure = async (dir: FileSystemDirectoryHandle): Promise<void> => {
+      for await (const [, entry] of dir.entries()) {
+        if (entry.kind === 'directory') {
+          await measure(await dir.getDirectoryHandle(entry.name))
+          continue
+        }
+        const file = await (entry as FileSystemFileHandle).getFile()
+        total += file.size
+        count++
+        if (
+          total > ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE ||
+          count > ZIP_IMPORT_LIMITS.MAX_ENTRIES
+        ) {
+          throw new Error(
+            `Existing skill "${dirName}" exceeds the backup size limit (${total} bytes) — refusing to overwrite it.`,
+          )
+        }
+      }
+    }
+    await measure(skillDir)
+    return total
+  }
 
   // Stage 1: back up every target directory that already exists — staged
   // DURABLY under .skills/.import-backups/<runId>/ — then remove it so
@@ -972,10 +1144,11 @@ export async function importUserSkillZip(
     for (const s of skills) {
       // Throws on a real read failure — absence (NotFoundError) returns
       // null and is the only "no backup needed" signal.
-      const existing = await readUserSkillDir(userDir, s.dirName)
-      if (existing) {
+      const existingSize = await backupSizeOf(s.dirName)
+      if (existingSize !== null) {
+        const existing = await readUserSkillDir(userDir, s.dirName)
         const stagedDir = await runDir.getDirectoryHandle(s.dirName, { create: true })
-        await writeSkillFiles(stagedDir, existing)
+        await writeSkillFiles(stagedDir, existing!)
         backedUp.add(s.dirName)
         try {
           await userDir.removeEntry(s.dirName, { recursive: true })
@@ -983,44 +1156,48 @@ export async function importUserSkillZip(
         } catch {
           // Nothing to remove — fine.
         }
+        // Only NOW is this skill's backup complete and its target gone:
+        // the marker is what lets recovery restore this entry (and ONLY
+        // this entry) if the tab dies before the import finishes.
+        await markStaged(runDir, s.dirName)
       }
     }
   } catch (e) {
-    // Backup staging failed. Nothing removed yet is fine (runDir is empty
-    // and can go), but if some targets were ALREADY staged+removed before
-    // the failure they must be restored first — deleting the run dir now
-    // would permanently destroy the only backup of those skills.
-    if (preRemoved.size === 0) {
-      try {
-        await backupsRoot.removeEntry(runId, { recursive: true })
-      } catch {
-        // Cleanup best-effort.
-      }
-      throw e
-    }
-    let restoredAll = true
-    for (const dirName of preRemoved) {
-      if (!backedUp.has(dirName)) continue
+    // Backup staging failed midway: earlier targets of THIS run may already
+    // be staged-AND-removed — restore each of them NOW from its staged
+    // backup so the on-disk state matches the pre-import state, then clean
+    // up. A restore that fails keeps the run directory (markers + staged
+    // copies intact) for the next scan's recovery instead of deleting the
+    // only remaining backup.
+    const restoreFailures: string[] = []
+    for (const dirName of backedUp) {
       try {
         const stagedDir = await runDir.getDirectoryHandle(dirName)
         const files = await readStagedBackup(stagedDir)
-        await restoreUserSkillDir(userDir, dirName, files)
+        if (Object.keys(files).length > 0) {
+          await restoreUserSkillDir(userDir, dirName, files)
+        }
       } catch (restoreErr) {
-        restoredAll = false
+        restoreFailures.push(dirName)
         console.warn(
           `[UserSkillsScanner] Failed to restore ${dirName} after staging failure:`,
           restoreErr,
         )
       }
     }
-    // Keep the staged backups when any restore failed — the next scan's
-    // recoverAbandonedImportBackups() retries them. Deleting here would
-    // lose the user's existing skills for good.
-    if (restoredAll) {
+    if (restoreFailures.length === 0) {
       try {
         await backupsRoot.removeEntry(runId, { recursive: true })
       } catch {
         // Cleanup best-effort.
+      }
+    } else {
+      try {
+        await writeImportRunState(runDir, { status: 'failed-rollback' })
+      } catch {
+        // State is best-effort: the markers remain either way, and an
+        // interrupted import restores marked entries, so recovery still
+        // retries the failed restores.
       }
     }
     throw e
@@ -1049,9 +1226,18 @@ export async function importUserSkillZip(
       total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
       written.add(s.dirName)
     }
-    // Success: the staged backups are no longer needed. Cleanup is
-    // best-effort — a leftover staging dir must never turn a successful
-    // import into a rollback.
+    // Success: the staged backups are no longer needed. Mark the run
+    // import-complete FIRST (best-effort) so a cleanup crash can never make
+    // recovery restore backups over the freshly installed skills, then
+    // remove the staging directory.
+    try {
+      await writeImportRunState(runDir, { status: 'import-complete' })
+    } catch (stateErr) {
+      console.warn(
+        `[UserSkillsScanner] Failed to mark run ${runId} import-complete:`,
+        stateErr,
+      )
+    }
     try {
       await backupsRoot.removeEntry(runId, { recursive: true })
     } catch (cleanupErr) {
@@ -1072,7 +1258,7 @@ export async function importUserSkillZip(
       const files = await readStagedBackup(stagedDir)
       await restoreUserSkillDir(userDir, dirName, files)
     }
-    let restoredAll = true
+    const rollbackFailures: string[] = []
     for (const dirName of written) {
       try {
         if (await hasStagedBackup(dirName)) {
@@ -1081,7 +1267,7 @@ export async function importUserSkillZip(
           await userDir.removeEntry(dirName, { recursive: true })
         }
       } catch (restoreErr) {
-        restoredAll = false
+        rollbackFailures.push(dirName)
         console.warn(
           `[UserSkillsScanner] Failed to roll back ${dirName}:`,
           restoreErr,
@@ -1102,29 +1288,41 @@ export async function importUserSkillZip(
           await userDir.removeEntry(s.dirName, { recursive: true })
         }
       } catch (restoreErr) {
-        restoredAll = false
+        rollbackFailures.push(s.dirName)
         console.warn(
           `[UserSkillsScanner] Failed to roll back untouched skill ${s.dirName}:`,
           restoreErr,
         )
       }
     }
-    // Rollback done (best-effort). Only clean up the staged run directory
-    // when EVERY restore succeeded — a failed restore must leave the backup
-    // in place so the next scan's recoverAbandonedImportBackups() retries
-    // it; deleting here would make the loss permanent.
-    if (restoredAll) {
+    if (rollbackFailures.length > 0) {
+      // The staged backups are the ONLY remaining copy of those skills.
+      // Keep the run directory and mark it failed-rollback: the next
+      // scan's recovery retries the restores from disk. Deleting the run
+      // directory here would destroy the user's skills permanently.
       try {
-        await backupsRoot.removeEntry(runId, { recursive: true })
-      } catch (cleanupErr) {
+        await writeImportRunState(runDir, { status: 'failed-rollback' })
+      } catch (stateErr) {
         console.warn(
-          `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
-          cleanupErr,
+          `[UserSkillsScanner] Failed to persist rollback-failure state for run ${runId}:`,
+          stateErr,
         )
       }
-    } else {
+      console.error(
+        `[UserSkillsScanner] Rollback failed for: ${rollbackFailures.join(', ')} — the previous versions will be restored on the next scan.`,
+      )
+      // The staged backups are the only remaining copy of the failed
+      // restores — keep the run directory (return instead of falling
+      // through to the cleanup below).
+      throw e
+    }
+    // Rollback fully succeeded — clean up the staged run directory.
+    try {
+      await backupsRoot.removeEntry(runId, { recursive: true })
+    } catch (cleanupErr) {
       console.warn(
-        `[UserSkillsScanner] Kept import backup staging ${runId} — some skills could not be rolled back and will be recovered on the next scan.`,
+        `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
+        cleanupErr,
       )
     }
     throw e
@@ -1144,6 +1342,12 @@ async function readUserSkillDir(
   userDir: FileSystemDirectoryHandle,
   dirName: string,
 ): Promise<Record<string, Uint8Array> | null> {
+  // Aggregate cap for the existing tree being read into memory: an
+  // overwrite-import only promises the INCOMING zip is within limits — the
+  // skill it replaces may have grown beyond them (e.g. hand-edited). Buffer
+  // such a tree wholesale and memory is gone before any cap applies.
+  let totalBytes = 0
+  let fileCount = 0
   const readRecursive = async (
     dirHandle: FileSystemDirectoryHandle,
     prefix: string,
@@ -1156,6 +1360,16 @@ async function readUserSkillDir(
         Object.assign(out, await readRecursive(sub, path))
       } else {
         const file = await (entry as FileSystemFileHandle).getFile()
+        totalBytes += file.size
+        fileCount++
+        if (
+          totalBytes > ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE ||
+          fileCount > ZIP_IMPORT_LIMITS.MAX_ENTRIES
+        ) {
+          throw new Error(
+            `Existing skill "${dirName}" exceeds the backup size limit — refusing to read it for overwrite.`,
+          )
+        }
         out[path] = new Uint8Array(await file.arrayBuffer())
       }
     }
