@@ -222,10 +222,14 @@ function SkillInstallView() {
     // install/readiness continuation (capturing this generation) would
     // otherwise run to completion after the visitor left the page and
     // still call router.replace — redirecting them from wherever they
-    // navigated to. Bumping the generation marks every in-flight flow
-    // stale; a remount's loadEntry() re-bumps it for the new visit.
+    // navigated to. Capturing the generation in a local (the ref value at
+    // cleanup time is what must be bumped); a remount's loadEntry()
+    // re-bumps it for the new visit anyway.
+    const generationAtMount = loadGenerationRef.current
     return () => {
-      loadGenerationRef.current++
+      if (loadGenerationRef.current === generationAtMount) {
+        loadGenerationRef.current++
+      }
     }
   }, [loadEntry])
 
