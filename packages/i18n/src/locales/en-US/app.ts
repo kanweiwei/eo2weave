@@ -17,6 +17,8 @@ export const app = {
     projectsInitRetrying: "Retrying...",
     sessionStorageOnly:
       "Data is saved for current session only, will be lost on refresh",
+    memoryModeWarning:
+      "Warning: running in temporary memory mode — all data will be lost when this tab closes or refreshes. Your browser cannot open persistent storage (check private-mode settings or site permissions).",
     localStorageMode: "Using local storage mode",
     migrationInProgress: "Migrating data",
     migrationComplete: "Migration complete",

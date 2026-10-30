@@ -258,12 +258,13 @@ async function bootstrapProjectOpfs(projectId: string): Promise<void> {
   if (typeof navigator === 'undefined') return
   if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') return
 
-  try {
-    const pm = await ProjectManager.create()
-    await pm.getOrCreateProjectById(projectId)
-  } catch (error) {
-    console.warn('[ProjectStore] Failed to bootstrap OPFS project:', error)
-  }
+  // Propagate failures (Sourcery: "Projects appear without storage").
+  // Swallowing them used to let initialize() mark first-run setup complete
+  // with a project whose OPFS directory was never created — the user would
+  // only discover the missing storage later, on the first write. Callers
+  // that must stay resilient wrap this call in their own try/catch.
+  const pm = await ProjectManager.create()
+  await pm.getOrCreateProjectById(projectId)
 }
 
 async function syncAgentsForProject(projectId: string): Promise<void> {

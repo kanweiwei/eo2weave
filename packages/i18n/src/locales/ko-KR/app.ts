@@ -17,6 +17,8 @@ export const app = {
     projectsInitRetrying: "재시도 중...",
     sessionStorageOnly:
       "데이터는 현재 세션에만 저장되며, 새로고침 시 사라집니다",
+    memoryModeWarning:
+      "경고: 임시 메모리 모드로 실행 중입니다. 탭을 닫거나 새로고침하면 모든 데이터가 사라집니다. 브라우저가 영구 저장소를 열 수 없습니다(시크릿 모드 설정 또는 사이트 권한을 확인하세요).",
     localStorageMode: "로컬 스토리지 모드 사용 중",
     migrationInProgress: "데이터 마이그레이션 중",
     migrationComplete: "마이그레이션 완료",

@@ -5,9 +5,11 @@ import { installAgentAbortRejectionFilter } from '@/lib/agent-abort'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast, Toaster } from 'sonner'
+import { BrandButton } from '@creatorweave/ui'
 import { UnsupportedBrowser } from '@/components/UnsupportedBrowser'
 import { applyServiceWorkerUpdate } from '@/pwa/register-service-worker'
 import { StorageLoading } from '@/components/StorageLoading'
+import { MemoryModeBanner } from '@/components/MemoryModeBanner'
 import { DatabaseRefreshDialog } from '@/components/DatabaseRefreshDialog'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
@@ -52,6 +54,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   const [canResetDatabase, setCanResetDatabase] = useState(false)
   const [isDatabaseInaccessible, setIsDatabaseInaccessible] = useState(false)
   const [inaccessibleErrorMessage, setInaccessibleErrorMessage] = useState<string | null>(null)
+  // sqlite-memory fallback is NOT a healthy success (issue #131): everything
+  // the user does is lost on refresh. Track it so a persistent degraded-mode
+  // banner stays mounted for the whole session (Sourcery: "Memory mode still
+  // succeeds").
+  const [isMemoryMode, setIsMemoryMode] = useState(false)
   const t = useT() // i18n hook
   const tRef = useRef(t)
   tRef.current = t
@@ -232,6 +239,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
 
         if (result.success) {
           if (result.mode === 'sqlite-memory') {
+            setIsMemoryMode(true)
             toast.warning(tRef.current('app.sessionStorageOnly'), {
               id: 'storage-init',
               duration: 8000,
@@ -247,17 +255,20 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         } else {
           const errorMsg = result.error || tRef.current('app.initFailed')
 
+          // Record EVERY storage failure — including database_inaccessible —
+          // before any special-case UI return, so the session diagnostics
+          // record exists even after a later successful refresh (Sourcery:
+          // "Inaccessible database errors go unrecorded"). The stack rides
+          // along from initStorage()'s failure result (Sourcery: "Startup
+          // reports omit stack traces").
+          useProjectStore.getState().reportInitFailure(errorMsg, result.errorStack)
+
           if (errorMsg.toLowerCase().includes('database_inaccessible')) {
             console.error('[App] Database inaccessible - showing refresh dialog')
             setInaccessibleErrorMessage((prev) => prev ?? errorMsg)
             setIsDatabaseInaccessible(true)
             return
           }
-
-          // Route the storage-layer failure through the project store so it
-          // gets the same banner + Retry + diagnostics flow as repository
-          // failures (Sourcery: "Worker startup failures bypass the banner").
-          useProjectStore.getState().reportInitFailure(errorMsg)
 
           const isDatabaseError =
             errorMsg.toLowerCase().includes('database') ||
@@ -284,20 +295,17 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         const errorMsg = error instanceof Error ? error.message : String(error)
         console.error('[App] Failed to initialize storage:', error)
 
+        useProjectStore.getState().reportInitFailure(
+          errorMsg,
+          error instanceof Error ? error.stack : undefined
+        )
+
         if (errorMsg.toLowerCase().includes('database_inaccessible')) {
           console.error('[App] Database inaccessible - showing refresh dialog')
           setInaccessibleErrorMessage((prev) => prev ?? errorMsg)
           setIsDatabaseInaccessible(true)
           return
         }
-
-        // Route the storage-layer failure through the project store so it
-        // gets the same banner + Retry + diagnostics flow as repository
-        // failures (Sourcery: "Worker startup failures bypass the banner").
-        useProjectStore.getState().reportInitFailure(
-          errorMsg,
-          error instanceof Error ? error.stack : undefined
-        )
 
         const isDatabaseError =
           errorMsg.toLowerCase().includes('database') ||
@@ -687,6 +695,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           isOpen={true}
           errorMessage={inaccessibleErrorMessage}
         />
+        <StorageInitDiagnosticsActions />
         <Toaster position="bottom-right" />
       </>
     )
@@ -707,6 +716,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   // Storage ready — render the app tree plus global chrome.
   return (
     <>
+      {isMemoryMode && <MemoryModeBanner />}
       {children}
       <ServiceWorkerBridge />
       <DatabaseRefreshDialog isOpen={false} errorMessage={null} />
@@ -751,6 +761,76 @@ function GatewayReloginDialogMount() {
       authState={authState}
       onClose={reset}
     />
+  )
+}
+
+/**
+ * Run-Diagnostics + Copy-Report actions for the STORAGE-FAILURE screens
+ * (StorageLoading error card / DatabaseRefreshDialog). The in-app
+ * InitErrorBanner already carries its own diagnostics actions; these render
+ * beside the pre-app gates so a failed storage init (SQLite worker, OPFS,
+ * database_inaccessible) never leaves the user without a way to collect and
+ * attach the report (Sourcery: "Storage failures lose diagnostics").
+ *
+ * The failure record itself is persisted to sessionStorage by
+ * project-store's reportInitFailure(), so the report works even if a later
+ * successful boot clears the in-memory banner state.
+ */
+function StorageInitDiagnosticsActions() {
+  const t = useT()
+  const [diagRunning, setDiagRunning] = useState(false)
+  const [diagReport, setDiagReport] = useState('')
+  const [diagCopied, setDiagCopied] = useState(false)
+
+  const handleRunDiagnostics = async () => {
+    setDiagRunning(true)
+    setDiagReport('')
+    setDiagCopied(false)
+    try {
+      const { runDiagnostics } = await import('@/storage/diagnostics')
+      const report = await runDiagnostics()
+      setDiagReport(report.markdown)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setDiagReport(`${t('projectHome.dialogs.diagnosticsFailed')}\n\n${detail}`)
+    } finally {
+      setDiagRunning(false)
+    }
+  }
+
+  const handleCopyReport = async () => {
+    if (!diagReport) return
+    const { copyMarkdownToClipboard } = await import('@/storage/diagnostics')
+    const ok = await copyMarkdownToClipboard(diagReport)
+    if (ok) {
+      setDiagCopied(true)
+      window.setTimeout(() => setDiagCopied(false), 2000)
+    }
+  }
+
+  return (
+    <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2">
+      <BrandButton
+        variant="outline"
+        onClick={() => void handleRunDiagnostics()}
+        disabled={diagRunning}
+      >
+        {diagRunning
+          ? t('projectHome.dialogs.diagnosticsInProgress')
+          : t('projectHome.sidebar.runDiagnostics')}
+      </BrandButton>
+      {diagReport && (
+        <BrandButton
+          variant="primary"
+          onClick={() => void handleCopyReport()}
+          disabled={diagRunning}
+        >
+          {diagCopied
+            ? t('projectHome.dialogs.copied')
+            : t('projectHome.dialogs.copyReport')}
+        </BrandButton>
+      )}
+    </div>
   )
 }
 

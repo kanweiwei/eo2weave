@@ -17,6 +17,8 @@ export const app = {
     projectsInitRetrying: "再試行中...",
     sessionStorageOnly:
       "データは現在のセッションのみ保存され、更新時に失われます",
+    memoryModeWarning:
+      "警告：一時的なメモリモードで動作しています。タブを閉じるか更新するとすべてのデータが失われます。ブラウザが永続ストレージを開けません（プライベートモードの設定やサイトの権限を確認してください）。",
     localStorageMode: "ローカルストレージモードを使用中",
     migrationInProgress: "データを移行中",
     migrationComplete: "移行完了",

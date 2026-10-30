@@ -186,6 +186,17 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Copy Report' })).toBeEnabled()
     )
+
+    // Sourcery round 5 ("Diagnostic reports cannot be copied"): the test must
+    // prove the Copy action actually passes the report to the clipboard —
+    // a no-op handler would otherwise still pass.
+    const copySpy = vi
+      .spyOn(await import('@/storage/diagnostics'), 'copyMarkdownToClipboard')
+      .mockResolvedValue(true)
+    await user.click(screen.getByRole('button', { name: 'Copy Report' }))
+
+    await waitFor(() => expect(copySpy).toHaveBeenCalledTimes(1))
+    expect(copySpy).toHaveBeenCalledWith('# Diagnostic Report\n\nok')
   })
 
   it('keeps the banner (with Retrying...) visible while a retry is in flight', () => {

@@ -16,6 +16,8 @@ export const app = {
       "本地存储报告了可能的数据问题，项目可能无法正常打开。请勿清除浏览器数据，并运行「诊断」生成报告，以便附在问题反馈中。",
     projectsInitRetrying: "重试中...",
     sessionStorageOnly: "数据仅在当前会话保存，刷新后将丢失",
+    memoryModeWarning:
+      "警告：当前运行在临时内存模式——关闭或刷新标签页后所有数据都会丢失。浏览器无法打开持久化存储（请检查隐私模式设置或站点权限）。",
     localStorageMode: "使用本地存储模式",
     migrationInProgress: "正在迁移数据",
     migrationComplete: "数据迁移完成",
