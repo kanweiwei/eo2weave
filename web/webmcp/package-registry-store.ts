@@ -73,6 +73,14 @@ let sessionRemoved: Set<string> | null = null
  */
 function reconcileWithPersisted(): void {
   if (!sessionAdded?.length) return
+  // Session-only mode (private browsing, quota failure): the persisted list
+  // is permanently empty, so every absent URL would look like a peer
+  // removal and our session additions would be pruned on the next read —
+  // the registry the UI just reported as added would vanish (finding:
+  // "Session-only registry disappears"). Reconciliation exists to resolve
+  // peer-tab writes; with no persistent store there are no peer writes,
+  // and the session additions are the source of truth.
+  if (!storageAvailable()) return
   const persistedUrls = new Set(readPersistedRegistries().map(entry => entry.manifestUrl))
   sessionAdded = sessionAdded.filter(entry => persistedUrls.has(entry.manifestUrl))
   if (sessionAdded.length === 0) sessionAdded = null
