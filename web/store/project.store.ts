@@ -265,6 +265,13 @@ export const useProjectStore = create<ProjectState>()(
           isLoading: false,
         })
 
+        // Success clears any failure record persisted by a previous attempt.
+        try {
+          sessionStorage.removeItem('creatorweave:project-store-init-error')
+        } catch {
+          // sessionStorage unavailable — nothing to clean up.
+        }
+
         try {
           const { useAgentStore } = await import('./agent.store')
           await useAgentStore.getState().setActiveProject(normalizedActiveProjectId)
@@ -276,15 +283,31 @@ export const useProjectStore = create<ProjectState>()(
         console.log(`[ProjectStore] initialize done (${Math.round(performance.now() - started)}ms)`)
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Failed to initialize projects'
+        // Do NOT pin `initialized: true` on failure — that would make the
+        // failure terminal for the whole session: no route change, redirect,
+        // or consumer (ProjectHomeView) would ever re-run initialize() and
+        // the projects page would stay silently blank. Leaving it false lets
+        // any subsequent initialize() call retry (issue #131).
         set({
           error: message,
-          initialized: true,
           isLoading: false,
         })
+        const detail = e instanceof Error ? (e.stack ?? message) : message
         console.error(
           `[ProjectStore] initialize failed (${Math.round(performance.now() - started)}ms):`,
-          message
+          detail
         )
+        // Persist the failure outside the console so it survives into the
+        // diagnostics report (runDiagnostics only reads console-free state)
+        // and users can attach it to bug reports even after a reload.
+        try {
+          sessionStorage.setItem(
+            'creatorweave:project-store-init-error',
+            JSON.stringify({ message, at: new Date().toISOString() })
+          )
+        } catch {
+          // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+        }
       }
     },
 
