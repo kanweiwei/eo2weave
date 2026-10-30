@@ -119,9 +119,12 @@ function sleep(ms: number): Promise<void> {
 /**
  * Serialize first-run auto-create across tabs (Sourcery: "Tabs create
  * duplicate projects"). Prefers the Web Locks API; falls back to a
- * localStorage claim+verify mutex with a TTL so browsers without Web Locks
- * still serialize (the claim window makes simultaneous inserts vanishingly
- * unlikely and the post-lock re-read heals any residual race).
+ * localStorage claim with DOUBLE verification (verify, wait, re-verify) —
+ * plain localStorage has no atomic compare-and-swap, so acquisition requires
+ * the tab's token to be observed at two separated instants. For two tabs to
+ * BOTH pass, one would have to overwrite the other in the sliver between the
+ * winner's final verification and its create — and the caller's post-lock
+ * re-read plus the inner flag/projects re-check heal even that case.
  */
 async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
   if (typeof navigator !== 'undefined' && navigator.locks) {
@@ -136,27 +139,38 @@ async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
     return
   }
 
+  const ownsLock = async (token: string): Promise<boolean> => {
+    const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
+    if (!raw) return false
+    try {
+      return (JSON.parse(raw) as { token?: string }).token === token
+    } catch {
+      return false
+    }
+  }
+
   const token = Math.random().toString(36).slice(2)
   const deadline = Date.now() + AUTO_DEFAULT_LOCK_TTL_MS
   let acquired = false
   while (Date.now() < deadline && !acquired) {
-    const raw = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
-    if (!raw) {
-      try {
-        localStorage.setItem(AUTO_DEFAULT_LOCK_KEY, JSON.stringify({ token, at: Date.now() }))
-      } catch {
-        // Storage unavailable — cannot serialize at all. Run fn() so the
-        // first-run flow still works single-tab; duplicate risk is the
-        // pre-existing behavior and the post-lock re-read heals it.
-        await fn()
-        return
-      }
-      await sleep(250)
-      const recheck = localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)
-      acquired = !!recheck && (JSON.parse(recheck) as { token?: string }).token === token
-      if (acquired) break
+    if (localStorage.getItem(AUTO_DEFAULT_LOCK_KEY)) {
+      await sleep(150)
+      continue
     }
-    await sleep(150)
+    try {
+      localStorage.setItem(AUTO_DEFAULT_LOCK_KEY, JSON.stringify({ token, at: Date.now() }))
+    } catch {
+      // Storage unavailable — cannot serialize at all. Run fn() so the
+      // first-run flow still works single-tab; duplicate risk is the
+      // pre-existing behavior and the post-lock re-read heals it.
+      await fn()
+      return
+    }
+    // Double verification: claim must hold at two separated instants.
+    await sleep(250)
+    if (!(await ownsLock(token))) continue
+    await sleep(250)
+    acquired = await ownsLock(token)
   }
 
   if (!acquired) {
@@ -168,6 +182,8 @@ async function withAutoCreateLock(fn: () => Promise<void>): Promise<void> {
   }
 
   try {
+    // Final ownership re-check immediately before the create window.
+    if (!(await ownsLock(token))) return
     await fn()
   } finally {
     try {
