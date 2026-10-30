@@ -37,8 +37,15 @@ const pendingKeyStoreOps = new Set<Promise<void>>()
 const PENDING_OPS_STORAGE_KEY = 'eo2weave-gateway-keystore-pending-ops'
 /** Web Locks name serializing read-modify-write on the shared registry. */
 const PENDING_OPS_COUNTER_LOCK = 'eo2weave-gateway-keystore-pending-ops-counter'
-/** Entries older than this are treated as abandoned (crashed tab) and pruned. */
+/**
+ * Entries not refreshed within this window are treated as abandoned
+ * (crashed tab) and pruned. A LIVE tab keeps its entry fresh with a
+ * heartbeat (see below), so a genuinely long op never expires out of the
+ * barrier while its tab still runs — only a dead tab's stale entry does.
+ */
 const PENDING_OPS_ENTRY_TTL_MS = 60_000
+/** Heartbeat interval keeping a live tab's entry past the entry TTL. */
+const PENDING_OPS_HEARTBEAT_INTERVAL_MS = 30_000
 /** Poll interval while waiting for OTHER tabs' pending ops to settle. */
 const CROSS_TAB_POLL_INTERVAL_MS = 100
 
@@ -170,11 +177,50 @@ export function trackPendingKeyStoreOp(op: Promise<unknown>): void {
   const opId = `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   ownOpSettled.set(opId, false)
   void rewriteOwnPendingOpEntry()
+  // Heartbeat: refresh this tab's entry `updatedAt` while ANY op remains
+  // unsettled, so a live tab's long-running op (past the entry TTL) stays
+  // in the cross-tab barrier instead of being pruned as abandoned and
+  // later overwriting a newer tab's credential commit. The timer is edge-
+  // triggered (armed on unsettled, stopped at the last settle) — idle tabs
+  // run no timers. A backgrounded tab whose timers are throttled keeps
+  // refreshing at a throttled cadence; browsers only heavily throttle
+  // timers in fully hidden tabs with chains >5, and even a slow heartbeat
+  // (or one stale tick) still beats treating a live op as a crashed tab.
+  // The interval timer handle lives on the module (one per tab, not per
+  // op) so an uncaught settle path can never leak a timer.
+  startPendingOpsHeartbeat()
   void tracked.finally(() => {
     pendingKeyStoreOps.delete(tracked)
     ownOpSettled.set(opId, true)
     void rewriteOwnPendingOpEntry()
+    startPendingOpsHeartbeat()
   })
+}
+
+let pendingOpsHeartbeatTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Keep this tab's registry entry fresh (heartbeat) while any of its ops is
+ * unsettled; stop the timer at the last settle. Also a self-heal: a tab
+ * whose write raced a pruner gets its entry re-added here.
+ */
+function startPendingOpsHeartbeat(): void {
+  const hasUnsettled = [...ownOpSettled.values()].some((settled) => !settled)
+  if (hasUnsettled && pendingOpsHeartbeatTimer === null) {
+    pendingOpsHeartbeatTimer = setInterval(() => {
+      if (![...ownOpSettled.values()].some((settled) => !settled)) {
+        if (pendingOpsHeartbeatTimer !== null) {
+          clearInterval(pendingOpsHeartbeatTimer)
+          pendingOpsHeartbeatTimer = null
+        }
+        return
+      }
+      void rewriteOwnPendingOpEntry()
+    }, PENDING_OPS_HEARTBEAT_INTERVAL_MS)
+  } else if (!hasUnsettled && pendingOpsHeartbeatTimer !== null) {
+    clearInterval(pendingOpsHeartbeatTimer)
+    pendingOpsHeartbeatTimer = null
+  }
 }
 
 /**

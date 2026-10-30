@@ -52,7 +52,7 @@ import { useI18nStore } from '@/i18n/store'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
-import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
+import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
 import { applyGatewayLoginTokens } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
@@ -1427,14 +1427,22 @@ export function LLMGatewayCard({
           : t('settings.gateway.logoutFailed')
       // A surviving refresh-token backup can resurrect the session — the
       // card must not read as definitively logged out: re-derive the badge
-      // from the actual stored key so the logout action (and its retry)
-      // stays available.
+      // from the actual stored credentials so the logout action (and its
+      // retry) stays available. The badge reads the ACCESS-token shadow,
+      // but the SESSION lives in the refresh-token backup — when the
+      // backup purge failed, the shadow read alone would report "logged
+      // out" while a refresh still resurrects the session, hiding the
+      // logout control needed to retry the purge. Check BOTH keys: any
+      // survivor keeps the card logged in.
       try {
         const { loadApiKey } = await import('@/security/api-key-store')
-        const key = await loadApiKey(keyId)
-        setIsLoggedIn(!!key)
+        const [accessKey, refreshBackup] = await Promise.all([
+          loadApiKey(keyId),
+          loadApiKey(LLM_GATEWAY_REFRESH_TOKEN_KEY_ID),
+        ])
+        setIsLoggedIn(!!(accessKey || refreshBackup))
       } catch {
-        // The key read failed too — keep isLoggedIn false; the banner below
+        // The key reads failed too — keep isLoggedIn false; the banner below
         // still surfaces the purge failure.
       }
       setAuthState({
