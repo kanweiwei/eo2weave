@@ -364,34 +364,69 @@ export const useProjectStore = create<ProjectState>()(
         // Only fires ONCE per browser (tracked by localStorage flag). If the
         // user deletes all projects later, we respect that decision and don't
         // auto-create again.
+        //
+        // Cross-tab mutual exclusion (Sourcery: "Tabs create duplicate
+        // projects"): initInFlight only coordinates callers inside THIS tab.
+        // Two tabs first-opening a fresh profile would both see an empty list
+        // + unset flag and insert two different default projects. A
+        // navigator.locks (Web Locks API) hold on the auto-create scope makes
+        // the losing tab re-read the list after the winner finishes, so only
+        // one default project is ever created. Browsers without Web Locks
+        // fall through (single-tab risk only, as before).
         if (
           normalizedProjects.length === 0 &&
           !localStorage.getItem(AUTO_DEFAULT_CREATED_KEY)
         ) {
-          try {
-            const defaultName = getLocalizedDefaultProjectName()
-            const defaultProject = await repo.createProject({ name: defaultName })
-            // Re-throw when createProject returns nothing — the OPFS
-            // bootstrap below needs the id, and silently continuing would
-            // mark init complete with a phantom empty list (Sourcery round 4).
-            if (!defaultProject) {
-              throw new Error('Project store: createProject returned no project')
+          const runAutoCreate = async (): Promise<void> => {
+            try {
+              const defaultName = getLocalizedDefaultProjectName()
+              const defaultProject = await repo.createProject({ name: defaultName })
+              // Re-throw when createProject returns nothing — the OPFS
+              // bootstrap below needs the id, and silently continuing would
+              // mark init complete with a phantom empty list (Sourcery round 4).
+              if (!defaultProject) {
+                throw new Error('Project store: createProject returned no project')
+              }
+              await bootstrapProjectOpfs(defaultProject.id)
+              localStorage.setItem(AUTO_DEFAULT_CREATED_KEY, '1')
+              normalizedProjects = [defaultProject]
+              normalizedStats = [{
+                projectId: defaultProject.id,
+                workspaceCount: 0,
+              }]
+              console.log('[ProjectStore] Auto-created default project:', defaultProject.id)
+            } catch (err) {
+              // Re-throw as an init failure (Sourcery: "First-run storage
+              // failures still look empty"). Swallowing it here used to mark
+              // init complete with an empty list while the created project row
+              // stayed hidden until reload; failing loudly puts the user on the
+              // init banner with a Retry that re-runs the whole flow.
+              throw err instanceof Error ? err : new Error(String(err))
             }
-            await bootstrapProjectOpfs(defaultProject.id)
-            localStorage.setItem(AUTO_DEFAULT_CREATED_KEY, '1')
-            normalizedProjects = [defaultProject]
-            normalizedStats = [{
-              projectId: defaultProject.id,
-              workspaceCount: 0,
-            }]
-            console.log('[ProjectStore] Auto-created default project:', defaultProject.id)
-          } catch (err) {
-            // Re-throw as an init failure (Sourcery: "First-run storage
-            // failures still look empty"). Swallowing it here used to mark
-            // init complete with an empty list while the created project row
-            // stayed hidden until reload; failing loudly puts the user on the
-            // init banner with a Retry that re-runs the whole flow.
-            throw err instanceof Error ? err : new Error(String(err))
+          }
+
+          if (typeof navigator !== 'undefined' && navigator.locks) {
+            await navigator.locks.request(
+              'creatorweave:project-store:auto-default',
+              async () => {
+                // Winner creates; loser re-reads — the winner has committed
+                // its row + flag by the time the lock is released.
+                if (
+                  localStorage.getItem(AUTO_DEFAULT_CREATED_KEY) ||
+                  (await repo.findAllProjects()).length > 0
+                ) {
+                  return
+                }
+                await runAutoCreate()
+              }
+            )
+            if (normalizedProjects.length === 0) {
+              // This tab lost the race: pick up the winner's default project.
+              normalizedProjects = await repo.findAllProjects()
+              normalizedStats = await repo.findProjectStats()
+            }
+          } else {
+            await runAutoCreate()
           }
         }
 

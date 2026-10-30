@@ -695,7 +695,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           isOpen={true}
           errorMessage={inaccessibleErrorMessage}
         />
-        <StorageInitDiagnosticsActions />
+        {/* z-[10000]: DatabaseRefreshDialog's overlay sits at z-[9999]; these
+            controls must float ABOVE it to stay clickable (Sourcery:
+            "Diagnostics controls are covered"). */}
+        <div className="relative z-[10000]">
+          <StorageInitDiagnosticsActions />
+        </div>
         <Toaster position="bottom-right" />
       </>
     )
@@ -703,13 +708,18 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
 
   if (!isStorageReady) {
     return (
-      <StorageLoading
-        progress={loadingProgress}
-        error={storageError}
-        canReset={canResetDatabase}
-        onReset={handleResetDatabase}
-        onExport={handleExportDatabase}
-      />
+      <>
+        <StorageLoading
+          progress={loadingProgress}
+          error={storageError}
+          canReset={canResetDatabase}
+          onReset={handleResetDatabase}
+          onExport={handleExportDatabase}
+        />
+        {/* Ordinary storage-error screen also needs diagnostics access
+            (Sourcery: "Startup errors lack diagnostics"). */}
+        <StorageInitDiagnosticsActions />
+      </>
     )
   }
 
