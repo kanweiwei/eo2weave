@@ -649,8 +649,14 @@ function SkillInstallView() {
           <button
             type="button"
             onClick={() => {
+              // The one-shot open request must land on a surface that
+              // CONSUMES it: WorkspaceLayout — which hosts the Skill
+              // Manager — mounts on the project-workspace routes
+              // (/projects/:projectId/**), not on /projects (ProjectHomeView
+              // has no layout). The bare project URL resolves the workspace
+              // from the store, so no project/workspace id is needed here.
               useWorkspacePreferencesStore.getState().setSkillsManagerOpen(true)
-              router.replace('/projects')
+              router.replace(projectWorkspacePath(useProjectStore.getState().activeProjectId))
             }}
             className="flex h-9 items-center gap-2 rounded-md bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
           >

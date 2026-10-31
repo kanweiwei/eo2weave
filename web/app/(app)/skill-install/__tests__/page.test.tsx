@@ -212,6 +212,22 @@ describe('SkillInstallPage (issue #126)', () => {
     expect(screen.getByText('skillInstall.openSkillManager')).toBeInTheDocument()
   })
 
+  it('unknown-skill Skill Manager entry routes to the WORKSPACE (the flag consumer), not /projects', async () => {
+    // Requirement-5 (Sourcery round-21): the button arms the one-shot
+    // `panelState.skillsManagerOpen` request, but only WorkspaceLayout —
+    // mounted on /projects/:projectId/** via WorkspaceRouteView — consumes
+    // it. /projects renders ProjectHomeView with no layout, so routing
+    // there dead-ends the flag (the visitor never reaches the Skill
+    // Manager). The bare project URL is used so the store resolves the
+    // workspace.
+    fetchSkillStoreManifestMock.mockResolvedValue({ skills: [] })
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('skillInstall.errorTitle')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.openSkillManager'))
+    expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1')
+    expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects')
+  })
+
   it('missing skill param shows the missing-param error (no manifest fetch)', async () => {
     searchParamsMock.mockReturnValue(new URLSearchParams())
     render(<SkillInstallPage />)
