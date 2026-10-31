@@ -655,8 +655,19 @@ function SkillInstallView() {
               // (/projects/:projectId/**), not on /projects (ProjectHomeView
               // has no layout). The bare project URL resolves the workspace
               // from the store, so no project/workspace id is needed here.
+              // The error view can render BEFORE continueToConversation's
+              // project fallback runs (missing/unknown skill), so
+              // activeProjectId may still be empty here — resolve the same
+              // first-project fallback inline, or WorkspaceLayout never
+              // mounts and the open flag is dropped.
+              const { activeProjectId, projects, setActiveProject } =
+                useProjectStore.getState()
+              const targetProjectId = activeProjectId ?? projects[0]?.id ?? ''
+              if (targetProjectId && !activeProjectId) {
+                void setActiveProject(targetProjectId)
+              }
               useWorkspacePreferencesStore.getState().setSkillsManagerOpen(true)
-              router.replace(projectWorkspacePath(useProjectStore.getState().activeProjectId))
+              router.replace(projectWorkspacePath(targetProjectId))
             }}
             className="flex h-9 items-center gap-2 rounded-md bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
           >
