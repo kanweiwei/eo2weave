@@ -6,7 +6,7 @@ export const skillInstall = {
     notFound: "このスキルはスキルストアに存在しません。名称変更または削除された可能性があります。",
     loadFailed: "スキルストアの読み込みに失敗しました。接続を確認して再試行してください。",
     retry: "再試行",
-    openProjectsHome: "EO2Weave を開く",
+    openSkillManager: "スキルマネージャーを開く",
     installedBadge: "インストール済み",
     versionLabel: "バージョン",
     filesLabel: "{count} ファイル",

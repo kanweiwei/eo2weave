@@ -6,7 +6,7 @@ export const skillInstall = {
     notFound: "이 스킬은 스킬 스토어에 없습니다. 이름이 바뀌었거나 삭제되었을 수 있습니다.",
     loadFailed: "스킬 스토어를 불러오지 못했습니다. 연결을 확인하고 다시 시도해 주세요.",
     retry: "다시 시도",
-    openProjectsHome: "EO2Weave 열기",
+    openSkillManager: "스킬 관리자 열기",
     installedBadge: "설치됨",
     versionLabel: "버전",
     filesLabel: "{count}개 파일",

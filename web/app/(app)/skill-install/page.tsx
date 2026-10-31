@@ -30,6 +30,7 @@ import { useConversationContextStore } from '@/store/conversation-context.store'
 import { checkAiReadiness, buildPrefillText, pickConversationTarget, waitForCondition } from '@/lib/skill-install-flow'
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import { projectWorkspacePath } from '@/lib/route-paths'
+import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { useGatewayLogin } from '@/hooks/useGatewayLogin'
 
@@ -647,10 +648,13 @@ function SkillInstallView() {
           )}
           <button
             type="button"
-            onClick={() => router.replace('/projects')}
+            onClick={() => {
+              useWorkspacePreferencesStore.getState().setSkillsManagerOpen(true)
+              router.replace('/projects')
+            }}
             className="flex h-9 items-center gap-2 rounded-md bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
           >
-            {t('skillInstall.openProjectsHome')}
+            {t('skillInstall.openSkillManager')}
           </button>
         </div>
       </Centered>

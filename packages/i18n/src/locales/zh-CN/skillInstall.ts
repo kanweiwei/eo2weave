@@ -6,7 +6,7 @@ export const skillInstall = {
     notFound: "该技能不在技能商店中，可能已更名或下架。",
     loadFailed: "技能商店加载失败，请检查网络后重试。",
     retry: "重试",
-    openProjectsHome: "打开 EO2Weave",
+    openSkillManager: "打开技能管理器",
     installedBadge: "已安装",
     versionLabel: "版本",
     filesLabel: "{count} 个文件",

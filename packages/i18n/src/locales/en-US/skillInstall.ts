@@ -6,7 +6,7 @@ export const skillInstall = {
     notFound: "This skill isn't in the skill store. It may have been renamed or removed.",
     loadFailed: "Failed to load the skill store. Check your connection and try again.",
     retry: "Retry",
-    openProjectsHome: "Open EO2Weave",
+    openSkillManager: "Open Skill Manager",
     installedBadge: "Already installed",
     versionLabel: "Version",
     filesLabel: "{count} files",

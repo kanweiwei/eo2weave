@@ -209,7 +209,7 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('skillInstall.errorTitle')).toBeInTheDocument())
     expect(screen.getByText('skillInstall.notFound')).toBeInTheDocument()
-    expect(screen.getByText('skillInstall.openProjectsHome')).toBeInTheDocument()
+    expect(screen.getByText('skillInstall.openSkillManager')).toBeInTheDocument()
   })
 
   it('missing skill param shows the missing-param error (no manifest fetch)', async () => {
