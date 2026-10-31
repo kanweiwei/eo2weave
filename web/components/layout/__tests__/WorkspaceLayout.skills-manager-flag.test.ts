@@ -263,7 +263,7 @@ vi.mock('@/store/folder-access.store', () => {
 // NOTE: @/store/workspace-preferences.store is deliberately NOT mocked —
 // the real zustand+immer store is what the component must consume.
 
-import { WorkspaceLayout } from '../WorkspaceLayout'
+import { WorkspaceLayout } from '@/components/layout/WorkspaceLayout'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 
 describe('skills-manager open-request flag (consume contract)', () => {
