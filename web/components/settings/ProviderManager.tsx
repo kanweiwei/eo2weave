@@ -1313,6 +1313,12 @@ export function LLMGatewayCard({
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
           const models = await fetchGatewayModels(baseURL, token)
+          // A logout/relogin that superseded this effect run must not
+          // register its stale catalog: re-check cancellation after EVERY
+          // await — the token fetch above, the /models fetch here, and the
+          // dynamic imports below. A superseded run that returns late would
+          // otherwise overwrite the newer session's registration.
+          if (cancelled) return
           if (models.length > 0) {
             // Register the fetched catalog with the gateway provider, not
             // just this card's local list: a login whose discovery failed
@@ -1326,6 +1332,7 @@ export function LLMGatewayCard({
               import('@/agent/providers/llm-gateway-provider'),
               import('@/agent/providers/model-store'),
             ])
+            if (cancelled) return
             registerGatewayModels(models.map((m) => ({
               id: m.id,
               name: m.name,
@@ -1333,6 +1340,10 @@ export function LLMGatewayCard({
               contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
             })))
           }
+          // Same staleness gate before the card-local state writes: a run
+          // whose session was superseded must not touch setAllModels or the
+          // pin-seen marks of the newer session either.
+          if (cancelled) return
           setAllModels(models)
           // Gateway /models response is authoritative — record confirmed pins
           // so pins absent from a later fetch get flagged as stale.
@@ -1386,11 +1397,33 @@ export function LLMGatewayCard({
         })
         return
       }
+      // Atomicity guard for the UI commit below: the freshness read above
+      // and these state writes are not one critical section, so a concurrent
+      // logout could still commit between them (reading 'valid' then
+      // rendering "Logged in" over purged credentials). Re-read the LIVE
+      // store right before the commit AND drive the badge from that final
+      // read instead of assuming our own write wins: if a concurrent logout
+      // re-labelled the status (e.g. 'missing'), keep its verdict instead of
+      // overwriting it with 'valid'. A logout commits its status INSIDE the
+      // credential lock, and our token commit happened under the same lock,
+      // so any status that differs from ours orders AFTER our commit and
+      // must win.
+      const finalCredentialStatus = useSettingsStore.getState().modelCredentialStatus
+      if (finalCredentialStatus !== 'valid') {
+        setAuthState({
+          status: 'error',
+          error: t('settings.gateway.authFailed'),
+        })
+        return
+      }
       setAllModels(result.models)
 
       setIsLoggedIn(true)
       // A successful (re-)login ends the expired state — clear it so the
       // badge returns to "Logged in" and the re-login button disappears.
+      // Only our OWN write: the re-read above guarantees the status was
+      // still 'valid' immediately before, so this cannot clobber a
+      // concurrent logout's 'missing'/'expired' commit.
       useSettingsStore.getState().setModelCredentialStatus('valid')
       setAuthState({ status: 'idle' })
       // Drop the stale quota/error state so it is refetched with the new token.
@@ -1476,10 +1509,28 @@ export function LLMGatewayCard({
     if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
       useSettingsStore.getState().setHasApiKey(false)
     }
+    // Atomicity: re-read the credential status from the live store and only
+    // clear the card's logged-in UI when the status still agrees with THIS
+    // logout. A concurrent login in another tab commits
+    // modelCredentialStatus='valid' (its own UI writes are also driven by the
+    // live store), so a 'valid' status read here means the newer login won —
+    // leave its UI alone instead of tearing it down to "logged out". Without
+    // this guard, the interleaving [logout purges → login commits + paints →
+    // logout's post-lock UI clears] would render "not logged in" over a live
+    // session. An 'unknown'/'expired' status cannot come from a concurrent
+    // login; clearing our own logout UI remains correct for those.
+    const concurrentCredentialStatus = useSettingsStore.getState().modelCredentialStatus
+    if (concurrentCredentialStatus === 'valid') {
+      setIsLoggedIn(true)
+      return
+    }
     setAllModels([])
     setAuthState({ status: 'idle' })
     // An explicit logout is not an expiry — record it so the UI shows the
-    // "not logged in" state instead of the "login expired" one.
+    // "not logged in" state instead of the "login expired" one. Guarded by
+    // the concurrent-status re-read above: that guard confirmed the status
+    // was not 'valid' (no newer login won) just before this write, so this
+    // 'missing' write cannot overwrite a concurrent login's commit.
     useSettingsStore.getState().setModelCredentialStatus('missing')
     // Clear cached rate-limits so next login refetches
     setRateLimitsResult(null)
