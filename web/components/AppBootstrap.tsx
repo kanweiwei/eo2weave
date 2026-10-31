@@ -717,12 +717,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     // paths remain reachable via the app once init recovers.
     const storeInitError = useProjectStore.getState().initError
     if (storeInitError) {
-      return (
-        <>
-          <InitErrorBanner />
-          <StorageInitDiagnosticsActions />
-        </>
-      )
+      // InitErrorBanner already carries its OWN diagnostics actions (Run
+      // Diagnostics + Copy Report in its dialog) — rendering
+      // StorageInitDiagnosticsActions here too duplicated the controls on
+      // one failure screen (Sourcery: "Diagnostics controls appear twice").
+      return <InitErrorBanner />
     }
     return (
       <>

@@ -805,14 +805,30 @@ class SQLiteDatabaseManager {
     const releasedPromise = new Promise<void>((resolve) => {
       releaseLock = resolve
     })
-    void navigator.locks.request(SQLiteDatabaseManager.SQLITE_INIT_LOCK_SCOPE, async () => {
-      onAcquired()
-      await releasedPromise
-    })
+    // A REJECTED navigator.locks.request() never invokes the callback, so
+    // acquiredPromise would never settle and the deadline race below would
+    // make every startup pay the full SQLITE_INIT_LOCK_TIMEOUT_MS — and the
+    // discarded request promise would reject unhandled (Sourcery: "Rejected
+    // lock requests delay startup"). Race the REQUEST itself against the
+    // deadline: rejection or timeout resolves immediately; a late grant
+    // after a timeout release is released instantly.
+    let deadlineHit = false
+    void navigator.locks
+      .request(SQLiteDatabaseManager.SQLITE_INIT_LOCK_SCOPE, async () => {
+        onAcquired()
+        await releasedPromise
+      })
+      .catch(() => {
+        // Lock request rejected (unavailable/denied): proceed unlocked —
+        // init serialization is a liveness concern, not data integrity.
+        onAcquired = noopRelease
+        releaseLock()
+      })
     return Promise.race([
       acquiredPromise.then(() => releaseLock),
       new Promise<() => void>((resolve) =>
         setTimeout(() => {
+          deadlineHit = true
           // Deadline hit before grant: if the grant arrives later, release
           // it immediately so this tab never wedges other tabs behind a
           // lock it no longer needs.
@@ -820,7 +836,14 @@ class SQLiteDatabaseManager {
           resolve(noopRelease)
         }, SQLiteDatabaseManager.SQLITE_INIT_LOCK_TIMEOUT_MS)
       ),
-    ])
+    ]).finally(() => {
+      if (deadlineHit && onAcquired !== noopRelease) {
+        // If the grant lands between the timeout resolve and this microtask,
+        // the reassigned onAcquired releases the lock instead of leaking it.
+        onAcquired()
+        onAcquired = noopRelease
+      }
+    })
   }
 
   private async getReadyWorkerClient(): Promise<SQLiteWorkerClient> {
