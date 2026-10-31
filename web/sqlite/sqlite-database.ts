@@ -813,21 +813,37 @@ class SQLiteDatabaseManager {
     // deadline: rejection or timeout resolves immediately; a late grant
     // after a timeout release is released instantly.
     let deadlineHit = false
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null
     void navigator.locks
       .request(SQLiteDatabaseManager.SQLITE_INIT_LOCK_SCOPE, async () => {
+        // Lock granted: cancel the deadline so it can never fire the
+        // releaseLock race mid-initialization (Sourcery: "Initialization
+        // lock releases too early").
+        if (deadlineTimer !== null) {
+          clearTimeout(deadlineTimer)
+          deadlineTimer = null
+        }
         onAcquired()
         await releasedPromise
       })
       .catch(() => {
         // Lock request rejected (unavailable/denied): proceed unlocked —
         // init serialization is a liveness concern, not data integrity.
+        if (deadlineTimer !== null) {
+          clearTimeout(deadlineTimer)
+          deadlineTimer = null
+        }
+        // Settle acquiredPromise so the race resolves NOW instead of
+        // waiting out the full deadline (Sourcery: "Rejected lock delays
+        // startup").
+        deadlineHit = true
+        onAcquired()
         onAcquired = noopRelease
-        releaseLock()
       })
     return Promise.race([
       acquiredPromise.then(() => releaseLock),
-      new Promise<() => void>((resolve) =>
-        setTimeout(() => {
+      new Promise<() => void>((resolve) => {
+        deadlineTimer = setTimeout(() => {
           deadlineHit = true
           // Deadline hit before grant: if the grant arrives later, release
           // it immediately so this tab never wedges other tabs behind a
@@ -835,7 +851,7 @@ class SQLiteDatabaseManager {
           onAcquired = () => releaseLock()
           resolve(noopRelease)
         }, SQLiteDatabaseManager.SQLITE_INIT_LOCK_TIMEOUT_MS)
-      ),
+      }),
     ]).finally(() => {
       if (deadlineHit && onAcquired !== noopRelease) {
         // If the grant lands between the timeout resolve and this microtask,

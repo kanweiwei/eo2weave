@@ -14,6 +14,36 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), loading: vi.fn(), info: vi.fn() },
 }))
 
+// ── Real-store retry test support (Sourcery round 14) ────────────────
+// The retry test drives the REAL initialize() action, so the store's
+// infrastructure deps need stubs: the project repository (SQLite) and the
+// Web Locks helper used by the auto-create path.
+const {
+  findAllProjectsMock,
+  findProjectStatsMock,
+  createProjectMock,
+  navigatorLocksRequestMock,
+} = vi.hoisted(() => ({
+  findAllProjectsMock: vi.fn(),
+  findProjectStatsMock: vi.fn(),
+  createProjectMock: vi.fn(),
+  navigatorLocksRequestMock: vi.fn(),
+}))
+
+vi.mock('@/sqlite/repositories/project.repository', () => ({
+  DEFAULT_PROJECT_ID: 'default-project',
+  getProjectRepository: () => ({
+    findAllProjects: findAllProjectsMock,
+    findProjectStats: findProjectStatsMock,
+    createProject: createProjectMock,
+    deleteProject: vi.fn(),
+  }),
+}))
+
+vi.mock('@/opfs', () => ({
+  ProjectManager: { create: vi.fn() },
+}))
+
 vi.mock('@/components/activity/ActivityHeatmap', () => ({
   ActivityHeatmap: () => null,
 }))
@@ -84,6 +114,13 @@ function setupStore(opts: {
 
 describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () => {
   beforeEach(() => {
+    vi.stubGlobal('navigator', {
+      ...(globalThis.navigator as object),
+      locks: { request: navigatorLocksRequestMock },
+    })
+    findAllProjectsMock.mockResolvedValue([])
+    findProjectStatsMock.mockResolvedValue([])
+    localStorage.removeItem('creatorweave:auto-default-project-created')
     useProjectStore.setState({
       activeProjectId: '',
       projects: [],
@@ -202,34 +239,63 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
   it('keeps the banner (with Retrying...) visible while a retry is in flight', async () => {
     // Sourcery Medium: initialize() clears the error only when it resolves —
     // meanwhile the banner must stay so the empty list never flashes
-    // "No projects yet". Drive the retry THROUGH the component (deferred
-    // initialize) instead of pre-seeding initializingRetry, so the test
-    // would fail if the banner cleared while the retry was still pending.
+    // "No projects yet". Drive the retry through the REAL store action
+    // (deferred repository response) so the test exercises the actual
+    // initializingRetry transition instead of a mocked initialize that
+    // never touches state (Sourcery round 14: "Retry banner can disappear
+    // unnoticed" — a mock leaving initError untouched makes banner
+    // assertions pass without proving the store transition).
     const user = userEvent.setup()
-    let resolveInitialize: () => void = () => {}
-    const initializeSpy = vi
-      .spyOn(useProjectStore.getState(), 'initialize')
-      .mockImplementation(
-        () =>
-          new Promise<void>((resolve) => {
-            resolveInitialize = resolve
-          })
-      )
+
+    // Stub the store's infrastructure deps (NOT initialize itself): the
+    // repository defers its response so the retry stays in flight until we
+    // resolve it; the OPFS/agent sync paths are inert stubs.
+    // NOTE: findProjectStatsMock keeps its beforeEach mockResolvedValue([]) —
+    // Promise.all snapshots both promises at call time, so a never-settling
+    // stats promise here would block initialize() forever even after
+    // resolveFindAll fires.
+    let resolveFindAll: (projects: never[]) => void = () => {}
+    findAllProjectsMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveFindAll = resolve
+        })
+    )
+    navigatorLocksRequestMock.mockImplementation(
+      async (_scope: string, cb: () => Promise<void>) => {
+        await cb()
+      }
+    )
+    // Skip the auto-create branch so the retry attempt is a pure
+    // repository round-trip.
+    localStorage.setItem('creatorweave:auto-default-project-created', '1')
+
     setupStore({ initError: 'transient' })
 
     render(<ProjectHomeView />)
 
     await user.click(screen.getByRole('button', { name: 'Retry' }))
 
-    // Retry is in flight (initialize not yet resolved): banner stays, button
-    // shows Retrying..., and the empty-list state never renders.
+    // Retry is in flight (repository not yet resolved): banner stays, button
+    // shows Retrying..., initializingRetry is set by the REAL store action,
+    // and the empty-list state never renders.
     const alert = screen.getByRole('alert')
     expect(alert).toBeInTheDocument()
-    expect(initializeSpy).toHaveBeenCalledTimes(1)
+    expect(useProjectStore.getState().initializingRetry).toBe(true)
+    expect(useProjectStore.getState().initError).toBe('transient')
     expect(screen.getByRole('button', { name: 'Retrying...' })).toBeDisabled()
     expect(screen.queryByText('projectHome.empty.noProjects')).toBeNull()
 
-    resolveInitialize()
+    // Let the attempt succeed: the store clears initError and
+    // initializingRetry in the SAME set() — the banner must unmount as part
+    // of that real transition, not because a mock was cleared.
+    resolveFindAll([])
+    findProjectStatsMock.mockResolvedValue([])
+    await waitFor(() =>
+      expect(screen.queryByRole('alert')).toBeNull()
+    )
+    expect(useProjectStore.getState().initializingRetry).toBe(false)
+    expect(useProjectStore.getState().initError).toBe(null)
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Retrying...' })).toBeNull()
     )
