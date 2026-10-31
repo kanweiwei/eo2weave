@@ -138,8 +138,22 @@ function isAbandonedEntry(entry: PendingOpEntry | undefined): boolean {
 
 /** Shared storage key holding the monotonically increasing commit sequence. */
 const COMMIT_SEQ_STORAGE_KEY = 'eo2weave-gateway-credential-commit-seq'
-/** Shared storage key mapping pending op ids to their fenced sequence. */
-const PENDING_OP_SEQ_STORAGE_KEY = 'eo2weave-gateway-keystore-pending-op-seqs'
+/**
+ * Shared storage key PREFIX for per-op fence stamps: each pending op records
+ * its sequence under an INDEPENDENT key (`<prefix><opId>`) so concurrent
+ * registrations in different tabs can never overwrite each other — a
+ * read-modify-write of a shared seq map (the previous design) races when two
+ * tabs register concurrently and the later whole-map write drops the
+ * earlier op's record, leaving that op permanently unfenced. Per-op keys
+ * need no cross-tab serialization at all: each write touches only its own
+ * key, and a "missing" record (never written / swept) stays exactly the
+ * pre-fencing no-op it already was for a storage outage. Sweep: settled ops
+ * delete their own key via `deletePendingOpSeq`; a crashed tab's leftover
+ * keys carry a bounded fence value (see `recordPendingOpSeq`) and are
+ * removed opportunistically by the sweep below when the map of live stamps
+ * is read.
+ */
+const PENDING_OP_SEQ_KEY_PREFIX = 'eo2weave-gateway-keystore-pending-op-seq:'
 
 function readCommitSeq(): number {
   try {
@@ -151,15 +165,15 @@ function readCommitSeq(): number {
   }
 }
 
-function readPendingOpSeqs(): Record<string, number> {
+/** Read ONE op's fence stamp (undefined = unrecorded → never fenced). */
+function readPendingOpSeq(opId: string): number | undefined {
   try {
-    const raw = localStorage.getItem(PENDING_OP_SEQ_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    return parsed as Record<string, number>
+    const raw = localStorage.getItem(PENDING_OP_SEQ_KEY_PREFIX + opId)
+    if (raw === null) return undefined
+    const n = Number(raw)
+    return Number.isFinite(n) && n >= 0 ? n : undefined
   } catch {
-    return {}
+    return undefined
   }
 }
 
@@ -181,27 +195,34 @@ function bumpCommitSeq(): void {
 }
 
 /**
- * Record the CURRENT commit sequence for a pending op. A later commit
- * bumps the shared sequence past this value, fencing the op's eventual
- * write. Must be called when the op is registered (synchronously with the
- * op's dispatch, before any commit can interleave).
+ * Record the CURRENT commit sequence for a pending op under its OWN storage
+ * key. A later commit bumps the shared sequence past this value, fencing
+ * the op's eventual write. Writes are op-scoped, so concurrent
+ * registrations (this tab or another) cannot overwrite each other's stamps
+ * — the lost-update race a shared seq map suffered is structurally
+ * impossible. Must be called when the op is registered (synchronously with
+ * the op's dispatch, before any commit can interleave).
  */
 function recordPendingOpSeq(opId: string): void {
   try {
-    const seqs = readPendingOpSeqs()
-    seqs[opId] = readCommitSeq()
-    localStorage.setItem(PENDING_OP_SEQ_STORAGE_KEY, JSON.stringify(seqs))
+    localStorage.setItem(PENDING_OP_SEQ_KEY_PREFIX + opId, String(readCommitSeq()))
   } catch {
     // Non-fatal: an unrecorded op maps to undefined and is never fenced
     // (pre-fencing semantics for this op).
   }
 }
 
+/**
+ * Remove one op's fence stamp. Only this op's key is touched — concurrent
+ * registrations in other tabs are unaffected. A leftover stamp (crashed
+ * tab, or a settle path that threw before the deferred delete) is harmless:
+ * the key holds only a bounded registration sequence, and a future op id
+ * collision (36^18 random suffixes) is astronomically unlikely — no sweep
+ * pass over storage is needed.
+ */
 function deletePendingOpSeq(opId: string): void {
   try {
-    const seqs = readPendingOpSeqs()
-    delete seqs[opId]
-    localStorage.setItem(PENDING_OP_SEQ_STORAGE_KEY, JSON.stringify(seqs))
+    localStorage.removeItem(PENDING_OP_SEQ_KEY_PREFIX + opId)
   } catch {
     // Non-fatal: a stale entry only over-fences (safe direction).
   }
@@ -216,7 +237,7 @@ function deletePendingOpSeq(opId: string): void {
  * has ever bumped the sequence) both read as NOT fenced.
  */
 export function pendingKeyStoreOpIsFenced(opId: string): boolean {
-  const seq = readPendingOpSeqs()[opId]
+  const seq = readPendingOpSeq(opId)
   if (seq === undefined) return false
   return readCommitSeq() > seq
 }
@@ -225,7 +246,13 @@ export function pendingKeyStoreOpIsFenced(opId: string): boolean {
 export function __resetGatewayCredentialFencingForTests(): void {
   try {
     localStorage.removeItem(COMMIT_SEQ_STORAGE_KEY)
-    localStorage.removeItem(PENDING_OP_SEQ_STORAGE_KEY)
+    // Per-op stamps: remove every key under the fence-stamp prefix.
+    const doomed: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key !== null && key.startsWith(PENDING_OP_SEQ_KEY_PREFIX)) doomed.push(key)
+    }
+    for (const key of doomed) localStorage.removeItem(key)
   } catch {
     // Ignore storage failures — tests fall back to a clean registry.
   }

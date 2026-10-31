@@ -876,11 +876,17 @@ describe('llm-gateway-auth token refresh hardening', () => {
   describe('commit fencing (suspended tab)', () => {
     const PENDING_OPS_KEY = 'eo2weave-gateway-keystore-pending-ops'
     const COMMIT_SEQ_KEY = 'eo2weave-gateway-credential-commit-seq'
-    const PENDING_OP_SEQS_KEY = 'eo2weave-gateway-keystore-pending-op-seqs'
+    const PENDING_OP_SEQ_PREFIX = 'eo2weave-gateway-keystore-pending-op-seq:'
 
     beforeEach(() => {
       localStorage.removeItem(COMMIT_SEQ_KEY)
-      localStorage.removeItem(PENDING_OP_SEQS_KEY)
+      // Per-op stamps: remove every key under the fence-stamp prefix.
+      const doomed: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        if (key !== null && key.startsWith(PENDING_OP_SEQ_PREFIX)) doomed.push(key)
+      }
+      for (const key of doomed) localStorage.removeItem(key)
     })
 
     it('a suspended tab resumed op is fenced: its write is refused after a newer commit', async () => {
@@ -891,13 +897,13 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // and its barrier entry went stale past the TTL. The op id format
       // matches what trackPendingKeyStoreOp generates; the fence-stamp and
       // barrier entries below are byte-for-byte what that registration
-      // writes into shared storage (pendingOpSeqs: readCommitSeq() = '0').
+      // writes into shared storage (per-op stamp: readCommitSeq() = '0').
       const opId = 'op-suspended'
       localStorage.setItem(
         PENDING_OPS_KEY,
         JSON.stringify({ 'tab-suspended': { ops: [opId], updatedAt: Date.now() - 61_000 } }),
       )
-      localStorage.setItem(PENDING_OP_SEQS_KEY, JSON.stringify({ [opId]: 0 }))
+      localStorage.setItem(PENDING_OP_SEQ_PREFIX + opId, '0')
 
       // Tab B: the stale entry reads as abandoned, so the commit is
       // admitted — and it bumps the shared commit sequence past tab A's
@@ -922,6 +928,35 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(pendingKeyStoreOpIsFenced(fresh.opId)).toBe(false)
       await expect(fresh.result).resolves.toBeUndefined()
       await fresh.settled
+    }, 20_000)
+
+    it('two CONCURRENT registrations in different tabs both keep their fence stamps', async () => {
+      // Regression (Sourcery round-21): the previous single-map design did
+      // readPendingOpSeqs() → seqs[opId] = seq → setItem(whole map), so a
+      // later registration REPLACED the map and silently dropped the
+      // earlier op's stamp — the unrecorded op was then never fenced and a
+      // stale resumed write could damage newer credentials. With one
+      // storage key PER OP, concurrent registrations cannot overwrite each
+      // other: each setItem touches only its own key.
+      const { pendingKeyStoreOpIsFenced, withGatewayCredentialLock } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      // Direct simulated registrations, exactly what trackPendingKeyStoreOp
+      // stamps at registration time (op A at seq 0).
+      const opA = 'op-tab-a'
+      const opB = 'op-tab-b'
+      localStorage.setItem(PENDING_OP_SEQ_PREFIX + opA, String(0))
+      // Tab B registers its op CONCURRENTLY (no interleaved commit — both
+      // stamps read the same current sequence)…
+      localStorage.setItem(PENDING_OP_SEQ_PREFIX + opB, String(0))
+      // …both stamps must survive, not just the later one.
+      expect(localStorage.getItem(PENDING_OP_SEQ_PREFIX + opA)).toBe('0')
+      expect(localStorage.getItem(PENDING_OP_SEQ_PREFIX + opB)).toBe('0')
+
+      // The fence verdict must hold for BOTH ops once a newer commit lands.
+      await withGatewayCredentialLock(async () => 'newer-commit')
+      expect(pendingKeyStoreOpIsFenced(opA)).toBe(true)
+      expect(pendingKeyStoreOpIsFenced(opB)).toBe(true)
     }, 20_000)
   })
 })
