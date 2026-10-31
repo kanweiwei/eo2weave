@@ -22,6 +22,7 @@ import { useSettingsStore } from '@/store/settings.store'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
 import {
   getLastLogoutTimestamp,
+  pendingKeyStoreOpIsFenced,
   withKeyStoreDeadline,
 } from '@/agent/providers/llm-gateway-auth'
 
@@ -131,8 +132,17 @@ async function applyGatewayLoginTokensInner(
     const bounded = <T>(p: Promise<T>) => withKeyStoreDeadline(p)
     const pendingSettles: Array<Promise<void>> = []
     const runBounded = async <T>(p: Promise<T>): Promise<T> => {
-      const { result, settled } = bounded(p)
+      const { result, settled, opId } = bounded(p)
       pendingSettles.push(settled)
+      // Commit fencing (Sourcery round-19): a key-store op whose tab was
+      // SUSPENDED past the pending-entry TTL falls out of the cross-tab
+      // barrier, so another tab can commit while this op is still pending.
+      // When the op resumes, its write must not overwrite the newer
+      // credential (or undo a logout): refuse it — the caller surfaces a
+      // retryable error and a retry re-reads the current state.
+      if (pendingKeyStoreOpIsFenced(opId)) {
+        throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+      }
       return result
     }
     const previousKey = await runBounded(loadApiKey(keyId))

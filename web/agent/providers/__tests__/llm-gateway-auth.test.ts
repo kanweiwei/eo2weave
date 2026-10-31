@@ -833,4 +833,56 @@ describe('llm-gateway-auth token refresh hardening', () => {
       ).resolves.toBe('commit')
     }, 20_000)
   })
+
+  describe('commit fencing (suspended tab)', () => {
+    const PENDING_OPS_KEY = 'eo2weave-gateway-keystore-pending-ops'
+    const COMMIT_SEQ_KEY = 'eo2weave-gateway-credential-commit-seq'
+    const PENDING_OP_SEQS_KEY = 'eo2weave-gateway-keystore-pending-op-seqs'
+
+    beforeEach(() => {
+      localStorage.removeItem(COMMIT_SEQ_KEY)
+      localStorage.removeItem(PENDING_OP_SEQS_KEY)
+    })
+
+    it('a suspended tab resumed op is fenced: its write is refused after a newer commit', async () => {
+      // Tab A (SUSPENDED, simulated purely through the shared storage —
+      // promises cannot cross tabs, which is exactly why the barrier cannot
+      // help the committing tab): it dispatched a key-store write whose
+      // registration stamped the fencing sequence, then its timers froze
+      // and its barrier entry went stale past the TTL. The op id format
+      // matches what trackPendingKeyStoreOp generates; the fence-stamp and
+      // barrier entries below are byte-for-byte what that registration
+      // writes into shared storage (pendingOpSeqs: readCommitSeq() = '0').
+      const opId = 'op-suspended'
+      localStorage.setItem(
+        PENDING_OPS_KEY,
+        JSON.stringify({ 'tab-suspended': { ops: [opId], updatedAt: Date.now() - 61_000 } }),
+      )
+      localStorage.setItem(PENDING_OP_SEQS_KEY, JSON.stringify({ [opId]: 0 }))
+
+      // Tab B: the stale entry reads as abandoned, so the commit is
+      // admitted — and it bumps the shared commit sequence past tab A's
+      // stamp, fencing the still-pending op.
+      const { pendingKeyStoreOpIsFenced, withGatewayCredentialLock } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      expect(pendingKeyStoreOpIsFenced(opId)).toBe(false)
+      await withGatewayCredentialLock(async () => 'newer-commit')
+      expect(pendingKeyStoreOpIsFenced(opId)).toBe(true)
+
+      // Tab A resumes: its caller (withKeyStoreDeadline consumers) re-checks
+      // the fence before writing — refused, so the newer commit's
+      // credential state survives instead of being overwritten.
+      expect(pendingKeyStoreOpIsFenced(opId)).toBe(true)
+
+      // A post-commit op (registered after the bump, via the real
+      // registration path) is NOT fenced — its write belongs to the newer
+      // credential generation.
+      const { withKeyStoreDeadline } = await import('@/agent/providers/llm-gateway-auth')
+      const fresh = withKeyStoreDeadline(Promise.resolve())
+      expect(pendingKeyStoreOpIsFenced(fresh.opId)).toBe(false)
+      await expect(fresh.result).resolves.toBeUndefined()
+      await fresh.settled
+    }, 20_000)
+  })
 })

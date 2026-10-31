@@ -8,7 +8,10 @@
  */
 
 import { t as translate } from '@creatorweave/i18n'
-import { trackPendingKeyStoreOp, withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
+import {
+  trackPendingKeyStoreOp,
+  withGatewayCredentialLock,
+} from '@/agent/providers/gateway-credential-lock'
 import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
 
@@ -723,7 +726,7 @@ export async function persistAccessTokenToKeyStore(accessToken: string): Promise
  */
 export function withKeyStoreDeadline<T>(
   p: Promise<T>,
-): { result: Promise<T>; settled: Promise<void> } {
+): { result: Promise<T>; settled: Promise<void>; opId: string } {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error('key store write timed out')), 10_000)
@@ -756,9 +759,21 @@ export function withKeyStoreDeadline<T>(
   // waits for the UNDERLYING operation — not just this grace timer —
   // before granting a new credential commit.
   setTimeout(() => settleResolve(), 10_000 + 5_000)
-  trackPendingKeyStoreOp(p)
-  return { result, settled }
+  // Registration returns the op's fencing id: a credential commit landing
+  // after this point bumps the shared sequence past the op's stamp, and
+  // the caller checks `pendingKeyStoreOpIsFenced(opId)` right before its
+  // write to refuse a stale write over a newer credential (the
+  // suspended-tab window the heartbeat barrier cannot close).
+  const opId = trackPendingKeyStoreOp(p)
+  return { result, settled, opId }
 }
+
+/**
+ * Re-exported so callers of `withKeyStoreDeadline` (which cannot import the
+ * lock module without creating a cycle through the provider module) can
+ * check their op's fence right before writing.
+ */
+export { pendingKeyStoreOpIsFenced } from '@/agent/providers/gateway-credential-lock'
 
 // ── High-Level Auth Functions ──
 
