@@ -199,18 +199,40 @@ describe('ProjectHomeView — SQLite init failure surfacing (issue #131)', () =>
     expect(copySpy).toHaveBeenCalledWith('# Diagnostic Report\n\nok')
   })
 
-  it('keeps the banner (with Retrying...) visible while a retry is in flight', () => {
+  it('keeps the banner (with Retrying...) visible while a retry is in flight', async () => {
     // Sourcery Medium: initialize() clears the error only when it resolves —
-    // meanwhile the banner must stay (initializingRetry) so the empty list
-    // never flashes "No projects yet".
-    setupStore({ initError: 'transient', initializingRetry: true })
+    // meanwhile the banner must stay so the empty list never flashes
+    // "No projects yet". Drive the retry THROUGH the component (deferred
+    // initialize) instead of pre-seeding initializingRetry, so the test
+    // would fail if the banner cleared while the retry was still pending.
+    const user = userEvent.setup()
+    let resolveInitialize: () => void = () => {}
+    const initializeSpy = vi
+      .spyOn(useProjectStore.getState(), 'initialize')
+      .mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveInitialize = resolve
+          })
+      )
+    setupStore({ initError: 'transient' })
 
     render(<ProjectHomeView />)
 
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+
+    // Retry is in flight (initialize not yet resolved): banner stays, button
+    // shows Retrying..., and the empty-list state never renders.
     const alert = screen.getByRole('alert')
     expect(alert).toBeInTheDocument()
+    expect(initializeSpy).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: 'Retrying...' })).toBeDisabled()
     expect(screen.queryByText('projectHome.empty.noProjects')).toBeNull()
+
+    resolveInitialize()
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Retrying...' })).toBeNull()
+    )
   })
 
   it('re-runs initialize() when the Retry button is clicked', async () => {

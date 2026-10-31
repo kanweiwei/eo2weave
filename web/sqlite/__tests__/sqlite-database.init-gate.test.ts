@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SQLiteDatabaseManager } from '../sqlite-database'
+import { SQLiteDatabaseManager } from '@/sqlite/sqlite-database'
 
 /**
  * Regression tests for Sourcery round-13 findings on PR #133:
