@@ -245,4 +245,35 @@ describe('LLMGatewayCard credential state', () => {
     })
     expect(screen.queryByText('Login expired')).toBeNull()
   })
+
+  it('rejects the login confirmation when a concurrent logout relabels the status before the in-lock re-read', async () => {
+    // Sourcery (PR #128): the freshness re-read and the 'valid' status write
+    // were not one critical section — a logout committing between them
+    // ended up overwritten by this login's stale 'valid'. The re-read now
+    // runs INSIDE the credential lock, so a logout that committed before it
+    // wins: the login must surface the auth failure instead of repainting
+    // "Logged in" over purged credentials.
+    settingsState.modelCredentialStatus = 'expired'
+    applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
+      options.onCommit()
+      // Simulate the concurrent logout committing FIRST (it holds the same
+      // lock): the login's in-lock re-read sees its 'missing', not 'valid'.
+      settingsState.setModelCredentialStatus('missing')
+      return { ok: true, accessToken: 'new-access-token', models: [] }
+    })
+
+    const user = userEvent.setup()
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitForLoggedInPanel()
+    await user.click(screen.getByRole('button', { name: 'Log in again' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Authentication failed')).toBeTruthy()
+    })
+    expect(screen.queryByText('Logged in')).toBeNull()
+    // The stale 'valid' write must NOT have happened after the logout's
+    // 'missing' commit.
+    expect(settingsState.setModelCredentialStatus).not.toHaveBeenCalledWith('valid')
+  })
 })

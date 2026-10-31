@@ -53,6 +53,7 @@ import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
 import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
+import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
 import { applyGatewayLoginTokens } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
@@ -1368,6 +1369,12 @@ export function LLMGatewayCard({
       return
     }
 
+    // Set when the in-lock freshness re-read finds the login superseded
+    // (a concurrent logout re-labelled the credential status) — the error
+    // UI write happens after the lock releases so the critical section
+    // stays free of non-credential UI work.
+    let staleAfterLock = false
+
     try {
       // Capture the attempt start BEFORE approval: approval can take
       // minutes, and a logout during it must invalidate this attempt.
@@ -1400,35 +1407,40 @@ export function LLMGatewayCard({
       // Atomicity guard for the UI commit below: the freshness read above
       // and these state writes are not one critical section, so a concurrent
       // logout could still commit between them (reading 'valid' then
-      // rendering "Logged in" over purged credentials). Re-read the LIVE
-      // store right before the commit AND drive the badge from that final
-      // read instead of assuming our own write wins: if a concurrent logout
-      // re-labelled the status (e.g. 'missing'), keep its verdict instead of
-      // overwriting it with 'valid'. A logout commits its status INSIDE the
-      // credential lock, and our token commit happened under the same lock,
-      // so any status that differs from ours orders AFTER our commit and
-      // must win.
-      const finalCredentialStatus = useSettingsStore.getState().modelCredentialStatus
-      if (finalCredentialStatus !== 'valid') {
+      // rendering "Logged in" over purged credentials). Re-read the status
+      // and write the confirmation INSIDE the credential lock — the same
+      // lock every login/logout commit holds — so the check-and-set is
+      // atomic across tabs: if a concurrent logout re-labelled the status
+      // (e.g. 'missing'), its commit orders BEFORE our in-lock re-read and
+      // we keep its verdict instead of overwriting it with 'valid'.
+      await withGatewayCredentialLock(async () => {
+        const finalCredentialStatus = useSettingsStore.getState().modelCredentialStatus
+        if (finalCredentialStatus !== 'valid') {
+          staleAfterLock = true
+          return
+        }
+        setAllModels(result.models)
+
+        setIsLoggedIn(true)
+        // A successful (re-)login ends the expired state — clear it so the
+        // badge returns to "Logged in" and the re-login button disappears.
+        // Written INSIDE the credential lock after the fresh re-read above,
+        // so it cannot overwrite a concurrent logout's 'missing'/'expired'
+        // commit (any logout ordering after our re-read would itself hold
+        // the lock and commit first).
+        useSettingsStore.getState().setModelCredentialStatus('valid')
+        setAuthState({ status: 'idle' })
+        // Drop the stale quota/error state so it is refetched with the new token.
+        setRateLimitsResult(null)
+        setRateLimitsError(null)
+      })
+      if (staleAfterLock) {
         setAuthState({
           status: 'error',
           error: t('settings.gateway.authFailed'),
         })
         return
       }
-      setAllModels(result.models)
-
-      setIsLoggedIn(true)
-      // A successful (re-)login ends the expired state — clear it so the
-      // badge returns to "Logged in" and the re-login button disappears.
-      // Only our OWN write: the re-read above guarantees the status was
-      // still 'valid' immediately before, so this cannot clobber a
-      // concurrent logout's 'missing'/'expired' commit.
-      useSettingsStore.getState().setModelCredentialStatus('valid')
-      setAuthState({ status: 'idle' })
-      // Drop the stale quota/error state so it is refetched with the new token.
-      setRateLimitsResult(null)
-      setRateLimitsError(null)
       triggerProviderRefresh()
     } catch (e) {
       setAuthState({
@@ -1439,6 +1451,9 @@ export function LLMGatewayCard({
   }, [triggerProviderRefresh, t])
 
   const handleLogout = useCallback(async () => {
+    // Set when the in-lock re-read finds a newer login won — the "leave the
+    // newer login's UI alone" bail-out happens after the lock releases.
+    let logoutSuperseded = false
     // Drop the local flag FIRST: logoutGatewayAuth() records the credential
     // status as "missing", and a missing status next to a still-present
     // api-key row reads as a dead session — an explicit logout must not
@@ -1509,32 +1524,40 @@ export function LLMGatewayCard({
     if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
       useSettingsStore.getState().setHasApiKey(false)
     }
-    // Atomicity: re-read the credential status from the live store and only
-    // clear the card's logged-in UI when the status still agrees with THIS
-    // logout. A concurrent login in another tab commits
-    // modelCredentialStatus='valid' (its own UI writes are also driven by the
-    // live store), so a 'valid' status read here means the newer login won —
-    // leave its UI alone instead of tearing it down to "logged out". Without
-    // this guard, the interleaving [logout purges → login commits + paints →
-    // logout's post-lock UI clears] would render "not logged in" over a live
-    // session. An 'unknown'/'expired' status cannot come from a concurrent
-    // login; clearing our own logout UI remains correct for those.
-    const concurrentCredentialStatus = useSettingsStore.getState().modelCredentialStatus
-    if (concurrentCredentialStatus === 'valid') {
+    // Atomicity: re-read the credential status and clear the card's
+    // logged-in UI INSIDE the credential lock — the same lock the purge in
+    // logoutGateway() held and any concurrent login's commit holds — so the
+    // check-and-set is atomic across tabs: a 'valid' status read here means
+    // a newer login committed and won (leave its UI alone); the 'missing'
+    // write below cannot overwrite a login that commits after the re-read,
+    // because that login must first acquire this same lock. Without the
+    // lock, the interleaving [logout purges → login commits + paints →
+    // logout's post-lock UI clears] would render "not logged in" over a
+    // live session. An 'unknown'/'expired' status cannot come from a
+    // concurrent login; clearing our own logout UI remains correct for
+    // those.
+    await withGatewayCredentialLock(async () => {
+      const concurrentCredentialStatus = useSettingsStore.getState().modelCredentialStatus
+      if (concurrentCredentialStatus === 'valid') {
+        logoutSuperseded = true
+        return
+      }
+      setAllModels([])
+      setAuthState({ status: 'idle' })
+      // An explicit logout is not an expiry — record it so the UI shows the
+      // "not logged in" state instead of the "login expired" one. Guarded by
+      // the in-lock re-read above: that guard confirmed the status was not
+      // 'valid' (no newer login won) just before this write, and the lock
+      // keeps that pairing atomic against a concurrent commit.
+      useSettingsStore.getState().setModelCredentialStatus('missing')
+      // Clear cached rate-limits so next login refetches
+      setRateLimitsResult(null)
+      setRateLimitsError(null)
+    })
+    if (logoutSuperseded) {
       setIsLoggedIn(true)
       return
     }
-    setAllModels([])
-    setAuthState({ status: 'idle' })
-    // An explicit logout is not an expiry — record it so the UI shows the
-    // "not logged in" state instead of the "login expired" one. Guarded by
-    // the concurrent-status re-read above: that guard confirmed the status
-    // was not 'valid' (no newer login won) just before this write, so this
-    // 'missing' write cannot overwrite a concurrent login's commit.
-    useSettingsStore.getState().setModelCredentialStatus('missing')
-    // Clear cached rate-limits so next login refetches
-    setRateLimitsResult(null)
-    setRateLimitsError(null)
     triggerProviderRefresh()
   }, [triggerProviderRefresh, t])
 
