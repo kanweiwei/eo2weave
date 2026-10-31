@@ -7,6 +7,7 @@ import { createPackageManagement } from './package-management'
 import { getAdapterStorage } from './provider-storage'
 import { createProviderHandler } from './provider-handler'
 import { createAdapterService } from './adapter-service'
+import { invalidateAdapterCatalogGeneration } from './discovery'
 import { isRecord } from '@creatorweave/shared/webmcp-adapter-protocol'
 import type { BrowserRequest } from '../../lib/bash-commands/browser/command'
 
@@ -33,7 +34,14 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
     void chrome.runtime.sendMessage({ type: 'webmcp_packages_changed' }).catch(() => {})
   }
   const refresh = async () => {
-    try { await service.refresh() } finally { notifyManagement() }
+    try { await service.refresh() } finally {
+      // A refresh can change routes WITHOUT replacing the installed catalog
+      // provider (installAdapterCatalog), so in-flight discovery runs must
+      // be invalidated explicitly or they commit snapshots built from the
+      // old route list (Sourcery round-6: "Refreshes leave discovery stale").
+      invalidateAdapterCatalogGeneration()
+      notifyManagement()
+    }
   }
   void refresh().catch(error => console.warn('[WebMCP adapters] Catalog refresh failed:', error))
   chrome.storage.onChanged.addListener((changes, area) => {
