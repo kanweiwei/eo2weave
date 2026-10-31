@@ -42,11 +42,16 @@ vi.mock('@/store/settings.store', () => ({
 
 import { applyGatewayLoginTokens } from '@/lib/gateway-login'
 
+import {
+  __resetGatewayCredentialFencingForTests,
+} from '@/agent/providers/gateway-credential-lock'
+
 describe('applyGatewayLoginTokens cancellation', () => {
   let savedKey: string | null
 
   beforeEach(() => {
     vi.clearAllMocks()
+    __resetGatewayCredentialFencingForTests()
     savedKey = 'previous-key'
     keyStore.load.mockImplementation(async () => savedKey)
     keyStore.save.mockImplementation(async (_id, key) => { savedKey = key })
@@ -157,5 +162,49 @@ describe('applyGatewayLoginTokens cancellation', () => {
     } finally {
       Object.defineProperty(navigator, 'locks', { configurable: true, value: realLocks })
     }
+  })
+
+  it('refuses a STALE save that lands after a newer credential commit (fenced at the mutation point)', async () => {
+    // Round-20: a bounded key-store op can stay pending past the registry
+    // TTL/quiescence cap while ANOTHER tab commits a newer credential. The
+    // stale save must be refused AT ITS LANDING POINT (after the underlying
+    // write resolved) — the dispatch-time check ran before that commit even
+    // existed — and the login must NOT report success or commit settings.
+    // The CAS rollback leaves the newer credential untouched.
+    let releaseSave!: () => void
+    keyStore.save.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseSave = resolve })
+      // Writes NOTHING on release — the newer credential is already the
+      // store's content (the other tab committed while this op was
+      // pending).
+    })
+    const pending = applyGatewayLoginTokens('stale-key')
+    await vi.waitFor(() => expect(keyStore.save).toHaveBeenCalledTimes(1))
+    // Another tab commits a NEWER credential while this save is pending…
+    savedKey = 'newer-tab-key'
+    // …which bumps the shared commit sequence, fencing every op registered
+    // before it (exactly what withGatewayCredentialLock does per commit —
+    // the login's own lock grant already stamped seq=1, so a newer commit
+    // is seq=2).
+    localStorage.setItem('eo2weave-gateway-credential-commit-seq', '2')
+    releaseSave()
+
+    // The landing-point fence throws; the login must NOT report success.
+    await expect(pending).rejects.toThrow(/key-store op fenced/)
+    // The newer credential survives; no restore/delete ran after it.
+    expect(savedKey).toBe('newer-tab-key')
+    expect(keyStore.delete).not.toHaveBeenCalled()
+    expect(settings.switchProviderAndModel).not.toHaveBeenCalled()
+    expect(settings.setHasApiKey).not.toHaveBeenCalled()
+  })
+
+  it('commits normally when no newer credential commit landed (fence inert)', async () => {
+    // The landing-point fence must not break the happy path: a save that
+    // lands with the commit sequence unchanged (no concurrent commit) still
+    // succeeds and completes the login.
+    const pending = applyGatewayLoginTokens('fresh-key')
+    await expect(pending).resolves.toMatchObject({ ok: true })
+    expect(savedKey).toBe('fresh-key')
+    expect(settings.setHasApiKey).toHaveBeenCalledWith(true)
   })
 })

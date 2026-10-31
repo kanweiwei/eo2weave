@@ -328,7 +328,13 @@ export function trackPendingKeyStoreOp(op: Promise<unknown>): string {
   void tracked.finally(() => {
     pendingKeyStoreOps.delete(tracked)
     ownOpSettled.set(opId, true)
-    deletePendingOpSeq(opId)
+    // Defer the fence-record deletion by one macrotask: the caller's
+    // landing-point fence check (see `pendingKeyStoreOpIsFenced`) runs in
+    // MICROtasks right after the op settles, and microtasks always drain
+    // before timers — deleting synchronously here would erase the op's
+    // recorded sequence before the check reads it, silently disabling
+    // mutation fencing (round-20).
+    setTimeout(() => deletePendingOpSeq(opId), 0)
     void rewriteOwnPendingOpEntry()
     startPendingOpsHeartbeat()
   })

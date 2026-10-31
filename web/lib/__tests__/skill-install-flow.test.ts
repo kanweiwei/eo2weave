@@ -432,6 +432,131 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
   })
 
+  it('does NOT report ready when the cached hasApiKey flag is stale (key removed in another tab)', async () => {
+    // Round-20: `hasApiKey` is a cached snapshot — another tab may have
+    // removed the current provider's key without re-deriving the flag.
+    // Readiness must verify the key against the LIVE store before
+    // reporting ready.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'openai'
+    settingsState.hasApiKey = true
+    // No other provider holds a key either — nothing can rescue readiness.
+    getAllApiKeyProvidersMock.mockResolvedValue([])
+    loadApiKeyMock.mockImplementation(async () => null)
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+    // The stale branch actually probed the live store instead of trusting
+    // the flag.
+    expect(loadApiKeyMock).toHaveBeenCalledWith('openai')
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
+  it('reports ready when the live store confirms the current provider key', async () => {
+    // The flag is true AND the live store still holds the key: readiness
+    // must not regress (the round-20 verification is additive, not a
+    // new gate on the happy path).
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'openai'
+    settingsState.hasApiKey = true
+    getAllApiKeyProvidersMock.mockResolvedValue([])
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === 'openai' ? 'openai-key' : null,
+    )
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
+  it('verifies the NEW selection when the visitor switches while the hasApiKey probe is pending', async () => {
+    // Round-20: the visitor switches to an UNKEYED provider while the
+    // current-provider key lookup is in flight — reporting ready for the
+    // original (keyed) provider would vouch for a provider the conversation
+    // will not use.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'openai'
+    settingsState.hasApiKey = true
+    getAllApiKeyProvidersMock.mockResolvedValue([])
+    let releaseLookup!: () => void
+    loadApiKeyMock.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseLookup = () => resolve('openai-key')
+        }),
+    )
+    // The re-validation of the NEW selection finds no key.
+    loadApiKeyMock.mockImplementationOnce(async () => null)
+
+    const pending = checkAiReadiness()
+    for (let i = 0; i < 20 && releaseLookup === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseLookup).toBeTypeOf('function')
+    settingsState.providerType = 'deepseek'
+    releaseLookup()
+
+    await expect(pending).resolves.toEqual({ ready: false, creditExhausted: false })
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
+  it('reports ready when the visitor switches to a KEYED provider during the hasApiKey probe', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'openai'
+    settingsState.hasApiKey = true
+    getAllApiKeyProvidersMock.mockResolvedValue([])
+    let releaseLookup!: () => void
+    loadApiKeyMock.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseLookup = () => resolve('openai-key')
+        }),
+    )
+    loadApiKeyMock.mockImplementationOnce(async (provider: string) =>
+      provider === 'anthropic' ? 'anthropic-key' : null,
+    )
+
+    const pending = checkAiReadiness()
+    for (let i = 0; i < 20 && releaseLookup === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseLookup).toBeTypeOf('function')
+    settingsState.providerType = 'anthropic'
+    releaseLookup()
+
+    await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('anthropic')
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
+  it('still reports ready via the stale-flag branch when the key-store probe FAILS (non-timeout)', async () => {
+    // Degradation discipline: a store failure (not a stall) must not turn
+    // a ready visitor not-ready — the failure falls through to the broader
+    // probe below, which keeps the happy path (flag true + scan finding
+    // nothing else is not reached because the scan throws →
+    // keyStoreUnavailable, but a KEYED scan result still rescues).
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'openai'
+    settingsState.hasApiKey = true
+    loadApiKeyMock.mockRejectedValueOnce(new Error('sqlite unavailable'))
+    getAllApiKeyProvidersMock.mockRejectedValueOnce(new Error('sqlite unavailable'))
+
+    await expect(checkAiReadiness()).resolves.toEqual({
+      ready: false,
+      creditExhausted: false,
+      keyStoreUnavailable: true,
+    })
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
   it('not ready when nothing is configured (triggers the inline login step)', async () => {
     getValidAccessTokenMock.mockResolvedValue(null)
     await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })

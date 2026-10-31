@@ -131,25 +131,37 @@ async function applyGatewayLoginTokensInner(
     // after a newer login/logout has committed under this lock.
     const bounded = <T>(p: Promise<T>) => withKeyStoreDeadline(p)
     const pendingSettles: Array<Promise<void>> = []
+    // READS are bounded but never fenced: a read that lands after a newer
+    // commit cannot corrupt anything — callers re-validate what they read
+    // (the rollback CAS below compares against the live store).
     const runBounded = async <T>(p: Promise<T>): Promise<T> => {
+      const { result, settled } = bounded(p)
+      pendingSettles.push(settled)
+      return result
+    }
+    // MUTATIONS (save/delete) are fenced at their LANDING point (Sourcery
+    // round-20): a dispatch-time check cannot cover an op that stays pending
+    // past the registry TTL/quiescence cap while another tab commits — the
+    // stale effect exists only once the underlying op settles, so the fence
+    // is re-checked AFTER the await, at the point where the write has
+    // actually taken effect. A fenced mutation throws; the save path's
+    // catch runs the CAS rollback, which restores the newer credential
+    // untouched (it only restores when the store still holds THIS
+    // attempt's token).
+    const runBoundedFencedMutation = async <T>(p: Promise<T>): Promise<T> => {
       const { result, settled, opId } = bounded(p)
       pendingSettles.push(settled)
-      // Commit fencing (Sourcery round-19): a key-store op whose tab was
-      // SUSPENDED past the pending-entry TTL falls out of the cross-tab
-      // barrier, so another tab can commit while this op is still pending.
-      // When the op resumes, its write must not overwrite the newer
-      // credential (or undo a logout): refuse it — the caller surfaces a
-      // retryable error and a retry re-reads the current state.
+      const value = await result
       if (pendingKeyStoreOpIsFenced(opId)) {
         throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
       }
-      return result
+      return value
     }
     const previousKey = await runBounded(loadApiKey(keyId))
     signal?.throwIfAborted()
     let committed = false
     try {
-      await runBounded(saveApiKey(keyId, accessToken))
+      await runBoundedFencedMutation(saveApiKey(keyId, accessToken))
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
@@ -179,12 +191,20 @@ async function applyGatewayLoginTokensInner(
       // The aborted write may have committed. Roll back only while still
       // holding the lock shared by all gateway login attempts. Bounded the
       // same way as the forward path — a stalled key-store op must not hold
-      // the lock forever during rollback either.
+      // the lock forever during rollback either. The rollback MUTATIONS are
+      // fenced at their landing point too: an op that stayed pending past a
+      // newer credential commit must not delete that commit's key or
+      // overwrite it with this attempt's stale token (the CAS guard above
+      // already limits the restore to the store still holding THIS
+      // attempt's token; the fence additionally refuses the op outright).
       if (!committed) {
         const current = await runBounded(loadApiKey(keyId))
         if (current === accessToken) {
-          if (previousKey === null) await runBounded(deleteApiKey(keyId))
-          else await runBounded(saveApiKey(keyId, previousKey))
+          if (previousKey === null) {
+            await runBoundedFencedMutation(deleteApiKey(keyId))
+          } else {
+            await runBoundedFencedMutation(saveApiKey(keyId, previousKey))
+          }
         }
       }
       throw e

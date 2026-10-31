@@ -9,6 +9,7 @@
 
 import { t as translate } from '@creatorweave/i18n'
 import {
+  pendingKeyStoreOpIsFenced,
   trackPendingKeyStoreOp,
   withGatewayCredentialLock,
 } from '@/agent/providers/gateway-credential-lock'
@@ -345,10 +346,28 @@ function saveStoredTokens(tokens: StoredTokens): void {
     if (!current || JSON.stringify(current) !== JSON.stringify(tokens)) return
     // Await BOTH the raced result and the underlying settlement: releasing
     // the lock while the write is still pending would let it land after a
-    // logout has purged the backup, restoring a logged-out session.
-    const { result, settled } = withKeyStoreDeadline(persistRefreshTokenToSQLite(tokens))
-    await result
-    await settled
+    // logout has purged the backup, restoring a logged-out session. The
+    // write is FENCED at its landing point: an op that stayed pending past
+    // a newer credential commit must not overwrite that commit's backup
+    // with this (older) pair — the identity re-check above reads the state
+    // at dispatch, not at landing (round-20). The fenced write is swallowed
+    // by this fire-and-forget path's catch: the backup is an eventual-
+    // consistency copy of localStorage, and the next saveStoredTokens
+    // rewrites it.
+    // write is FENCED at its landing point: an op that stayed pending past
+    // a newer credential commit must not overwrite that commit's backup
+    // with this (older) pair — the identity re-check above reads the state
+    // at dispatch, not at landing (round-20). The fenced write is swallowed
+    // by this fire-and-forget path's catch: the backup is an eventual-
+    // consistency copy of localStorage, and the next saveStoredTokens
+    // rewrites it.
+    try {
+      await runBoundedFencedKeyStoreMutation(persistRefreshTokenToSQLite(tokens))
+    } catch {
+      // A fenced/stalled backup write is non-fatal here: the backup is an
+      // eventual-consistency copy of localStorage — the next saveStoredTokens
+      // rewrites it. The outer .catch already logs.
+    }
   }).catch((e) => {
     console.warn('[llm-gateway] persist refresh_token to SQLite failed:', e)
   })
@@ -387,6 +406,28 @@ async function runBoundedKeyStoreOp<T>(p: Promise<T>): Promise<T> {
   const { result, settled } = withKeyStoreDeadline(p)
   try {
     return await result
+  } finally {
+    await settled
+  }
+}
+
+/**
+ * Bounded key-store MUTATION with commit fencing at the mutation point
+ * (Sourcery round-20): the fence is re-checked AFTER the underlying op's
+ * effect has landed, so an op that stayed pending past the registry
+ * TTL/quiescence cap while another tab committed (login/logout/refresh)
+ * cannot overwrite the newer credential or undo the logout. A fenced
+ * mutation throws a retriable-looking error; the caller decides whether the
+ * path degrades (best-effort shadow) or reports failure (logout purge).
+ */
+async function runBoundedFencedKeyStoreMutation<T>(p: Promise<T>): Promise<T> {
+  const { result, settled, opId } = withKeyStoreDeadline(p)
+  try {
+    const value = await result
+    if (pendingKeyStoreOpIsFenced(opId)) {
+      throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+    }
+    return value
   } finally {
     await settled
   }
@@ -435,17 +476,18 @@ async function clearStoredTokens(
     const { deleteApiKey } = await import('@/security/api-key-store')
     // Bound each deletion: a key-store op that never settles must not hold
     // the credential lock forever (later logins, refreshes and logouts all
-    // queue behind it). A deadline-expired op that lands late is harmless —
-    // deleteApiKey idempotently removes the key, and `settled` was awaited
-    // so it cannot land after a newer credential commit.
+    // queue behind it). Each deletion is ALSO fenced at its landing point
+    // (runBoundedFencedKeyStoreMutation): a deletion that stayed pending
+    // past a newer credential commit must not delete that commit's key
+    // (round-20).
     const purgeFailures: unknown[] = []
     try {
-      await runBoundedKeyStoreOp(deleteApiKey(REFRESH_TOKEN_DB_KEY))
+      await runBoundedFencedKeyStoreMutation(deleteApiKey(REFRESH_TOKEN_DB_KEY))
     } catch (e) {
       purgeFailures.push(e)
     }
     try {
-      await runBoundedKeyStoreOp(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
+      await runBoundedFencedKeyStoreMutation(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
     } catch (e) {
       purgeFailures.push(e)
     }
@@ -509,13 +551,17 @@ async function purgeStaleAccessTokenShadow(): Promise<boolean> {
     return await withGatewayCredentialLock(async () => {
       if (loadStoredTokens()) return false
       const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
-      // Both key-store ops are bounded (see runBoundedKeyStoreOp): a stalled
-      // read or deletion must not hold the credential lock forever.
+      // The read is bounded only (see runBoundedKeyStoreOp): a stalled read
+      // must not hold the credential lock forever.
       const shadow = await runBoundedKeyStoreOp(loadApiKey(LLM_GATEWAY_API_KEY_ID))
       // A new session can appear during the key-store read. Do not delete
       // its access shadow when the earlier no-token observation is stale.
       if (!shadow || loadStoredTokens()) return false
-      await runBoundedKeyStoreOp(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
+      // The deletion is fenced at its landing point: an op that stayed
+      // pending past a newer credential commit must not delete that
+      // commit's shadow key (round-20). A fenced deletion here is reported
+      // like any other purge failure — the caller degrades to false.
+      await runBoundedFencedKeyStoreMutation(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
       return true
     })
   } catch (e) {
@@ -1089,26 +1135,23 @@ async function refreshAccessTokenWithStatusImpl(
       // bound it: a stalled key-store write must not hold the credential
       // lock forever (later commits/logout queue behind it indefinitely).
       // The shadow is a display/cache convenience — localStorage and the
-      // SQLite refresh-token backup remain authoritative. The lock is held
-      // until the write SETTLES (see the finally below) so a late write
-      // cannot overwrite a newer credential committed by another tab.
-      let shadowSettled: Promise<void> | null = null
+      // SQLite refresh-token backup remain authoritative. The write is ALSO
+      // fenced at its landing point: an op that stayed pending past a newer
+      // credential commit must not overwrite that commit's shadow with this
+      // refresh's (older) token (round-20). A fenced write is swallowed by
+      // the catch below — same best-effort degradation as a write failure.
+      // The helper awaits `settled` in its finally, so the lock is held
+      // until the write SETTLES: a late write cannot land after a newer
+      // credential committed by another tab.
       try {
-        const { result: shadowWrite, settled } = withKeyStoreDeadline(
+        await runBoundedFencedKeyStoreMutation(
           persistAccessTokenToKeyStore(tokens.access_token),
         )
-        shadowSettled = settled
-        await shadowWrite
       } catch (error) {
         console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
       }
       setCredentialStatus('valid')
-      const result: RefreshResult = { status: 'success', accessToken: tokens.access_token }
-      // Wait for the (possibly timed-out) shadow write to settle while still
-      // holding the lock — deadline expiry must not let it land after a
-      // newer login/logout has committed.
-      if (shadowSettled) await shadowSettled
-      return result
+      return { status: 'success', accessToken: tokens.access_token }
     })
   } catch (e) {
     // Only clear tokens if the refresh_token is definitively invalid.

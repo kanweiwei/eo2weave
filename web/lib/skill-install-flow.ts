@@ -192,8 +192,50 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
   const currentProviderType = settingsState.providerType
   const currentProviderIsGateway =
     currentProviderType === LLM_GATEWAY_PROVIDER_TYPE
+  // Verify the CURRENT selection's key against the LIVE store before
+  // reporting ready (round-20): `hasApiKey` is a cached snapshot that is
+  // never re-derived when another tab removes the key, or when the visitor
+  // switched to this provider while an earlier probe was pending — trusting
+  // it alone reports ready for a provider with no usable credential, and
+  // the conversation fails on its first request.
   if (settingsState.hasApiKey && !currentProviderIsGateway) {
-    return { ready: true, creditExhausted: false }
+    try {
+      const liveKey = await withProbeTimeout(
+        loadApiKey(currentProviderType),
+        `reading the ${currentProviderType} key`,
+      )
+      // The lookup awaited — re-read the selection: the visitor may have
+      // switched providers while it was pending, and readiness must vouch
+      // for the provider the conversation will actually use.
+      const freshProvider = useSettingsStore.getState().providerType
+      if (freshProvider !== LLM_GATEWAY_PROVIDER_TYPE && freshProvider !== currentProviderType) {
+        // A new non-gateway selection: verify ITS key from the live store
+        // (the cached flag was never re-derived for it). Unconfigured →
+        // the safe not-ready/login verdict, mirroring the re-check
+        // discipline of the branches above.
+        const freshKey = await withProbeTimeout(
+          loadApiKey(freshProvider),
+          `reading the ${freshProvider} key`,
+        )
+        if (freshKey) {
+          return { ready: true, creditExhausted: false }
+        }
+        if (allowRecheck) return checkAiReadinessOnce(/* allowRecheck: */ false)
+        return { ready: false, creditExhausted: false }
+      }
+      if (freshProvider !== LLM_GATEWAY_PROVIDER_TYPE && liveKey) {
+        return { ready: true, creditExhausted: false }
+      }
+      // liveKey === null (key removed in another tab) or the visitor
+      // switched TO the gateway (its key is the already-disproved token):
+      // fall through to the other-provider scan instead of trusting the
+      // stale flag.
+    } catch (e) {
+      // A STALLED probe propagates so the page surfaces a retryable error;
+      // any other store failure falls through to the broader probe below,
+      // whose failure path flags `keyStoreUnavailable` for the retry UI.
+      if (e instanceof Error && e.message.includes('timed out')) throw e
+    }
   }
 
   try {

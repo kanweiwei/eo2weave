@@ -656,6 +656,45 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(deleteApiKeyMock).not.toHaveBeenCalled()
     })
 
+    it('refuses a STALE purge that lands after a newer credential commit (fenced at the mutation point)', async () => {
+      // Round-20: a logout whose key-store deletion stays pending past the
+      // registry TTL/quiescence cap while ANOTHER tab commits a fresh login
+      // must not delete that login's keys. The landing-point fence re-checks
+      // the commit sequence AFTER the deletion resolved and turns it into a
+      // purge failure — logout reports the retryable error instead of
+      // reporting complete (a "complete" logout that deleted a newer
+      // session's credentials would leave the newer tab logged out).
+      localStorage.clear()
+      const { __resetGatewayCredentialFencingForTests } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      __resetGatewayCredentialFencingForTests()
+      // The lock grant itself stamps the commit sequence (seq=1) inside the
+      // logout's critical section; a newer login commit is seq=2. The
+      // refresh-token backup delete pends (simulating the suspended-tab
+      // stall); the shadow delete resolves immediately — BOTH then hit the
+      // landing-point fence and fail into purgeFailures.
+      const pendingDeletes: Array<() => void> = []
+      deleteApiKeyMock.mockImplementation((provider: string) =>
+        provider === '__llm_gateway_refresh_token__'
+          ? new Promise<void>((resolve) => {
+              pendingDeletes.push(() => resolve())
+            })
+          : Promise.resolve(),
+      )
+      const logout = logoutGateway()
+      await vi.waitFor(() => expect(deleteApiKeyMock).toHaveBeenCalledTimes(1))
+      // A newer tab commits a login while this deletion is pending.
+      localStorage.setItem('eo2weave-gateway-credential-commit-seq', '2')
+      for (const release of pendingDeletes) release()
+
+      // The fenced deletion is a purge failure: logout must NOT declare the
+      // session gone.
+      await expect(logout).rejects.toThrow()
+      expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
+      __resetGatewayCredentialFencingForTests()
+    })
+
     it('logoutGateway also purges the api-key shadow key', async () => {
       await logoutGateway()
 
