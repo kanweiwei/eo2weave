@@ -152,10 +152,30 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
             .switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, '')
           return { ready: true, creditExhausted }
         }
-        // The newly selected provider has its own usable key — the visitor's
-        // choice stands; their credential, their provider. The gateway's
-        // credit state only matters when the conversation will actually run
-        // on the gateway, so it is NOT propagated here.
+        // The selection at snapshot time has its own usable key — BUT the
+        // lookup above awaited, and the visitor may have switched to a
+        // DIFFERENT provider while it was pending. Returning ready here
+        // would vouch for the provider we checked, not the one the
+        // conversation will actually use (an unconfigured new selection
+        // would fail its first request). Re-read the selection; if it
+        // changed, revalidate the NEW provider's key from the live store
+        // (the cached `hasApiKey` flag was never re-derived for it) and
+        // restart the pass when that new choice is unconfigured — the same
+        // discipline as the `!keyed` branch above and the candidate loops
+        // below. A visitor switching repeatedly within the probe window
+        // degrades to the safe not-ready/login verdict (single restart).
+        const freshProvider = useSettingsStore.getState().providerType
+        if (freshProvider !== selectedProvider) {
+          const newProviderKey = await withProbeTimeout(
+            loadApiKey(freshProvider),
+            `reading the ${freshProvider} key`,
+          )
+          if (newProviderKey) {
+            return { ready: true, creditExhausted: false }
+          }
+          if (allowRecheck) return checkAiReadinessOnce(/* allowRecheck: */ false)
+          return { ready: false, creditExhausted: false }
+        }
         return { ready: true, creditExhausted: false }
       }
       return { ready: true, creditExhausted }

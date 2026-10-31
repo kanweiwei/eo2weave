@@ -128,6 +128,77 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     expect(settingsState.providerType).toBe('openai')
   })
 
+  it('RE-EVALUATES when the visitor switches mid-lookup and the OLD selection turns out keyed', async () => {
+    // Sourcery round-18 (2026-10-31T00:20:21Z): the keyed-return in the
+    // gateway-valid branch vouched for the provider it CHECKED, not the one
+    // selected after the visitor's mid-lookup switch — the conversation
+    // would start through an unconfigured provider. The lookup must be
+    // followed by a fresh selection read: when it changed, the stale pass
+    // restarts (the safe default is not-ready/login for an unconfigured
+    // new choice), never plain ready for the checked provider.
+    getValidAccessTokenMock.mockResolvedValue('tok-1')
+    fetchGatewayRateLimitsMock.mockResolvedValue({ available_credit: 100 })
+    settingsState.providerType = 'anthropic'
+    let releaseLookup!: (value?: string) => void
+    loadApiKeyMock.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseLookup = (value?: string) => resolve(value ?? 'anthropic-key')
+        }),
+    )
+
+    const pending = checkAiReadiness()
+    for (let i = 0; i < 20 && releaseLookup === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseLookup).toBeTypeOf('function')
+    // Visitor switches to an unconfigured provider while the selected
+    // provider's key lookup is pending; the lookup then resolves WITH a key.
+    settingsState.providerType = 'deepseek'
+    releaseLookup()
+
+    await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+    // The stale pass must NOT vouch for the switched-away provider: the
+    // restart re-evaluates the visitor's newer choice ('deepseek'), finds it
+    // unconfigured, and — per the round-16 `!keyed` branch — switches the
+    // selection to the gateway (which provably holds the valid token) so the
+    // conversation never starts through an unconfigured provider.
+    expect(settingsState.providerType).toBe('llm-gateway')
+  })
+
+  it('reports ready mid-lookup switch in the gateway branch only when the NEW provider is keyed', async () => {
+    // Same race, but the NEW selection genuinely holds a key: readiness is
+    // reported for the visitor's actual choice (no overwrite, no switch).
+    getValidAccessTokenMock.mockResolvedValue('tok-1')
+    fetchGatewayRateLimitsMock.mockResolvedValue({ available_credit: 100 })
+    settingsState.providerType = 'anthropic'
+    let releaseLookup!: (value?: string) => void
+    loadApiKeyMock.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseLookup = (value?: string) => resolve(value ?? 'anthropic-key')
+        }),
+    )
+    loadApiKeyMock.mockImplementationOnce(async (provider: string) =>
+      provider === 'deepseek' ? 'deepseek-key' : null,
+    )
+
+    const pending = checkAiReadiness()
+    for (let i = 0; i < 20 && releaseLookup === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseLookup).toBeTypeOf('function')
+    settingsState.providerType = 'deepseek'
+    releaseLookup()
+
+    await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('deepseek')
+    // Restore the file-default per-provider mock so later tests are unaffected.
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
   it('does NOT fail readiness when the quota probe throws (best-effort)', async () => {
     getValidAccessTokenMock.mockResolvedValue('tok-1')
     fetchGatewayRateLimitsMock.mockRejectedValue(new Error('401'))
