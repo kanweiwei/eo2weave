@@ -325,7 +325,7 @@ describe('SkillInstallPage (issue #126)', () => {
     await waitFor(() => expect(screen.getByText('skillInstall.creditExhausted')).toBeInTheDocument())
     expect(routerReplaceMock).not.toHaveBeenCalled()
     // A follow-up start proceeds to the conversation.
-    fireEvent.click(screen.getByText('skillInstall.starting'))
+    fireEvent.click(screen.getByText('skillInstall.startUsing'))
     await waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1/workspaces/recent-conv')
     })
@@ -377,7 +377,7 @@ describe('SkillInstallPage (issue #126)', () => {
 
     // The single click (start) verifies registration (refresh-on-miss) and
     // runs readiness — never a re-install.
-    fireEvent.click(screen.getByText('skillInstall.starting'))
+    fireEvent.click(screen.getByText('skillInstall.startUsing'))
     await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
     ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     expect(installSkillFromUrlMock).not.toHaveBeenCalled()
@@ -400,7 +400,7 @@ describe('SkillInstallPage (issue #126)', () => {
     })
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('skillInstall.starting'))
+    fireEvent.click(screen.getByText('skillInstall.startUsing'))
     await waitFor(() => expect(screen.getByText('skillInstall.registerFailed')).toBeInTheDocument())
     expect(routerReplaceMock).not.toHaveBeenCalled()
     expect(installSkillFromUrlMock).not.toHaveBeenCalled()
@@ -495,7 +495,7 @@ describe('SkillInstallPage (issue #126)', () => {
     ])
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('skillInstall.starting'))
+    fireEvent.click(screen.getByText('skillInstall.startUsing'))
     await waitFor(() => {
       expect(setUserSkillEnabledMock).toHaveBeenCalledWith(`user:${ENTRY.dirName}`, true)
     })

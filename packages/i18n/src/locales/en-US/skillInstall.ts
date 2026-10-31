@@ -26,5 +26,6 @@ export const skillInstall = {
     creditExhausted: "Your Nutstore AI credit balance is 0 — top up before running this skill.",
     recharge: "Top up",
     starting: "Opening conversation…",
+    startUsing: "Start using",
     startFailed: "Couldn't open a conversation. Open the app and try again.",
 } as const

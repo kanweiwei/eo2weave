@@ -723,7 +723,7 @@ function SkillInstallView() {
             className="flex h-10 items-center gap-2 rounded-md bg-primary-600 px-6 text-sm font-medium text-white transition-colors hover:bg-primary-700"
           >
             <Package className="h-4 w-4" />
-            {alreadyInstalled ? t('skillInstall.starting') : t('skillInstall.installButton')}
+            {alreadyInstalled ? t('skillInstall.startUsing') : t('skillInstall.installButton')}
           </button>
         )}
       </Centered>

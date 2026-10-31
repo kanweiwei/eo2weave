@@ -26,5 +26,6 @@ export const skillInstall = {
     creditExhausted: "你的坚果云 AI 积分余额为 0，请先充值再运行该技能。",
     recharge: "去充值",
     starting: "正在打开对话…",
+    startUsing: "开始使用",
     startFailed: "无法打开对话，请打开应用后重试。",
 } as const

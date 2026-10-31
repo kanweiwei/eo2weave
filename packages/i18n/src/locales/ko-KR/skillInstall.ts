@@ -26,5 +26,6 @@ export const skillInstall = {
     creditExhausted: "Nutstore AI 크레딧 잔액이 0입니다. 실행하기 전에 충전해 주세요.",
     recharge: "충전하기",
     starting: "대화를 열고 있습니다…",
+    startUsing: "사용 시작",
     startFailed: "대화를 열 수 없습니다. 앱을 열고 다시 시도해 주세요.",
 } as const

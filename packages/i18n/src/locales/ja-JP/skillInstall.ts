@@ -26,5 +26,6 @@ export const skillInstall = {
     creditExhausted: "Nutstore AI のクレジット残高が 0 です。実行前にチャージしてください。",
     recharge: "チャージ",
     starting: "会話を開いています…",
+    startUsing: "使ってみる",
     startFailed: "会話を開けませんでした。アプリを開いて再試行してください。",
 } as const
