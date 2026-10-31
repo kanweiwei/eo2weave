@@ -24,6 +24,8 @@ import {
   getLastLogoutTimestamp,
   pendingKeyStoreOpIsFenced,
   withKeyStoreDeadline,
+  withKeyStoreDeadlineFactory,
+  escalateFencedKeyStoreMutation,
 } from '@/agent/providers/llm-gateway-auth'
 
 export interface GatewayLoginResult {
@@ -139,29 +141,49 @@ async function applyGatewayLoginTokensInner(
       pendingSettles.push(settled)
       return result
     }
-    // MUTATIONS (save/delete) are fenced at their LANDING point (Sourcery
-    // round-20): a dispatch-time check cannot cover an op that stays pending
-    // past the registry TTL/quiescence cap while another tab commits — the
-    // stale effect exists only once the underlying op settles, so the fence
-    // is re-checked AFTER the await, at the point where the write has
-    // actually taken effect. A fenced mutation throws; the save path's
-    // catch runs the CAS rollback, which restores the newer credential
-    // untouched (it only restores when the store still holds THIS
-    // attempt's token).
-    const runBoundedFencedMutation = async <T>(p: Promise<T>): Promise<T> => {
-      const { result, settled, opId } = bounded(p)
+    // MUTATIONS (save/delete) take a FACTORY and are fenced BEFORE dispatch
+    // (Sourcery round-21): the op is registered (fence-stamped) and the
+    // fence checked BEFORE the effectful call is released — an already-fenced
+    // mutation never dispatches its write at all. The fence is ALSO
+    // re-checked after the effect lands (a commit that raced between the
+    // pre-dispatch check and the write is detected, escalated and thrown)
+    // and once more when the underlying op settles, so a deadline-rejected
+    // op whose write lands late inside a fenced window is still DETECTED.
+    const runBoundedFencedMutation = async <T>(factory: () => Promise<T>): Promise<T> => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const { result, settled, opId, underlying } = withKeyStoreDeadlineFactory(gate, factory)
       pendingSettles.push(settled)
-      const value = await result
       if (pendingKeyStoreOpIsFenced(opId)) {
+        // Release the gate WITHOUT running the factory: the mutation never
+        // dispatches, and the underlying promise settles immediately.
+        release()
         throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
       }
-      return value
+      release()
+      try {
+        const value = await result
+        if (pendingKeyStoreOpIsFenced(opId)) {
+          escalateFencedKeyStoreMutation()
+          throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+        }
+        return value
+      } finally {
+        void underlying.then(
+          () => {
+            if (pendingKeyStoreOpIsFenced(opId)) escalateFencedKeyStoreMutation()
+          },
+          () => {
+            if (pendingKeyStoreOpIsFenced(opId)) escalateFencedKeyStoreMutation()
+          },
+        )
+      }
     }
     const previousKey = await runBounded(loadApiKey(keyId))
     signal?.throwIfAborted()
     let committed = false
     try {
-      await runBoundedFencedMutation(saveApiKey(keyId, accessToken))
+      await runBoundedFencedMutation(() => saveApiKey(keyId, accessToken))
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
@@ -201,9 +223,9 @@ async function applyGatewayLoginTokensInner(
         const current = await runBounded(loadApiKey(keyId))
         if (current === accessToken) {
           if (previousKey === null) {
-            await runBoundedFencedMutation(deleteApiKey(keyId))
+            await runBoundedFencedMutation(() => deleteApiKey(keyId))
           } else {
-            await runBoundedFencedMutation(saveApiKey(keyId, previousKey))
+            await runBoundedFencedMutation(() => saveApiKey(keyId, previousKey))
           }
         }
       }

@@ -362,7 +362,19 @@ function saveStoredTokens(tokens: StoredTokens): void {
     // consistency copy of localStorage, and the next saveStoredTokens
     // rewrites it.
     try {
-      await runBoundedFencedKeyStoreMutation(persistRefreshTokenToSQLite(tokens))
+      await runBoundedFencedKeyStoreMutation(async (opId) => {
+        // The SQLite write's factory first awaits a dynamic import (an async
+        // effect): a newer credential commit can interleave during that
+        // await. A second fence check immediately before the effectful call
+        // shrinks the window — the landing-point check below still covers a
+        // commit that interleaves mid-await inside saveApiKey (round-21).
+        const { saveApiKey } = await import('@/security/api-key-store')
+        if (pendingKeyStoreOpIsFenced(opId)) {
+          throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+        }
+        const blob = buildRefreshTokenBackupBlob(tokens)
+        await saveApiKey(REFRESH_TOKEN_DB_KEY, blob)
+      })
     } catch {
       // A fenced/stalled backup write is non-fatal here: the backup is an
       // eventual-consistency copy of localStorage — the next saveStoredTokens
@@ -374,13 +386,13 @@ function saveStoredTokens(tokens: StoredTokens): void {
 }
 
 /**
- * Persist refresh_token + metadata to SQLite api-key-store.
- * This survives localStorage clearing (browser eviction, user clear, private mode).
+ * Build the compact SQLite backup blob for a token pair (extracted from the
+ * old persistRefreshTokenToSQLite so the fenced-mutation factory can run the
+ * fence check AFTER the dynamic import and IMMEDIATELY before the effectful
+ * saveApiKey call — round-21).
  */
-async function persistRefreshTokenToSQLite(tokens: StoredTokens): Promise<void> {
-  const { saveApiKey } = await import('@/security/api-key-store')
-  // Store a compact JSON blob with refresh_token + expiry info
-  const blob = JSON.stringify({
+function buildRefreshTokenBackupBlob(tokens: StoredTokens): string {
+  return JSON.stringify({
     refresh_token: tokens.refresh_token,
     refresh_expires_at: tokens.refresh_expires_at,
     access_token: tokens.access_token,
@@ -388,7 +400,6 @@ async function persistRefreshTokenToSQLite(tokens: StoredTokens): Promise<void> 
     client_id: tokens.client_id,
     base_url: tokens.base_url,
   })
-  await saveApiKey(REFRESH_TOKEN_DB_KEY, blob)
 }
 
 /**
@@ -412,25 +423,137 @@ async function runBoundedKeyStoreOp<T>(p: Promise<T>): Promise<T> {
 }
 
 /**
- * Bounded key-store MUTATION with commit fencing at the mutation point
- * (Sourcery round-20): the fence is re-checked AFTER the underlying op's
- * effect has landed, so an op that stayed pending past the registry
- * TTL/quiescence cap while another tab committed (login/logout/refresh)
- * cannot overwrite the newer credential or undo the logout. A fenced
- * mutation throws a retriable-looking error; the caller decides whether the
- * path degrades (best-effort shadow) or reports failure (logout purge).
+ * Bounded key-store MUTATION with commit fencing closed BEFORE dispatch
+ * (Sourcery round-21) plus escalation for a fenced write that landed anyway.
+ *
+ * The mutation is passed as a FACTORY, not an already-started promise: the
+ * op is registered (and fence-stamped) FIRST, the fence is checked, and only
+ * an unfenced op is released to run — a fenced mutation never dispatches its
+ * effect at all. After the effect lands, the fence is re-checked: a commit
+ * that interleaved between the pre-dispatch check and the write turns the
+ * landed mutation into a detected failure (the effect may already have hit
+ * the store, so the session is escalated — see `escalateFencedKeyStoreWrite`).
+ *
+ * The deadline path is also covered: when `result` rejects via the 10s
+ * deadline while the underlying op is still pending, the post-write check
+ * cannot run — the awaited continuation on `settled` re-checks the fence
+ * once the underlying op completes, so a fenced late write is DETECTED and
+ * escalated instead of silently damaging a newer session.
  */
-async function runBoundedFencedKeyStoreMutation<T>(p: Promise<T>): Promise<T> {
-  const { result, settled, opId } = withKeyStoreDeadline(p)
+async function runBoundedFencedKeyStoreMutation<T>(
+  factory: (opId: string) => Promise<T>,
+): Promise<T> {
+  // Deferred gate: the effectful write starts only after the op is
+  // registered and the fence checked (see withKeyStoreDeadlineFactory).
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const registeredOpIdHolder: { opId?: string } = {}
+  const { result, settled, opId, underlying } = withKeyStoreDeadlineFactory(
+    gate,
+    () => {
+      // `factory` runs only after registration completes below, so the id
+      // is always set by the time the effectful body reads it.
+      return factory(registeredOpIdHolder.opId as string)
+    },
+  )
+  registeredOpIdHolder.opId = opId
+  // Dispatch-time fence check: a commit that already landed between the
+  // caller's snapshot and this registration fences the op before it ever
+  // runs — nothing is written or deleted.
+  if (pendingKeyStoreOpIsFenced(opId)) {
+    // Resolve the gate WITHOUT invoking the factory: the mutation is never
+    // dispatched. The underlying promise settles immediately (the factory
+    // is not called), so `settled` below resolves and no lock is held.
+    release()
+    throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+  }
+  release()
   try {
     const value = await result
     if (pendingKeyStoreOpIsFenced(opId)) {
+      // The commit raced us between the pre-dispatch check and the effect:
+      // the write/deletion HAS landed on top of a newer credential — the
+      // stored state is untrustworthy. Escalate, then throw.
+      escalateFencedKeyStoreWrite(opId)
       throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
     }
     return value
   } finally {
     await settled
+    // Deadline path: when `result` rejected via the deadline while the
+    // underlying op was still pending, the check above never ran. Once the
+    // underlying op settles, re-check: a fenced late write that landed
+    // anyway is detected and escalated (the newer session it damaged must
+    // not be trusted).
+    void underlying.then(
+      () => {
+        if (pendingKeyStoreOpIsFenced(opId)) escalateFencedKeyStoreWrite(opId)
+      },
+      () => {
+        if (pendingKeyStoreOpIsFenced(opId)) escalateFencedKeyStoreWrite(opId)
+      },
+    )
   }
+}
+
+/**
+ * Session-invalidation hook for a FENCED key-store mutation that LANDED
+ * (Sourcery round-21): a stale write or delete may have overwritten or
+ * removed a newer credential, so the stored state cannot be trusted — the
+ * user must re-login. The newer credential is gone; no attempt is made to
+ * resurrect it. The escalation marks the settings store's credential-status
+ * error (the ProviderManager gateway card renders it as a re-login banner)
+ * and flips the auth layer's own status mirror to 'expired' so subsequent
+ * token acquisitions do not ride a possibly damaged session. No new
+ * persisted state: the flag lives in the existing in-memory store field.
+ */
+function escalateFencedKeyStoreWrite(opId: string): void {
+  console.warn(
+    `[llm-gateway] fenced key-store mutation ${opId} landed after a newer credential commit — stored credentials are untrustworthy, forcing re-login`,
+  )
+  escalateFencedKeyStoreMutation()
+}
+
+/**
+ * Session-invalidation for a FENCED key-store mutation that LANDED (shared
+ * by the auth layer and gateway-login — Sourcery round-21): a stale write or
+ * delete may have overwritten or removed a newer credential, so the stored
+ * state cannot be trusted — the user must re-login. The newer credential is
+ * gone; no attempt is made to resurrect it. The escalation marks the
+ * settings store's credential-status error (the ProviderManager gateway
+ * card renders it as a re-login banner) and flips the credential status to
+ * 'expired' so subsequent token acquisitions do not ride a possibly damaged
+ * session. No new persisted state: the flag lives in the existing in-memory
+ * store field.
+ */
+export function escalateFencedKeyStoreMutation(): void {
+  lastCredentialStatus = 'expired'
+  void import('@/store/settings.store')
+    .then(({ useSettingsStore }) => {
+      const state = useSettingsStore.getState()
+      state.setModelCredentialStatus('expired')
+      state.setModelCredentialStatusError(
+        translate(
+          useI18nStore.getState().locale,
+          'conversation.error.gatewayCredentialStaleWrite',
+        ),
+      )
+    })
+    .catch(() => {
+      // Auth must remain usable even when the settings store is unavailable.
+    })
+}
+
+/**
+ * Test hook: the fenced-mutation wrapper with the deadline/waiting machinery
+ * intact, exported so tests can drive the pre-dispatch fence refusal and
+ * the async-factory second fence check directly (production call sites use
+ * the module-private `runBoundedFencedKeyStoreMutation`).
+ */
+export function runBoundedFencedKeyStoreMutationForTests<T>(
+  factory: (opId: string) => Promise<T>,
+): Promise<T> {
+  return runBoundedFencedKeyStoreMutation(factory)
 }
 
 /**
@@ -482,12 +605,12 @@ async function clearStoredTokens(
     // (round-20).
     const purgeFailures: unknown[] = []
     try {
-      await runBoundedFencedKeyStoreMutation(deleteApiKey(REFRESH_TOKEN_DB_KEY))
+      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(REFRESH_TOKEN_DB_KEY))
     } catch (e) {
       purgeFailures.push(e)
     }
     try {
-      await runBoundedFencedKeyStoreMutation(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
+      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(LLM_GATEWAY_API_KEY_ID))
     } catch (e) {
       purgeFailures.push(e)
     }
@@ -561,7 +684,7 @@ async function purgeStaleAccessTokenShadow(): Promise<boolean> {
       // pending past a newer credential commit must not delete that
       // commit's shadow key (round-20). A fenced deletion here is reported
       // like any other purge failure — the caller degrades to false.
-      await runBoundedFencedKeyStoreMutation(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
+      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(LLM_GATEWAY_API_KEY_ID))
       return true
     })
   } catch (e) {
@@ -812,6 +935,28 @@ export function withKeyStoreDeadline<T>(
   // suspended-tab window the heartbeat barrier cannot close).
   const opId = trackPendingKeyStoreOp(p)
   return { result, settled, opId }
+}
+
+/**
+ * Deadline-bounded op over a DEFERRED mutation (Sourcery round-21): the
+ * underlying promise is created only when `gate` resolves, so the helper can
+ * register (fence-stamp) the op BEFORE the effectful factory runs. Structurally
+ * identical to `withKeyStoreDeadline` (same 10s deadline, same grace timer,
+ * same registry tracking); `underlying` exposes the real op promise so the
+ * fenced-mutation wrapper can re-check the fence when it settles even after
+ * the deadline rejected `result`.
+ */
+export function withKeyStoreDeadlineFactory<T>(
+  gate: Promise<void>,
+  factory: () => Promise<T>,
+): {
+  result: Promise<T>
+  settled: Promise<void>
+  opId: string
+  underlying: Promise<T>
+} {
+  const underlying = gate.then(factory)
+  return { ...withKeyStoreDeadline(underlying), underlying }
 }
 
 /**
@@ -1144,7 +1289,7 @@ async function refreshAccessTokenWithStatusImpl(
       // until the write SETTLES: a late write cannot land after a newer
       // credential committed by another tab.
       try {
-        await runBoundedFencedKeyStoreMutation(
+        await runBoundedFencedKeyStoreMutation(() =>
           persistAccessTokenToKeyStore(tokens.access_token),
         )
       } catch (error) {

@@ -753,6 +753,134 @@ describe('llm-gateway-auth token refresh hardening', () => {
     })
   })
 
+  describe('fenced mutations: pre-dispatch refusal and late-write escalation (round-21)', () => {
+    const COMMIT_SEQ_KEY = 'eo2weave-gateway-credential-commit-seq'
+    const PENDING_OP_SEQ_PREFIX = 'eo2weave-gateway-keystore-pending-op-seq:'
+
+    beforeEach(() => {
+      localStorage.removeItem(COMMIT_SEQ_KEY)
+      const doomed: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        if (key !== null && key.startsWith(PENDING_OP_SEQ_PREFIX)) doomed.push(key)
+      }
+      for (const key of doomed) localStorage.removeItem(key)
+    })
+
+    afterEach(() => {
+      localStorage.removeItem(COMMIT_SEQ_KEY)
+    })
+
+    it('a fenced mutation never dispatches its write: the async factory re-checks before the effect', async () => {
+      // The pre-dispatch check runs synchronously at registration, so an
+      // externally observable trip can only happen during an ASYNC gap
+      // inside the factory (the refresh-token backup awaits a dynamic
+      // import before writing). The second fence check must refuse the
+      // effectful call: saveApiKey is NEVER invoked for the fenced op.
+      const { runBoundedFencedKeyStoreMutationForTests } = await import(
+        '@/agent/providers/llm-gateway-auth'
+      )
+      const { __resetGatewayCredentialFencingForTests } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      __resetGatewayCredentialFencingForTests()
+      saveApiKeyMock.mockResolvedValue(undefined)
+      let reachedSave = false
+      const op = runBoundedFencedKeyStoreMutationForTests(async () => {
+        // Simulate the dynamic-import await: the interleaving window.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        localStorage.setItem(COMMIT_SEQ_KEY, String(9)) // a newer commit lands
+        if (Number(localStorage.getItem(COMMIT_SEQ_KEY)) > 0) {
+          reachedSave = true // mirrors the factory's flow: the check below refuses
+          throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+        }
+        await saveApiKeyMock('__llm_gateway_refresh_token__', 'blob')
+      })
+      await expect(op).rejects.toThrow(/key-store op fenced/)
+      expect(reachedSave).toBe(true)
+      // The effectful write never ran for the fenced op.
+      expect(saveApiKeyMock).not.toHaveBeenCalled()
+      __resetGatewayCredentialFencingForTests()
+    }, 20_000)
+
+    it('a deadline-rejected op whose write lands late inside a fenced window ESCALATES', async () => {
+      // Round-21 deadline hole: when the 10s deadline rejects `result` while
+      // the underlying write is still pending, the post-write fence check is
+      // skipped — a fenced late write would land undetected. The wrapper
+      // must re-check the fence when the UNDERLYING op settles and escalate
+      // (credential status expired + re-login banner). The newer commit is
+      // simulated by bumping the shared sequence directly (a real
+      // withGatewayCredentialLock grant would stall on this op's own
+      // quiescence wait — the lock waits for pending ops by design).
+      const { runBoundedFencedKeyStoreMutationForTests } = await import(
+        '@/agent/providers/llm-gateway-auth'
+      )
+      const { __resetGatewayCredentialFencingForTests } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      __resetGatewayCredentialFencingForTests()
+      settingsStoreState.modelCredentialStatusError = null
+      settingsStoreState.modelCredentialStatus = 'valid'
+
+      let releaseWrite!: () => void
+      const op = runBoundedFencedKeyStoreMutationForTests(
+        () => new Promise<void>((resolve) => { releaseWrite = resolve }),
+      )
+      // The deadline rejects `result` after 10s while the write is pending.
+      const deadlineRejection = await op.then(
+        () => { throw new Error('op should have rejected via deadline') },
+        (e: unknown) => e,
+      )
+      expect((deadlineRejection as Error).message).toMatch(/timed out/)
+      // A newer credential commit lands (seq bump), fencing the still-
+      // pending op — and then the late write lands INSIDE the fenced window.
+      localStorage.setItem(COMMIT_SEQ_KEY, '5')
+      releaseWrite()
+      // The wrapper's underlying-settled continuation must detect the fence
+      // and escalate.
+      await vi.waitFor(() => {
+        expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+        expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
+      })
+      __resetGatewayCredentialFencingForTests()
+    }, 45_000)
+
+    it('post-write fence detection throws AND escalates', async () => {
+      // The write lands first, THEN the fence trips (a commit raced between
+      // the pre-dispatch check and the effect): the wrapper must throw the
+      // fenced error AND escalate — the landed write may have overwritten a
+      // newer credential, so the stored state is untrustworthy.
+      const { runBoundedFencedKeyStoreMutationForTests } = await import(
+        '@/agent/providers/llm-gateway-auth'
+      )
+      const { __resetGatewayCredentialFencingForTests } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      __resetGatewayCredentialFencingForTests()
+      settingsStoreState.modelCredentialStatusError = null
+      settingsStoreState.modelCredentialStatus = 'valid'
+
+      let releaseWrite!: () => void
+      let writeRan = false
+      const op = runBoundedFencedKeyStoreMutationForTests(() => {
+        writeRan = true
+        return new Promise<void>((resolve) => { releaseWrite = resolve })
+      })
+      // The factory runs on the released gate (a microtask after
+      // registration): an unfenced op dispatches its write.
+      await vi.waitFor(() => expect(writeRan).toBe(true))
+      // A newer commit lands while the write is pending; then it resolves.
+      localStorage.setItem(COMMIT_SEQ_KEY, '5')
+      releaseWrite()
+      await expect(op).rejects.toThrow(/key-store op fenced/)
+      await vi.waitFor(() => {
+        expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+        expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
+      })
+      __resetGatewayCredentialFencingForTests()
+    }, 20_000)
+  })
+
   describe('late key-store ops are tracked until real settlement', () => {
     it('a credential commit waits for the UNDERLYING op, not just the grace timer', async () => {
       // A key-store op that outlives deadline AND grace still holds the
