@@ -659,10 +659,13 @@ function SkillInstallView() {
               // project fallback runs (missing/unknown skill), so
               // activeProjectId may still be empty here — resolve the same
               // first-project fallback inline, or WorkspaceLayout never
-              // mounts and the open flag is dropped.
+              // mounts and the open flag is dropped. NOTE: the project
+              // store models "no active project" as the EMPTY STRING (not
+              // null/undefined), so the fallback must use `||` — `??`
+              // never fires on '' and silently drops the fallback.
               const { activeProjectId, projects, setActiveProject } =
                 useProjectStore.getState()
-              const targetProjectId = activeProjectId ?? projects[0]?.id ?? ''
+              const targetProjectId = activeProjectId || projects[0]?.id || ''
               if (targetProjectId && !activeProjectId) {
                 void setActiveProject(targetProjectId)
               }
@@ -772,13 +775,28 @@ function SkillInstallView() {
           />
         ) : (
           // Gateway disabled on this build (e.g. international): the device-
-          // code login would always fail (no client id) — offer the app home
-          // instead (Settings → provider key is reachable from the top bar
-          // there), plus the same "skip" escape.
+          // code login would always fail (no client id). Route to a project
+          // workspace and arm the one-shot settingsOpenRequest —
+          // WorkspaceLayout (mounted only on /projects/:projectId/**)
+          // consumes it and opens the unified SettingsDialog directly on
+          // the LLM tab, so the visitor reaches the provider-key surface
+          // without hunting for the gear icon. The same "skip" escape
+          // remains.
           <div className="flex w-full max-w-sm flex-col items-center gap-3">
             <button
               type="button"
-              onClick={() => router.replace('/projects')}
+              onClick={() => {
+                const { activeProjectId, projects, setActiveProject } =
+                  useProjectStore.getState()
+                // Same empty-string sentinel as the error view: the store
+                // models "no active project" as '' — `||`, never `??`.
+                const targetProjectId = activeProjectId || projects[0]?.id || ''
+                if (targetProjectId && !activeProjectId) {
+                  void setActiveProject(targetProjectId)
+                }
+                useWorkspacePreferencesStore.getState().setSettingsOpenRequest(true)
+                router.replace(projectWorkspacePath(targetProjectId))
+              }}
               className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
             >
               <KeyRound className="h-4 w-4" />

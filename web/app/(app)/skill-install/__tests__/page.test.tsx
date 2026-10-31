@@ -65,17 +65,21 @@ vi.mock('@/lib/jianguoyun-ai-console', () => ({
 }))
 
 // Login-phase tests need the gateway branch (device-code login UI), not the
-// gateway-disabled fallback this test environment would otherwise pick.
-vi.mock('@/lib/deploy-region', () => ({
-  ENABLE_LLM_GATEWAY: true,
-}))
-
 // The test env has no NEXT_PUBLIC_DEPLOY_REGION, so the real module reports
 // a non-CN build — the login step (and InlineGatewayLogin) is gated behind
-// ENABLE_LLM_GATEWAY. Force the CN build for these tests.
+// ENABLE_LLM_GATEWAY. Force the CN build for these tests, via a MUTABLE
+// holder so the gateway-disabled branch (aiOpenSettings button) can be
+// exercised by flipping the flag inside a single test.
+const { deployRegionHolder } = vi.hoisted(() => ({
+  deployRegionHolder: { enableGateway: true, isCnBuild: true },
+}))
 vi.mock('@/lib/deploy-region', () => ({
-  ENABLE_LLM_GATEWAY: true,
-  IS_CN_BUILD: true,
+  get ENABLE_LLM_GATEWAY() {
+    return deployRegionHolder.enableGateway
+  },
+  get IS_CN_BUILD() {
+    return deployRegionHolder.isCnBuild
+  },
 }))
 
 const saveDraftMock = vi.fn()
@@ -225,6 +229,22 @@ describe('SkillInstallPage (issue #126)', () => {
     await waitFor(() => expect(screen.getByText('skillInstall.errorTitle')).toBeInTheDocument())
     fireEvent.click(screen.getByText('skillInstall.openSkillManager'))
     expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1')
+    expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects')
+  })
+
+  it('error-view manager link: empty-string activeProjectId falls back to the first project (store uses "" not null)', async () => {
+    // Sourcery round-22: the project store models "no active project" as
+    // the EMPTY STRING — a `??` fallback never fires on '', dropping the
+    // first-project resolution and routing to /projects/ (no layout), so
+    // the armed flag dead-ends.
+    fetchSkillStoreManifestMock.mockResolvedValue({ skills: [] })
+    projectState.activeProjectId = ''
+    projectState.projects = [{ id: 'auto-default' }]
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('skillInstall.errorTitle')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.openSkillManager'))
+    await waitFor(() => expect(setActiveProjectMock).toHaveBeenCalledWith('auto-default'))
+    expect(routerReplaceMock).toHaveBeenCalledWith('/projects/auto-default')
     expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects')
   })
 
@@ -625,5 +645,39 @@ describe('SkillInstallPage (issue #126)', () => {
     // the visitor's route must stay wherever they went.
     expect(routerReplaceMock).not.toHaveBeenCalled()
     expect(saveDraftMock).not.toHaveBeenCalled()
+  })
+
+  it('gateway-disabled build: the login view routes to a workspace and arms the settings-open request (LLM tab)', async () => {
+    // Sourcery round-22: with ENABLE_LLM_GATEWAY=false the device-code
+    // login can never work (no client id) — the "Open AI settings" button
+    // must land the visitor on a WorkspaceLayout-consumed surface and
+    // arm panelState.settingsOpenRequest so the unified SettingsDialog
+    // opens on the LLM tab, instead of dumping them on /projects (no
+    // layout, no settings dialog, dead end).
+    const { useWorkspacePreferencesStore } = await import(
+      '@/store/workspace-preferences.store'
+    )
+    deployRegionHolder.enableGateway = false
+    checkAiReadinessMock.mockResolvedValue({ ready: false, creditExhausted: false })
+    projectState.activeProjectId = ''
+    projectState.projects = [{ id: 'auto-default' }]
+    try {
+      render(<SkillInstallPage />)
+      await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+      fireEvent.click(screen.getByText('skillInstall.installButton'))
+      await waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+      ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
+      await waitFor(() =>
+        expect(screen.getByText('skillInstall.aiGatewayUnavailable')).toBeInTheDocument(),
+      )
+      fireEvent.click(screen.getByText('skillInstall.aiOpenSettings'))
+      await waitFor(() => expect(setActiveProjectMock).toHaveBeenCalledWith('auto-default'))
+      expect(routerReplaceMock).toHaveBeenCalledWith('/projects/auto-default')
+      expect(
+        useWorkspacePreferencesStore.getState().panelState.settingsOpenRequest,
+      ).toBe(true)
+    } finally {
+      deployRegionHolder.enableGateway = true
+    }
   })
 })
